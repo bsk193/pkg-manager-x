@@ -1,0 +1,4 @@
+[submodule "libsmb2"]
+	path = deps/libsmb2
+	url = https://github.com/sahlberg/libsmb2.git
+	ignore = dirty

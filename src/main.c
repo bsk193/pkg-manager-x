@@ -1,0 +1,293 @@
+/*
+ * PKG Manager - Main Entry Point
+ *
+ * Native PS5 ELF daemon for scanning, inspecting, and installing
+ * PS4 and PS5 packages with a web-based user interface.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <signal.h>
+
+#include "version.h"
+#include "pkg_scanner.h"
+#include "installer.h"
+#include "http_server.h"
+#include "notification.h"
+#include "app_installer.h"
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <ifaddrs.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+
+#if defined(__Prospero__) || defined(PS5_BUILD)
+#include <sys/sysctl.h>
+#include <sys/syscall.h>
+
+extern int sceNetCtlInit(void);
+extern int sceUserServiceInitialize(int *priority);
+
+static pid_t find_pid(const char *name) {
+    int mib[4] = {1, 14, 8, 0};
+    pid_t mypid = getpid();
+    pid_t pid = -1;
+    size_t buf_size;
+    uint8_t *buf;
+
+    if (sysctl(mib, 4, 0, &buf_size, 0, 0)) {
+        printf("[PKG Manager] sysctl failed\n");
+        return -1;
+    }
+
+    if (!(buf = malloc(buf_size))) {
+        printf("[PKG Manager] malloc failed\n");
+        return -1;
+    }
+
+    if (sysctl(mib, 4, buf, &buf_size, 0, 0)) {
+        printf("[PKG Manager] sysctl failed\n");
+        free(buf);
+        return -1;
+    }
+
+    for (uint8_t *ptr = buf; ptr < (buf + buf_size);) {
+        int ki_structsize = *(int *)ptr;
+        pid_t ki_pid = *(pid_t *)&ptr[72];
+        char *ki_tdname = (char *)&ptr[447];
+
+        ptr += ki_structsize;
+        if (!strcmp(name, ki_tdname) && ki_pid != mypid) {
+            pid = ki_pid;
+        }
+    }
+
+    free(buf);
+    return pid;
+}
+#endif
+
+static int get_local_ip(char *ip_buf, size_t buf_size) {
+    struct ifaddrs *ifaddr, *ifa;
+    int family, s;
+
+    if (getifaddrs(&ifaddr) == -1) {
+        return -1;
+    }
+
+    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == NULL) continue;
+
+        family = ifa->ifa_addr->sa_family;
+
+        if (family == AF_INET) {
+            if (strncmp(ifa->ifa_name, "lo", 2) == 0) continue;
+
+            s = getnameinfo(ifa->ifa_addr, sizeof(struct sockaddr_in),
+                           ip_buf, buf_size, NULL, 0, NI_NUMERICHOST);
+            if (s == 0) {
+                if (strcmp(ip_buf, "127.0.0.1") != 0 && strcmp(ip_buf, "0.0.0.0") != 0) {
+                    freeifaddrs(ifaddr);
+                    return 0;
+                }
+            }
+        }
+    }
+
+    freeifaddrs(ifaddr);
+    return -1;
+}
+
+#define DEFAULT_HTTP_PORT 8844
+
+static volatile int g_running = 1;
+static volatile sig_atomic_t g_resumed = 0;
+
+static void handle_signal(int sig) {
+    (void)sig;
+    g_running = 0;
+}
+
+static void handle_sigcont(int sig) {
+    (void)sig;
+    g_resumed = 1;
+}
+
+__attribute__((used)) volatile const char pkgmgr_version_sig[] = "PKGMGR_VER:" PKGMGR_VERSION;
+
+int main(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+
+#if defined(__Prospero__) || defined(PS5_BUILD)
+    syscall(SYS_thr_set_name, -1, "pkgmgr.elf");
+
+    pid_t old_pid;
+    while ((old_pid = find_pid("pkgmgr.elf")) > 0) {
+        if (kill(old_pid, SIGKILL)) {
+            printf("[PKG Manager] kill failed\n");
+            return EXIT_FAILURE;
+        }
+        sleep(1);
+    }
+#endif
+
+    printf("[PKG Manager] Starting PKG Manager v%s (%s, %s)...\n",
+           PKGMGR_VERSION, PKGMGR_BUILD_COMMIT, PKGMGR_BUILD_DATE);
+
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, SIG_IGN);
+    signal(SIGPIPE, SIG_IGN);
+    signal(SIGHUP, SIG_IGN);
+    signal(SIGCONT, handle_sigcont);
+
+#if defined(__Prospero__) || defined(PS5_BUILD)
+    printf("[PKG Manager] Initializing PS5 system services...\n");
+    if (sceNetCtlInit() == 0) {
+        printf("[PKG Manager] Network controller initialized.\n");
+    }
+    int user_prio = 256;
+    if (sceUserServiceInitialize(&user_prio) == 0) {
+        printf("[PKG Manager] User service initialized.\n");
+    }
+#endif
+
+    int port = DEFAULT_HTTP_PORT;
+    char server_url[128];
+    snprintf(server_url, sizeof(server_url), "http://127.0.0.1:%d/", port);
+
+    printf("[PKG Manager] Initializing installer subsystem...\n");
+    if (installer_init(server_url) != 0) {
+        fprintf(stderr, "[PKG Manager] Failed to initialize installer subsystem!\n");
+        return 1;
+    }
+    install_log("[PKG Manager] Starting PKG Manager v%s (%s, %s)...",
+                PKGMGR_VERSION, PKGMGR_BUILD_COMMIT, PKGMGR_BUILD_DATE);
+
+    printf("[PKG Manager] Initializing package scanner (%s & %s)...\n", PKG_DEFAULT_DIR, PKG_DISC_DIR);
+    pkg_scanner_init();
+    int found_count = 0;
+    if (pkg_scanner_has_manifest()) {
+        found_count = (int)pkg_scanner_get_count();
+        printf("[PKG Manager] Loaded %d package(s) on startup from cache manifest.\n", found_count);
+    } else {
+        found_count = pkg_scanner_scan();
+        printf("[PKG Manager] Initial scan found %d package(s) on startup.\n", found_count);
+    }
+
+    printf("[PKG Manager] Starting HTTP server on port %d...\n", port);
+    if (http_server_start(port) != 0) {
+        fprintf(stderr, "[PKG Manager] Failed to start HTTP server on port %d!\n", port);
+        ps5_notify("PKG Manager: HTTP server failed to start (port %d busy?)", port);
+        installer_shutdown();
+        return 1;
+    }
+
+    printf("[PKG Manager] Verifying PS5 home screen shortcut...\n");
+    app_installer_install_if_needed();
+
+    char current_ip[64] = "unknown";
+    if (get_local_ip(current_ip, sizeof(current_ip)) != 0) {
+        strcpy(current_ip, "unknown");
+    }
+
+    if (strcmp(current_ip, "unknown") != 0) {
+        ps5_notify("PKG Manager v%s\nFound %d package(s)\nhttp://%s:%d",
+                   PKGMGR_VERSION, found_count, current_ip, port);
+    } else {
+        ps5_notify("PKG Manager v%s\nFound %d package(s)\nPort: %d",
+                   PKGMGR_VERSION, found_count, port);
+    }
+
+    printf("[PKG Manager] Running. Press Ctrl+C or kill process to terminate.\n");
+
+    /* Watchdog and main loop */
+    int network_check_timer = 0;
+    while (g_running) {
+        usleep(100000); /* 100ms sleep */
+
+        /* Immediate Wake-up Recovery */
+        if (g_resumed) {
+            g_resumed = 0;
+            printf("[PKG Manager] Console resumed from standby. Restarting server...\n");
+            install_log("[PKG Manager] Console resumed from standby. Restarting server...");
+
+            /* Force full server restart — close the dead socket immediately */
+            http_server_stop();
+
+            int changed = 0;
+            pkg_scanner_scan_quick(NULL, &changed);
+
+            usleep(1000000); /* 1s for network stack to stabilize */
+
+            if (http_server_start(port) == 0) {
+                /* Re-read current IP */
+                if (get_local_ip(current_ip, sizeof(current_ip)) != 0) {
+                    strcpy(current_ip, "unknown");
+                }
+                printf("[PKG Manager] Server restarted after standby. IP: %s\n", current_ip);
+                install_log("[PKG Manager] Server restarted after standby. IP: %s", current_ip);
+            } else {
+                printf("[PKG Manager] !!! Failed to restart server after standby!\n");
+                install_log("[PKG Manager] !!! Failed to restart server after standby!");
+                ps5_notify("PKG Manager: Server restart failed after standby");
+                strcpy(current_ip, "unknown");
+            }
+
+            /* Reset timer so we don't immediately re-check */
+            network_check_timer = 0;
+        }
+
+        /* Network Watchdog (every 5 seconds) */
+        if (++network_check_timer >= 50) {
+            network_check_timer = 0;
+            char new_ip[64] = "unknown";
+            int has_ip = (get_local_ip(new_ip, sizeof(new_ip)) == 0);
+            int server_up = http_server_is_running();
+
+            watchdog_action_t action = http_server_watchdog_evaluate(server_up, has_ip, current_ip, new_ip);
+
+            if (action == WATCHDOG_ACTION_RESTORE_NETWORK) {
+                printf("[PKG Manager] Network state refresh: %s -> %s. Restarting server...\n",
+                       current_ip, new_ip);
+                install_log("[PKG Manager] Network state refresh: %s -> %s. Restarting server...",
+                            current_ip, new_ip);
+
+                if (http_server_restart_with_delay(port, 800000) == 0) {
+                    strcpy(current_ip, new_ip);
+                    printf("[PKG Manager] Server restored on %s:%d\n", current_ip, port);
+                    install_log("[PKG Manager] Server restored on %s:%d", current_ip, port);
+                } else {
+                    printf("[PKG Manager] !!! Failed to restore server!\n");
+                    install_log("[PKG Manager] !!! Failed to restore server!");
+                }
+            } else if (action == WATCHDOG_ACTION_RESTORE_LOOPBACK) {
+                printf("[PKG Manager] Network lost (was %s). Restarting server for loopback...\n", current_ip);
+                install_log("[PKG Manager] Network lost (was %s). Restarting server for loopback...", current_ip);
+                strcpy(current_ip, "unknown");
+
+                /* Restart daemon to ensure clean socket for loopback */
+                if (http_server_restart_with_delay(port, 300000) == 0) {
+                    printf("[PKG Manager] Server restarted after network loss (loopback only)\n");
+                    install_log("[PKG Manager] Server restarted after network loss (loopback only)");
+                } else {
+                    printf("[PKG Manager] !!! Failed to restart server after network loss!\n");
+                    install_log("[PKG Manager] !!! Failed to restart server after network loss!");
+                    ps5_notify("PKG Manager: Server restart failed");
+                }
+            }
+        }
+    }
+
+    printf("[PKG Manager] Shutting down...\n");
+    http_server_stop();
+    installer_shutdown();
+    sleep(1); /* Allow sockets and OS kernel handles to close cleanly */
+    printf("[PKG Manager] Exited cleanly.\n");
+
+    return 0;
+}

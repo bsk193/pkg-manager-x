@@ -1,0 +1,75 @@
+# Binaries & Libraries
+*.elf
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.d
+*.dSYM/
+build/
+deps/libsmb2/build/
+
+# PS5 PKG packages & multi-part slices
+*.pkg
+*.part[0-9]*
+*.pkg.part*
+*_parts/
+
+# Test executables
+tests/test_edge_cases
+tests/test_installer
+tests/test_leftovers
+tests/test_multipart
+tests/test_pkg_parser
+tests/test_pkg_scanner
+tests/test_pkg_cache
+
+# Generated asset headers
+include/assets_*.h
+
+# Frontend & Node
+node_modules/
+frontend/dist/
+.npm/
+.vite/
+
+# Stray root lockfiles (frontend has its own tracked package-lock.json)
+/package-lock.json
+/yarn.lock
+/pnpm-lock.yaml
+/bun.lockb
+
+# Environment & Logs
+.env
+.env*.local
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.coverage
+
+# C Tooling / LSP
+compile_commands.json
+.clangd/
+
+# OS / Editor files
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+*.sw[a-p]
+*~
+.vscode/
+.idea/
+
+# Reference files & directories
+.for_reference/

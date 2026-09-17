@@ -1,0 +1,284 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/** 
+ * LEGACY FALLBACKS
+ * Ensures compatibility with PS5 older firmware WebKit (Safari < 15.4)
+ * which lacks support for CSS Cascading Layers (@layer).
+ * Tested patterns based on ps5-payload-manager reference.
+ */
+.hidden { display: none !important; }
+.flex { display: flex !important; }
+/* NOTE: flex-col must NOT have !important so md:flex-row can override it */
+.flex-col { flex-direction: column; }
+.items-center { align-items: center !important; }
+.justify-center { justify-content: center !important; }
+.text-white { color: #ffffff !important; }
+.text-zinc-100 { color: #f4f4f5 !important; }
+.text-zinc-300 { color: #d4d4d8 !important; }
+.text-zinc-400 { color: #a1a1aa !important; }
+.text-zinc-500 { color: #71717a !important; }
+.text-ps-blue { color: #0070d1 !important; }
+
+/* Safari 12 flexbox has no `gap` (grid gap is fine). App.jsx uses
+ * gap-3/4/5/6 on flex rows: emulate with negative-margin + child padding
+ * so legacy WebKit keeps spacing instead of collapsing. Grid keeps native
+ * gap; the margin fallback is harmless there (adds slight outer offset). */
+.gap-3 { gap: 0.75rem !important; }
+.gap-4 { gap: 1rem !important; }
+.gap-5 { gap: 1.25rem !important; }
+.gap-6 { gap: 1.5rem !important; }
+@supports not (gap: 1rem) {
+  .flex.gap-3 { margin: -0.375rem !important; }
+  .flex.gap-3 > * { margin: 0.375rem !important; }
+  .flex.gap-4 { margin: -0.5rem !important; }
+  .flex.gap-4 > * { margin: 0.5rem !important; }
+  .flex.gap-5 { margin: -0.625rem !important; }
+  .flex.gap-5 > * { margin: 0.625rem !important; }
+  .flex.gap-6 { margin: -0.75rem !important; }
+  .flex.gap-6 > * { margin: 0.75rem !important; }
+}
+
+@media (min-width: 768px) {
+  .md\:hidden { display: none !important; }
+  .md\:flex { display: flex !important; }
+  .md\:flex-row { flex-direction: row !important; }
+  .md\:flex-col { flex-direction: column !important; }
+  .md\:flex-1 { flex: 1 1 0% !important; }
+  .md\:overflow-hidden { overflow: hidden !important; }
+  .md\:overflow-y-auto { overflow-y: auto !important; }
+  .md\:items-start { align-items: flex-start !important; }
+  .md\:items-center { align-items: center !important; }
+  .md\:justify-center { justify-content: center !important; }
+  .md\:h-screen { height: 100vh !important; }
+  .md\:min-h-0 { min-height: 0 !important; }
+  .md\:sticky { position: sticky !important; }
+  .md\:top-0 { top: 0 !important; }
+  .md\:space-x-24 > * + * { margin-left: 6rem !important; }
+  .md\:space-y-0 > * + * { margin-top: 0 !important; }
+  .md\:space-y-6 > * + * { margin-top: 1.5rem !important; }
+  .md\:space-y-8 > * + * { margin-top: 2rem !important; }
+  .md\:space-y-12 > * + * { margin-top: 3rem !important; }
+  
+  .md\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  .md\:grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+  .md\:grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; }
+  
+  .md\:gap-4 { gap: 1rem !important; }
+  .md\:gap-6 { gap: 1.5rem !important; }
+  .md\:gap-8 { gap: 2rem !important; }
+  .md\:gap-12 { gap: 3rem !important; }
+  
+  .md\:p-6 { padding: 1.5rem !important; }
+  .md\:p-8 { padding: 2rem !important; }
+  .md\:p-12 { padding: 3rem !important; }
+  .md\:px-16 { padding-left: 4rem !important; padding-right: 4rem !important; }
+  .md\:pt-16 { padding-top: 4rem !important; }
+  .md\:pb-12 { padding-bottom: 3rem !important; }
+}
+
+@media (min-width: 1024px) {
+  .lg\:flex { display: flex !important; }
+  .lg\:grid { display: grid !important; }
+  .lg\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  .lg\:grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+  .lg\:grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; }
+  .lg\:grid-cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)) !important; }
+  .lg\:block { display: block !important; }
+  .lg\:hidden { display: none !important; }
+}
+
+@media (min-width: 1280px) {
+  .xl\:grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; }
+  .xl\:grid-cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)) !important; }
+  .xl\:grid-cols-6 { grid-template-columns: repeat(6, minmax(0, 1fr)) !important; }
+}
+
+/* Card darked-out when everything is installed */
+.card-darked-out {
+  opacity: 0.45;
+  background-color: #0e0f17 !important;
+  border-color: rgba(255, 255, 255, 0.05) !important;
+}
+.card-darked-out:hover,
+.card-darked-out:focus {
+  opacity: 0.9;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #0a0a0f;
+  color: #ffffff;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Reset button appearance for consistent box-model in WebKit */
+button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* Rock-solid square container for WebKit / Safari 12-14 */
+.aspect-square-box {
+  position: relative;
+  width: 100%;
+}
+.aspect-square-box::before {
+  content: "";
+  display: block;
+  padding-top: 100%;
+}
+.aspect-square-content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* PS5 Focus Frame: crisp white border without expensive blur shadows */
+.ps5-focus-item {
+  position: relative;
+  outline: none !important;
+}
+
+.ps5-focus-item::after {
+  content: '';
+  position: absolute;
+  top: -2px;
+  left: -2px;
+  right: -2px;
+  bottom: -2px;
+  border: 2px solid #ffffff;
+  border-radius: 3px;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 30;
+}
+
+.ps5-focus-item:not(:disabled):hover::after,
+.ps5-focus-item:not(:disabled):focus::after,
+.ps5-focus-item:not(:disabled):focus-visible::after,
+.ps5-focus-item:not(:disabled):focus-within::after {
+  opacity: 1;
+}
+
+.ps5-focus-item:not(:disabled):hover,
+.ps5-focus-item:not(:disabled):focus,
+.ps5-focus-item:not(:disabled):focus-visible {
+  z-index: 25;
+}
+
+.ps5-focus-item:disabled::after,
+.ps5-focus-item[disabled]::after {
+  display: none !important;
+}
+
+/* Global focus styles: separate :focus and :focus-visible for WebKit compatibility, crisp white border */
+button:focus, 
+select:focus, 
+input:focus,
+[tabindex]:focus {
+  outline: 2px solid #ffffff !important;
+  outline-offset: 0px !important;
+  box-shadow: none !important;
+}
+
+button:focus-visible, 
+select:focus-visible, 
+input:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid #ffffff !important;
+  outline-offset: 0px !important;
+  box-shadow: none !important;
+}
+
+/* Suppress outline on elements that have ps5-focus-item since their ::after renders the frame */
+.ps5-focus-item:focus,
+.ps5-focus-item:focus-visible,
+.ps5-focus-item:focus-within {
+  outline: none !important;
+}
+
+/* Robust PS5 Spinner - WebKit compatible keyframes and solid borders */
+.ps5-robust-spinner {
+  width: 2.25rem;
+  height: 2.25rem;
+  border: 3px solid rgba(255, 255, 255, 0.15);
+  border-left-color: #ffffff;
+  border-radius: 50%;
+  animation: ps5-native-spin 0.8s linear infinite;
+  -webkit-animation: ps5-native-spin 0.8s linear infinite;
+  transform-origin: center;
+  -webkit-transform-origin: center;
+  will-change: transform;
+}
+
+.ps5-robust-spinner-sm {
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-left-color: #ffffff;
+  border-radius: 50%;
+  animation: ps5-native-spin 0.8s linear infinite;
+  -webkit-animation: ps5-native-spin 0.8s linear infinite;
+  transform-origin: center;
+  -webkit-transform-origin: center;
+  will-change: transform;
+}
+
+.ps5-robust-spinner-lg {
+  width: 3.5rem;
+  height: 3.5rem;
+  border: 4px solid rgba(255, 255, 255, 0.15);
+  border-left-color: #0070d1;
+  border-radius: 50%;
+  animation: ps5-native-spin 0.8s linear infinite;
+  -webkit-animation: ps5-native-spin 0.8s linear infinite;
+  transform-origin: center;
+  -webkit-transform-origin: center;
+  will-change: transform;
+}
+
+@keyframes ps5-native-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@-webkit-keyframes ps5-native-spin {
+  from { -webkit-transform: rotate(0deg); }
+  to { -webkit-transform: rotate(360deg); }
+}
+
+.animate-spin {
+  animation: ps5-native-spin 0.8s linear infinite !important;
+  -webkit-animation: ps5-native-spin 0.8s linear infinite !important;
+  transform-origin: center;
+  -webkit-transform-origin: center;
+  will-change: transform;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #12131a;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a2b36;
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #4a4b56;
+}
+
+
