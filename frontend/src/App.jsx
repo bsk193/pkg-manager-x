@@ -3930,9 +3930,6 @@ export default function App() {
               >
                 <div className="min-w-0 flex-1 mr-3">
                   <span className="font-semibold text-white block">Share is Read-Only</span>
-                  <span className="text-[11px] text-zinc-400 block mt-0.5">
-                    Allow writing cache files (.pkgmgr) to share for faster scanning.
-                  </span>
                 </div>
                 <div className={`w-5 h-5 rounded-[2px] border flex items-center justify-center shrink-0 ${
                   smbForm.is_read_only ? 'bg-amber-600 border-amber-500 text-white' : 'bg-black/40 border-white/20'

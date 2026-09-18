@@ -686,10 +686,16 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
             }
         }
 
+        install_log("[HTTP] POST /api/smb/test: starting connection test for host='%s', share='%s', user='%s'",
+                    cfg.server, cfg.share, cfg.username[0] ? cfg.username : "(guest)");
+
         char err_buf[512] = {0};
         int res = smb_client_test_connection(&cfg, err_buf, sizeof(err_buf));
         int success = (res == 0 || res == 1);
         int is_ro = (res == 1) || cfg.is_read_only;
+
+        install_log("[HTTP] POST /api/smb/test: finished with res=%d (success=%s, is_ro=%s, message='%s')",
+                    res, success ? "true" : "false", is_ro ? "true" : "false", err_buf);
 
         char esc_msg[1024] = {0};
         json_str_esc(err_buf, esc_msg, sizeof(esc_msg));

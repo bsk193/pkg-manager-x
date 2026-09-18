@@ -44,6 +44,7 @@ void smb2_destroy_context(struct smb2_context *smb2) {
 }
 
 void smb2_set_timeout(struct smb2_context *smb2, int seconds) { (void)smb2; (void)seconds; }
+void smb2_set_security_mode(struct smb2_context *smb2, uint16_t security_mode) { (void)smb2; (void)security_mode; }
 void smb2_set_user(struct smb2_context *smb2, const char *user) { (void)smb2; (void)user; }
 void smb2_set_password(struct smb2_context *smb2, const char *password) { (void)smb2; (void)password; }
 void smb2_set_domain(struct smb2_context *smb2, const char *domain) { (void)smb2; (void)domain; }
@@ -57,6 +58,10 @@ int smb2_connect_share(struct smb2_context *smb2, const char *server, const char
 }
 
 const char *smb2_get_error(struct smb2_context *smb2) { (void)smb2; return "mock smb error"; }
+int smb2_get_nterror(struct smb2_context *smb2) { (void)smb2; return 0; }
+const char *nterror_to_str(uint32_t status) { (void)status; return "STATUS_SUCCESS"; }
+typedef void (*smb2_error_cb)(struct smb2_context *smb2, const char *error_string);
+void smb2_register_error_callback(struct smb2_context *smb2, smb2_error_cb error_cb) { (void)smb2; (void)error_cb; }
 
 struct smb2dir *smb2_opendir(struct smb2_context *smb2, const char *path) {
     if (!smb2) return NULL;
