@@ -1,0 +1,205 @@
+import React from 'react';
+
+export default function SmbShareModal({
+  show, onClose, isEditing, form, setForm, testResult, testing, onTest, onSave
+}) {
+  if (!show) return null;
+
+  const isServerValid = form && form.server && form.server.trim();
+  const isShareValid = form && form.share && form.share.trim();
+  const isServerHasSlash = form && form.server && (form.server.indexOf('/') !== -1 || form.server.indexOf('\\') !== -1);
+  const isSaveDisabled = !isServerValid || (!isShareValid && !isServerHasSlash);
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4">
+      <div className="bg-[#181a27] border border-white/15 rounded-[2px] max-w-lg w-full p-6 space-y-5 overflow-y-auto max-h-[90vh]">
+        <div className="flex items-center justify-between pb-3 border-b border-white/10">
+          <div className="flex items-center space-x-3">
+            <div className="w-10 h-10 rounded-[2px] bg-cyan-600/20 border border-cyan-500/30 flex items-center justify-center text-cyan-400 shrink-0">
+              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="2" y="2" width="20" height="8" rx="2" />
+                <rect x="2" y="14" width="20" height="8" rx="2" />
+                <line x1="6" y1="6" x2="6.01" y2="6" />
+                <line x1="6" y1="18" x2="6.01" y2="18" />
+                <path d="M12 10v4" />
+              </svg>
+            </div>
+            <div>
+              <h3 className="text-lg font-bold text-white">
+                {isEditing ? 'Edit Samba Share' : 'Add Samba Share'}
+              </h3>
+              <p className="text-xs text-zinc-400">Configure connection to your network storage</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-zinc-500 hover:text-white text-lg font-bold px-2 py-1 cursor-pointer transition-colors"
+          >
+            &times;
+          </button>
+        </div>
+
+        <div className="space-y-4 text-xs">
+          {/* Share Label */}
+          <div>
+            <label className="block font-semibold text-zinc-300 mb-1">Display Label (Optional)</label>
+            <input
+              type="text"
+              placeholder="e.g. NAS Games, My PC"
+              value={form.label || ''}
+              onChange={(e) => setForm({ ...form, label: e.target.value })}
+              className="w-full bg-black/50 border border-white/15 rounded-[2px] px-3.5 py-2.5 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-white/40"
+            />
+          </div>
+
+          {/* Server & Port */}
+          <div className="grid grid-cols-3 gap-3">
+            <div className="col-span-2">
+              <label className="block font-semibold text-zinc-300 mb-1">Server IP or Hostname *</label>
+              <input
+                type="text"
+                placeholder="192.168.1.100 or nas.local"
+                value={form.server || ''}
+                onChange={(e) => setForm({ ...form, server: e.target.value })}
+                className="w-full bg-black/50 border border-white/15 rounded-[2px] px-3.5 py-2.5 text-sm text-white placeholder-zinc-500 font-mono focus:outline-none focus:border-white/40"
+              />
+            </div>
+            <div>
+              <label className="block font-semibold text-zinc-300 mb-1">Port</label>
+              <input
+                type="number"
+                placeholder="445"
+                value={typeof form.port !== 'undefined' && form.port !== null ? form.port : ''}
+                onChange={(e) => setForm({ ...form, port: e.target.value === '' ? '' : (parseInt(e.target.value, 10) || '') })}
+                className="w-full bg-black/50 border border-white/15 rounded-[2px] px-3.5 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-white/40"
+              />
+            </div>
+          </div>
+
+          {/* Share & Subfolder */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block font-semibold text-zinc-300 mb-1">Share Name *</label>
+              <input
+                type="text"
+                placeholder="e.g. pkgs, public"
+                value={form.share || ''}
+                onChange={(e) => setForm({ ...form, share: e.target.value })}
+                className="w-full bg-black/50 border border-white/15 rounded-[2px] px-3.5 py-2.5 text-sm text-white placeholder-zinc-500 font-mono focus:outline-none focus:border-white/40"
+              />
+            </div>
+            <div>
+              <label className="block font-semibold text-zinc-300 mb-1">Subfolder (Optional)</label>
+              <input
+                type="text"
+                placeholder="e.g. ps5/pkgs"
+                value={form.path || ''}
+                onChange={(e) => setForm({ ...form, path: e.target.value })}
+                className="w-full bg-black/50 border border-white/15 rounded-[2px] px-3.5 py-2.5 text-sm text-white placeholder-zinc-500 font-mono focus:outline-none focus:border-white/40"
+              />
+            </div>
+          </div>
+
+          {/* Credentials */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block font-semibold text-zinc-300 mb-1">Username (Guest if blank)</label>
+              <input
+                type="text"
+                placeholder="anonymous"
+                value={form.username || ''}
+                onChange={(e) => setForm({ ...form, username: e.target.value })}
+                className="w-full bg-black/50 border border-white/15 rounded-[2px] px-3.5 py-2.5 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-white/40"
+              />
+            </div>
+            <div>
+              <label className="block font-semibold text-zinc-300 mb-1">Password</label>
+              <input
+                type="password"
+                placeholder="••••••••"
+                value={form.password || ''}
+                onChange={(e) => setForm({ ...form, password: e.target.value })}
+                className="w-full bg-black/50 border border-white/15 rounded-[2px] px-3.5 py-2.5 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-white/40"
+              />
+            </div>
+          </div>
+
+          {/* Workgroup */}
+          <div>
+            <label className="block font-semibold text-zinc-300 mb-1">Workgroup / Domain</label>
+            <input
+              type="text"
+              placeholder="WORKGROUP"
+              value={form.workgroup || ''}
+              onChange={(e) => setForm({ ...form, workgroup: e.target.value })}
+              className="w-full bg-black/50 border border-white/15 rounded-[2px] px-3.5 py-2.5 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-white/40"
+            />
+          </div>
+
+          {/* Read-Only Option */}
+          <div
+            onClick={() => setForm({ ...form, is_read_only: !form.is_read_only })}
+            className="bg-white/5 hover:bg-white/10 border border-white/10 rounded-[2px] ps5-focus-item p-3.5 flex items-center justify-between cursor-pointer transition-colors"
+          >
+            <div className="min-w-0 flex-1 mr-3">
+              <span className="font-semibold text-white block">Share is Read-Only</span>
+            </div>
+            <div className={`w-5 h-5 rounded-[2px] border flex items-center justify-center shrink-0 ${
+              form.is_read_only ? 'bg-amber-600 border-amber-500 text-white' : 'bg-black/40 border-white/20'
+            }`}>
+              {form.is_read_only && (
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              )}
+            </div>
+          </div>
+
+          {/* Test Result Banner */}
+          {testResult && (
+            <div className={`rounded-[2px] p-3 border text-xs flex items-center space-x-2.5 ${
+              testResult.success
+                ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
+                : 'bg-rose-500/15 border-rose-500/30 text-rose-300'
+            }`}>
+              <span className="font-bold">{testResult.success ? '✓' : '✗'}</span>
+              <span className="flex-1">{testResult.message || testResult.error || (testResult.success ? 'Connected successfully!' : 'Connection failed')}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Buttons */}
+        <div className="flex items-center justify-between pt-2 border-t border-white/10">
+          <button
+            type="button"
+            onClick={onTest}
+            disabled={testing || isSaveDisabled}
+            className="px-4 py-2.5 rounded-[2px] ps5-focus-item bg-white/10 hover:bg-white/15 text-zinc-200 text-xs font-semibold transition-colors disabled:opacity-40 cursor-pointer flex items-center space-x-2"
+          >
+            {testing && <div className="ps5-robust-spinner-sm" />}
+            <span>{testing ? 'Testing...' : 'Test Connection'}</span>
+          </button>
+
+          <div className="flex items-center space-x-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2.5 rounded-[2px] ps5-focus-item bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white text-xs font-semibold transition-colors cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={onSave}
+              disabled={isSaveDisabled}
+              className="px-5 py-2.5 rounded-[2px] ps5-focus-item bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold transition-colors disabled:opacity-40 cursor-pointer"
+            >
+              Save Share
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
