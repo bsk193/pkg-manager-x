@@ -8,7 +8,7 @@ export default function DonateModal({ show, onClose, onNeverShow, donateNeverNot
   if (!show) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4">
+    <div data-modal-dialog="true" role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4">
       <div className="bg-[#181a27] border border-white/10 rounded-[2px] max-w-md w-full p-6 space-y-5 shadow-2xl">
         {donateNeverNotice ? (
               <div className="py-8 text-center space-y-3">

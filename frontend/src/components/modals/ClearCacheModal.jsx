@@ -7,7 +7,7 @@ export default function ClearCacheModal({ show, cacheStats, onConfirm, onClose, 
   const cachePath = (cacheStats && cacheStats.cache_path) ? cacheStats.cache_path : '/data/pkgmgr/cache';
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4">
+    <div data-modal-dialog="true" role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4">
       <div className="bg-[#181a27] border border-rose-500/30 rounded-[2px] max-w-md w-full p-6 space-y-5">
         <div className="flex items-center space-x-3">
           <div className="w-10 h-10 rounded-[2px] bg-rose-600/20 border border-rose-500/40 flex items-center justify-center text-rose-400 shrink-0">

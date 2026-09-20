@@ -11,7 +11,7 @@ export default function SmbShareModal({
   const isSaveDisabled = !isServerValid || (!isShareValid && !isServerHasSlash);
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4">
+    <div data-modal-dialog="true" role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4">
       <div className="bg-[#181a27] border border-white/15 rounded-[2px] max-w-lg w-full p-6 space-y-5 overflow-y-auto max-h-[90vh]">
         <div className="flex items-center justify-between pb-3 border-b border-white/10">
           <div className="flex items-center space-x-3">
@@ -138,9 +138,10 @@ export default function SmbShareModal({
           </div>
 
           {/* Read-Only Option */}
-          <div
+          <button
+            type="button"
             onClick={() => setForm({ ...form, is_read_only: !form.is_read_only })}
-            className="bg-white/5 hover:bg-white/10 border border-white/10 rounded-[2px] ps5-focus-item p-3.5 flex items-center justify-between cursor-pointer transition-colors"
+            className="w-full text-left bg-white/5 hover:bg-white/10 border border-white/10 rounded-[2px] ps5-focus-item p-3.5 flex items-center justify-between cursor-pointer transition-colors"
           >
             <div className="min-w-0 flex-1 mr-3">
               <span className="font-semibold text-white block">Share is Read-Only</span>
@@ -154,7 +155,7 @@ export default function SmbShareModal({
                 </svg>
               )}
             </div>
-          </div>
+          </button>
 
           {/* Test Result Banner */}
           {testResult && (

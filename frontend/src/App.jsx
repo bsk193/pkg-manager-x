@@ -23,6 +23,8 @@ import { useSettings } from './hooks/useSettings';
 import { useSmb } from './hooks/useSmb';
 import { useInstaller } from './hooks/useInstaller';
 import { useDonation } from './hooks/useDonation';
+import { useHistoryNavigation } from './hooks/useHistoryNavigation';
+import { useModalInert } from './hooks/useModalInert';
 
 import OfflineScreen from './components/screens/OfflineScreen';
 import LoadingScreen from './components/screens/LoadingScreen';
@@ -72,6 +74,7 @@ export default function App() {
   const [selectedTitleId, setSelectedTitleId] = useState(null);
 
   const selectedDriveRef = useRef(selectedDrive);
+  selectedDriveRef.current = selectedDrive;
   useEffect(() => {
     selectedDriveRef.current = selectedDrive;
   }, [selectedDrive]);
@@ -470,52 +473,56 @@ export default function App() {
     }
   }, []);
 
-  // Navigation handlers
-  const handleSelectDrive = (drive) => {
-    if (!drive.clickable) return;
-    setSelectedDrive(drive);
-    selectedDriveRef.current = drive;
-    setSelectedTitleId(null);
-    selectedTitleIdRef.current = null;
-    scrollPositionRef.current = 0;
-    detailScrollPositionRef.current = 0;
-    shouldRestoreDetailScrollRef.current = false;
-    setSearchQuery('');
-    fetchPackagesForDrive(drive);
-    triggerQuickScan(drive);
-    window.scrollTo(0, 0);
-  };
+  // History and Back navigation handlers (supports controller Circle button)
+  const {
+    handleSelectDrive,
+    handleBackToDrives,
+    handleOpenTitle,
+    handleBackToPackages,
+    handleOpenSettings,
+    handleCloseSettings,
+    handleOpenSmb,
+    handleCloseSmb,
+  } = useHistoryNavigation({
+    setSelectedDrive,
+    selectedDriveRef,
+    setSelectedTitleId,
+    selectedTitleIdRef,
+    setShowSettings,
+    setShowSmbPage,
+    drives,
+    fetchPackagesForDrive,
+    fetchDrives,
+    fetchStorage,
+    fetchCacheStats,
+    scrollPositionRef,
+    detailScrollPositionRef,
+    shouldRestoreScrollRef,
+    shouldRestoreDetailScrollRef,
+    setPackages,
+    setSearchQuery,
+    triggerQuickScan,
+    installerStatus,
+    isBatchActive,
+    showDonateModal,
+    handleCloseDonateModal,
+    showClearCacheModal,
+    setShowClearCacheModal,
+    showSmbModal,
+    setShowSmbModal,
+    selectedLeftoverToDelete,
+    setSelectedLeftoverToDelete,
+    showToast,
+    initialRoute: selectedDrive ? { type: 'drive', driveId: selectedDrive.id || '__all__' } : { type: 'drives' },
+  });
 
-  const handleBackToDrives = () => {
-    setSelectedDrive(null);
-    selectedDriveRef.current = null;
-    setSelectedTitleId(null);
-    selectedTitleIdRef.current = null;
-    scrollPositionRef.current = 0;
-    detailScrollPositionRef.current = 0;
-    shouldRestoreDetailScrollRef.current = false;
-    setPackages([]);
-    setSearchQuery('');
-    fetchDrives();
-    fetchStorage();
-    window.scrollTo(0, 0);
-  };
-
-  const handleOpenTitle = (titleId) => {
-    const currentY = window.scrollY || window.pageYOffset || document.documentElement.scrollTop;
-    scrollPositionRef.current = currentY;
-    shouldRestoreScrollRef.current = true;
-    detailScrollPositionRef.current = 0;
-    setSelectedTitleId(titleId);
-    window.scrollTo(0, 0);
-  };
-
-  const handleBackToPackages = () => {
-    const currentY = window.scrollY || window.pageYOffset || document.documentElement.scrollTop;
-    detailScrollPositionRef.current = currentY;
-    shouldRestoreDetailScrollRef.current = true;
-    setSelectedTitleId(null);
-  };
+  const isAnyModalOpen = Boolean(
+    showDonateModal ||
+    showClearCacheModal ||
+    showSmbModal ||
+    selectedLeftoverToDelete
+  );
+  useModalInert(isAnyModalOpen);
 
   useEffect(() => {
     document.title = getBrowserTitle();
@@ -680,21 +687,28 @@ export default function App() {
     <div className="min-h-screen bg-[#0a0a0f] text-white flex flex-col font-ps5">
       <Toast notification={notification} />
 
-      <Header
+      <fieldset
+        id="app-main-content"
+        disabled={isAnyModalOpen}
+        inert={isAnyModalOpen ? '' : undefined}
+        aria-hidden={isAnyModalOpen ? 'true' : undefined}
+        className={`border-0 m-0 p-0 min-w-0 w-full flex flex-col flex-1 ${isAnyModalOpen ? 'pointer-events-none select-none' : ''}`}
+      >
+        <Header
         appVersion={appVersion}
         storage={storage}
         showSettings={showSettings}
         showSmbPage={showSmbPage}
         onSettingsClick={() => {
           if (showSmbPage) {
-            setShowSmbPage(false);
-            setShowSettings(true);
+            handleCloseSmb();
             return;
           }
-          if (!showSettings) {
-            fetchCacheStats();
+          if (showSettings) {
+            handleCloseSettings();
+            return;
           }
-          setShowSettings((prev) => !prev);
+          handleOpenSettings();
         }}
         onRescan={refreshAll}
         refreshing={refreshing}
@@ -707,7 +721,7 @@ export default function App() {
         {showSmbPage ? (
           <SmbManagementView
             settings={settings}
-            onBack={() => setShowSmbPage(false)}
+            onBack={handleCloseSmb}
             onAdd={() => {
               setSmbEditIndex(-1);
               setSmbForm({
@@ -741,8 +755,8 @@ export default function App() {
           <SettingsView
             settings={settings}
             onSaveSettings={handleSaveSettings}
-            onClose={() => { setShowSettings(false); setShowSmbPage(false); }}
-            onOpenSmb={() => setShowSmbPage(true)}
+            onClose={handleCloseSettings}
+            onOpenSmb={handleOpenSmb}
             onInstallShortcut={handleInstallShortcut}
             installingShortcut={installingShortcut}
             cacheStats={cacheStats}
@@ -795,6 +809,7 @@ export default function App() {
       </main>
 
       <Footer appVersion={appVersion} />
+      </fieldset>
 
       <DonateModal
         show={showDonateModal}
