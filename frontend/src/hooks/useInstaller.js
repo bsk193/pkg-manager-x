@@ -195,18 +195,31 @@ export function useInstaller(props) {
     try { localStorage.removeItem('pkg_batch_install'); } catch (e) {}
     setBatchInstall(null);
 
-    // Available-storage check commented out: PS5 may install to internal storage (/data) or M.2 NVMe (/mnt/ext1).
-    // Space checking is disabled until install target setting can be detected.
-    /*
+    // Available-storage check: if an M.2 NVMe SSD is installed, PS5 may be set to install
+    // to internal storage or M.2 SSD. If neither drive has enough available space, block the installation.
+    // If no M.2 SSD is present, enforce available storage check against internal storage.
+    const hasNvme = !!(storage?.nvme && storage.nvme.available);
+    const internalFree = storage ? (storage.internal?.free ?? storage.free ?? 0) : 0;
+    const nvmeFree = hasNvme ? (storage.nvme?.free ?? 0) : 0;
+    const maxAvailable = hasNvme ? Math.max(internalFree, nvmeFree) : internalFree;
     const requiredSpace = Number(pkg.total_pkg_size || pkg.file_size) || 0;
-    if (storage && storage.free && storage.free < requiredSpace) {
-      if (showToast) showToast(
-        `Insufficient storage! Needs ${formatBytes(requiredSpace)}, but only ${formatBytes(storage.free)} is available.`,
-        'error'
-      );
+
+    if (storage && maxAvailable < requiredSpace) {
+      if (showToast) {
+        if (hasNvme) {
+          showToast(
+            `Insufficient storage! Needs ${formatBytes(requiredSpace)}, but neither Internal (${formatBytes(internalFree)}) nor M.2 NVMe (${formatBytes(nvmeFree)}) has enough space.`,
+            'error'
+          );
+        } else {
+          showToast(
+            `Insufficient storage! Needs ${formatBytes(requiredSpace)}, but only ${formatBytes(internalFree)} is available on internal storage.`,
+            'error'
+          );
+        }
+      }
       return;
     }
-    */
 
     if (selectedTitleIdRef && selectedTitleIdRef.current) {
       const currentY = window.scrollY || window.pageYOffset || (document.documentElement && document.documentElement.scrollTop) || (document.body && document.body.scrollTop) || 0;
@@ -241,17 +254,27 @@ export function useInstaller(props) {
     const baseRequired = Number(basePkg.total_pkg_size || basePkg.file_size) || 0;
     const updateRequired = Number(updatePkg.total_pkg_size || updatePkg.file_size) || 0;
     const combinedSpace = baseRequired + updateRequired;
-    // Available-storage check commented out: PS5 may install to internal storage (/data) or M.2 NVMe (/mnt/ext1).
-    // Space checking is disabled until install target setting can be detected.
-    /*
-    if (storage && storage.free && storage.free < combinedSpace) {
-      if (showToast) showToast(
-        `Insufficient storage! Needs ${formatBytes(combinedSpace)}, but only ${formatBytes(storage.free)} is available.`,
-        'error'
-      );
+    const hasNvme = !!(storage?.nvme && storage.nvme.available);
+    const internalFree = storage ? (storage.internal?.free ?? storage.free ?? 0) : 0;
+    const nvmeFree = hasNvme ? (storage.nvme?.free ?? 0) : 0;
+    const maxAvailable = hasNvme ? Math.max(internalFree, nvmeFree) : internalFree;
+
+    if (storage && maxAvailable < combinedSpace) {
+      if (showToast) {
+        if (hasNvme) {
+          showToast(
+            `Insufficient storage! Needs ${formatBytes(combinedSpace)}, but neither Internal (${formatBytes(internalFree)}) nor M.2 NVMe (${formatBytes(nvmeFree)}) has enough space.`,
+            'error'
+          );
+        } else {
+          showToast(
+            `Insufficient storage! Needs ${formatBytes(combinedSpace)}, but only ${formatBytes(internalFree)} is available on internal storage.`,
+            'error'
+          );
+        }
+      }
       return;
     }
-    */
 
     if (selectedTitleIdRef && selectedTitleIdRef.current) {
       const currentY = window.scrollY || window.pageYOffset || (document.documentElement && document.documentElement.scrollTop) || (document.body && document.body.scrollTop) || 0;

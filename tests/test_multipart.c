@@ -136,24 +136,59 @@ static void test_space_check_and_dir_creation(void) {
     const char *tmp_dir = "/tmp/pkg_installer_test_space/nested/tmp";
     setenv("PKG_TMP_DIR", tmp_dir, 1);
 
-    /* 1. Space check failure simulation (commented out: space checks disabled until
-       drive target detection is implemented for /mnt/ext1)
+    /* 1. Space check failure simulation (enforced when no M.2 drive is present) */
+    unsetenv("PKG_EXT1_DIR");
     setenv("PKG_FORCE_SPACE_CHECK_FAIL", "1", 1);
     installer_init("http://127.0.0.1:8085/");
 
-    int res = installer_start("/tmp/test_mpkg/parts/nd.pkg.part1");
-    printf("   Space check failure result: %d\n", res);
-    assert(res == -10);
+    int res_fail = installer_start("/tmp/test_mpkg/parts/nd.pkg.part1");
+    printf("   Space check failure result (no M.2): %d\n", res_fail);
+    assert(res_fail == -10);
 
     installer_shutdown();
     unsetenv("PKG_FORCE_SPACE_CHECK_FAIL");
 
     struct stat st;
     assert(stat(tmp_dir, &st) != 0);
-    */
+
+    /* 1b. Space check failure simulation when M.2 NVMe SSD is present but neither drive has enough space */
+    setenv("PKG_FORCE_SPACE_CHECK_FAIL", "1", 1);
+    setenv("PKG_FORCE_NVME_SPACE_FAIL", "1", 1);
+    installer_init("http://127.0.0.1:8085/");
+
+    int res_both_fail = installer_start("/tmp/test_mpkg/parts/nd.pkg.part1");
+    printf("   Space check failure result (both internal and M.2 insufficient): %d\n", res_both_fail);
+    assert(res_both_fail == -10);
+
+    installer_shutdown();
+    unsetenv("PKG_FORCE_NVME_SPACE_FAIL");
+    unsetenv("PKG_FORCE_SPACE_CHECK_FAIL");
+
+    /* 1c. Space check pass simulation when M.2 NVMe SSD is present and has space */
+    system("mkdir -p /tmp/mock_nvme_test");
+    setenv("PKG_EXT1_DIR", "/tmp/mock_nvme_test", 1);
+    setenv("PKG_FORCE_SPACE_CHECK_FAIL", "1", 1);
+    installer_init("http://127.0.0.1:8085/");
+
+    int res_nvme = installer_start("/tmp/test_mpkg/parts/nd.pkg.part1");
+    printf("   Space check result with M.2 present: %d\n", res_nvme);
+    assert(res_nvme == 0); /* Must bypass space check when M.2 has space */
+
+    for (int i = 0; i < 50; i++) {
+        installer_status_t cur_st;
+        installer_get_status(&cur_st);
+        if (cur_st.is_installing) break;
+        usleep(10000);
+    }
+    installer_cancel();
+    installer_shutdown();
+    unsetenv("PKG_FORCE_SPACE_CHECK_FAIL");
+    unsetenv("PKG_EXT1_DIR");
+    system("rm -rf /tmp/mock_nvme_test");
+    usleep(200000);
+
 
     /* 2. Normal directory creation on valid start */
-    struct stat st;
     installer_init("http://127.0.0.1:8085/");
     int res = installer_start("/tmp/test_mpkg/parts/nd.pkg.part1");
     assert(res == 0);

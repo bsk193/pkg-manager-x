@@ -2,6 +2,17 @@ import React from 'react';
 import { formatBytes } from '../../utils/formatters';
 
 export default function Header({ appVersion, storage, showSettings, showSmbPage, onSettingsClick, onRescan, refreshing, selectedDrive, onBackToDrives }) {
+  const internalFree = storage ? (storage.internal?.free ?? storage.free ?? 0) : 0;
+  const internalTotal = storage ? ((storage.internal?.total ?? storage.total) || 1) : 1;
+  const internalUsed = storage ? (storage.internal?.used ?? storage.used ?? Math.max(0, internalTotal - internalFree)) : 0;
+  const internalUsedPct = Math.min(100, Math.max(0, (internalUsed / internalTotal) * 100));
+
+  const hasNvme = !!(storage?.nvme && storage.nvme.available);
+  const nvmeFree = hasNvme ? (storage.nvme.free ?? 0) : 0;
+  const nvmeTotal = hasNvme ? (storage.nvme.total || 1) : 1;
+  const nvmeUsed = hasNvme ? (storage.nvme.used ?? Math.max(0, nvmeTotal - nvmeFree)) : 0;
+  const nvmeUsedPct = Math.min(100, Math.max(0, (nvmeUsed / nvmeTotal) * 100));
+
   return (
     <header className="border-b border-white/10 bg-[#12131a] px-4 py-3 sm:px-6">
       {/* Top Header Bar (Non-sticky, hides naturally when scrolling down) */}
@@ -20,35 +31,32 @@ export default function Header({ appVersion, storage, showSettings, showSmbPage,
           <div className="flex items-center space-x-3 sm:space-x-4">
             {/* Internal Storage Display Widget */}
             {storage && (
-              <div className="flex items-center space-x-3 bg-white/5 px-3.5 py-1.5 rounded-[2px] border border-white/10 text-xs">
-                <svg className="w-4 h-4 text-blue-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <rect x="2" y="3" width="20" height="18" rx="2" />
-                  <line x1="2" y1="9" x2="22" y2="9" />
-                  <line x1="10" y1="15" x2="10.01" y2="15" />
-                </svg>
-                <div className="flex flex-col">
-                  <span className="text-zinc-400 font-mono text-[10px]">INTERNAL</span>
-                  <div className="flex items-center space-x-2">
-                    <span className="font-bold text-white font-mono">
-                      {formatBytes(storage.internal?.free ?? storage.free)} free
+              <div
+                className="flex items-center space-x-2.5 bg-white/5 px-3 py-1.5 rounded-[2px] border border-white/10 text-xs min-w-[230px]"
+                title={`Internal Storage: ${formatBytes(internalFree)} free of ${formatBytes(internalTotal)} (${internalUsedPct.toFixed(1)}% used)`}
+              >
+                <div className="flex flex-col items-center shrink-0">
+                  <svg className="w-4 h-4 text-blue-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="2" y="3" width="20" height="18" rx="2" />
+                    <line x1="2" y1="9" x2="22" y2="9" />
+                    <line x1="10" y1="15" x2="10.01" y2="15" />
+                  </svg>
+                  <span className="text-[9px] font-mono font-bold text-zinc-400 mt-0.5 tracking-wider leading-none">INT</span>
+                </div>
+                <div className="flex flex-col flex-1 min-w-0">
+                  <div className="flex items-center space-x-1.5 font-mono text-[11px] whitespace-nowrap">
+                    <span className="font-bold text-white">
+                      {formatBytes(internalFree)} free
                     </span>
-                    <span className="text-zinc-500 font-mono">
-                      / {formatBytes(storage.internal?.total ?? storage.total)}
+                    <span className="text-zinc-500">
+                      / {formatBytes(internalTotal)}
                     </span>
                   </div>
-                </div>
-
-                {/* Micro Progress Bar */}
-                <div className="w-16 hidden md:block">
-                  <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
+                  {/* Progress Bar showing how much is used */}
+                  <div className="w-full bg-black/60 h-1.5 rounded-[2px] overflow-hidden mt-1 border border-white/10">
                     <div
-                      className="bg-blue-500 h-full rounded-full transition-all duration-500"
-                      style={{
-                        width: `${Math.min(
-                          100,
-                          Math.max(0, Math.round((((storage.internal?.used ?? storage.used)) / ((storage.internal?.total ?? storage.total) || 1)) * 100))
-                        )}%`
-                      }}
+                      className="bg-blue-500 h-full rounded-[2px] transition-all duration-500"
+                      style={{ width: `${internalUsedPct}%` }}
                     />
                   </div>
                 </div>
@@ -56,35 +64,32 @@ export default function Header({ appVersion, storage, showSettings, showSmbPage,
             )}
 
             {/* M.2 NVMe Storage Display Widget */}
-            {storage?.nvme && storage.nvme.available && (
-              <div className="flex items-center space-x-3 bg-white/5 px-3.5 py-1.5 rounded-[2px] border border-white/10 text-xs">
-                <svg className="w-4 h-4 text-purple-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <rect x="2" y="3" width="20" height="18" rx="2" />
-                  <path d="M4 7h16M4 12h16M4 17h16" />
-                </svg>
-                <div className="flex flex-col">
-                  <span className="text-zinc-400 font-mono text-[10px]">M.2 NVME</span>
-                  <div className="flex items-center space-x-2">
-                    <span className="font-bold text-white font-mono">
-                      {formatBytes(storage.nvme.free)} free
+            {hasNvme && (
+              <div
+                className="flex items-center space-x-2.5 bg-white/5 px-3 py-1.5 rounded-[2px] border border-white/10 text-xs min-w-[230px]"
+                title={`M.2 NVMe: ${formatBytes(nvmeFree)} free of ${formatBytes(nvmeTotal)} (${nvmeUsedPct.toFixed(1)}% used)`}
+              >
+                <div className="flex flex-col items-center shrink-0">
+                  <svg className="w-4 h-4 text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="2" y="3" width="20" height="18" rx="2" />
+                    <path d="M4 7h16M4 12h16M4 17h16" />
+                  </svg>
+                  <span className="text-[9px] font-mono font-bold text-zinc-400 mt-0.5 tracking-wider leading-none">M.2</span>
+                </div>
+                <div className="flex flex-col flex-1 min-w-0">
+                  <div className="flex items-center space-x-1.5 font-mono text-[11px] whitespace-nowrap">
+                    <span className="font-bold text-white">
+                      {formatBytes(nvmeFree)} free
                     </span>
-                    <span className="text-zinc-500 font-mono">
-                      / {formatBytes(storage.nvme.total)}
+                    <span className="text-zinc-500">
+                      / {formatBytes(nvmeTotal)}
                     </span>
                   </div>
-                </div>
-
-                {/* Micro Progress Bar */}
-                <div className="w-16 hidden md:block">
-                  <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
+                  {/* Progress Bar showing how much is used */}
+                  <div className="w-full bg-black/60 h-1.5 rounded-[2px] overflow-hidden mt-1 border border-white/10">
                     <div
-                      className="bg-purple-500 h-full rounded-full transition-all duration-500"
-                      style={{
-                        width: `${Math.min(
-                          100,
-                          Math.max(0, Math.round((storage.nvme.used / (storage.nvme.total || 1)) * 100))
-                        )}%`
-                      }}
+                      className="bg-purple-500 h-full rounded-[2px] transition-all duration-500"
+                      style={{ width: `${nvmeUsedPct}%` }}
                     />
                   </div>
                 </div>

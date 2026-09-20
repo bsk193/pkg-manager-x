@@ -110,7 +110,7 @@ static int mkdir_recursive(const char *dir_path) {
     return 0;
 }
 
-__attribute__((unused)) static uint64_t get_available_disk_space(const char *path) {
+static uint64_t get_available_disk_space(const char *path) {
     if (getenv("PKG_FORCE_SPACE_CHECK_FAIL")) {
         return 1024; /* 1 KB to test space failure path */
     }
@@ -1256,10 +1256,12 @@ int installer_start(const char *pkg_path) {
         return -13;
     }
 
-    /* Validate storage space: requires only 1x storage (installed package size) */
-    /* NOTE: Commented out because PS5 users may install to internal storage (/data) or an M.2
-     * NVMe SSD (/mnt/ext1), and we cannot currently detect which install drive is configured in PS5 settings.
-     * When install target detection is implemented, validate storage against that specific drive.
+    /* Validate storage space: requires only 1x storage (installed package size).
+     * If an M.2 NVMe SSD (/mnt/ext1) is present, PS5 may be set to install to internal storage
+     * or the M.2 drive. If neither drive has enough available space, block the installation.
+     * If no M.2 SSD is present, validate against internal storage (/data). */
+    uint64_t nvme_f = 0, nvme_t = 0, nvme_u = 0;
+    int has_nvme = (system_get_nvme_storage_info(&nvme_f, &nvme_t, &nvme_u) == 0);
     uint64_t required_space = detail.total_pkg_size > 0 ? detail.total_pkg_size : detail.file_size;
     const char *check_dir = getenv("PKG_TMP_DIR");
     if (!check_dir || check_dir[0] == '\0') {
@@ -1267,13 +1269,25 @@ int installer_start(const char *pkg_path) {
     }
 
     uint64_t avail_space = get_available_disk_space(check_dir);
-    if (avail_space != (uint64_t)-1 && avail_space < required_space) {
-        ps5_notify("Not enough storage space! Need %llu MB, have %llu MB",
-                   (unsigned long long)(required_space / (1024 * 1024)),
-                   (unsigned long long)(avail_space / (1024 * 1024)));
-        return -10; // Insufficient storage space
+    int int_valid = (avail_space != (uint64_t)-1);
+    uint64_t max_avail = int_valid ? avail_space : 0;
+    if (has_nvme && nvme_f > max_avail) {
+        max_avail = nvme_f;
     }
-    */
+
+    if ((int_valid || has_nvme) && max_avail < required_space) {
+        if (has_nvme) {
+            ps5_notify("Not enough storage space! Need %llu MB (Internal: %llu MB, M.2: %llu MB)",
+                       (unsigned long long)(required_space / (1024 * 1024)),
+                       (unsigned long long)((int_valid ? avail_space : 0) / (1024 * 1024)),
+                       (unsigned long long)(nvme_f / (1024 * 1024)));
+        } else {
+            ps5_notify("Not enough storage space! Need %llu MB, have %llu MB",
+                       (unsigned long long)(required_space / (1024 * 1024)),
+                       (unsigned long long)(avail_space / (1024 * 1024)));
+        }
+        return -10; /* Insufficient storage space */
+    }
 
     /* Ensure staging directory exists for multi-part packages */
     if (detail.is_multipart) {
@@ -1543,6 +1557,13 @@ int system_get_nvme_storage_info(uint64_t *out_free, uint64_t *out_total, uint64
 
     const char *env_path = getenv("PKG_EXT1_DIR");
     const char *ext_path = (env_path && env_path[0] != '\0') ? env_path : "/mnt/ext1";
+
+    if (getenv("PKG_FORCE_NVME_SPACE_FAIL")) {
+        *out_total = 1024 * 1024 * 1024ULL;
+        *out_free = 1024ULL;
+        *out_used = *out_total - *out_free;
+        return 0;
+    }
 
     struct stat st_ext;
     if (stat(ext_path, &st_ext) != 0) {
