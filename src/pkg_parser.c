@@ -619,8 +619,19 @@ void pkg_parser_parse_param_sfo(const uint8_t *sfo, size_t sfo_len, char *out_ti
             while (copy_len > 0 && data[copy_len - 1] == '\0') copy_len--;
             strncpy(out_title, data, copy_len);
             out_title[copy_len] = '\0';
+        } else if (strcmp(key, "TITLE_ID") == 0 && out_title_id[0] == '\0') {
+            size_t copy_len = data_len < title_id_max ? data_len : title_id_max - 1;
+            while (copy_len > 0 && data[copy_len - 1] == '\0') copy_len--;
+            strncpy(out_title_id, data, copy_len);
+            out_title_id[copy_len] = '\0';
         } else if (strncmp(key, "TITLE_", 6) == 0 && sfo_loc_count < 32) {
-            int l_idx = atoi(key + 6);
+            /* Verify suffix is purely numeric (TITLE_00..TITLE_29), not TITLE_ID etc. */
+            const char *suffix = key + 6;
+            int is_numeric = (suffix[0] != '\0');
+            for (const char *s = suffix; *s; s++) {
+                if (*s < '0' || *s > '9') { is_numeric = 0; break; }
+            }
+            int l_idx = is_numeric ? atoi(suffix) : -1;
             if (l_idx >= 0 && l_idx < 30) {
                 size_t copy_len = data_len < PKG_TITLE_NAME_LEN ? data_len : PKG_TITLE_NAME_LEN - 1;
                 while (copy_len > 0 && data[copy_len - 1] == '\0') copy_len--;
@@ -629,11 +640,6 @@ void pkg_parser_parse_param_sfo(const uint8_t *sfo, size_t sfo_len, char *out_ti
                 sfo_loc[sfo_loc_count].title[copy_len] = '\0';
                 sfo_loc_count++;
             }
-        } else if (strcmp(key, "TITLE_ID") == 0 && out_title_id[0] == '\0') {
-            size_t copy_len = data_len < title_id_max ? data_len : title_id_max - 1;
-            while (copy_len > 0 && data[copy_len - 1] == '\0') copy_len--;
-            strncpy(out_title_id, data, copy_len);
-            out_title_id[copy_len] = '\0';
         } else if (strcmp(key, "CATEGORY") == 0 && out_category && out_category[0] == '\0') {
             size_t copy_len = data_len < category_max ? data_len : category_max - 1;
             while (copy_len > 0 && data[copy_len - 1] == '\0') copy_len--;
