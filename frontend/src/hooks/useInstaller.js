@@ -195,6 +195,9 @@ export function useInstaller(props) {
     try { localStorage.removeItem('pkg_batch_install'); } catch (e) {}
     setBatchInstall(null);
 
+    // Available-storage check commented out: PS5 may install to internal storage (/data) or M.2 NVMe (/mnt/ext1).
+    // Space checking is disabled until install target setting can be detected.
+    /*
     const requiredSpace = Number(pkg.total_pkg_size || pkg.file_size) || 0;
     if (storage && storage.free && storage.free < requiredSpace) {
       if (showToast) showToast(
@@ -203,6 +206,7 @@ export function useInstaller(props) {
       );
       return;
     }
+    */
 
     if (selectedTitleIdRef && selectedTitleIdRef.current) {
       const currentY = window.scrollY || window.pageYOffset || (document.documentElement && document.documentElement.scrollTop) || (document.body && document.body.scrollTop) || 0;
@@ -237,6 +241,9 @@ export function useInstaller(props) {
     const baseRequired = Number(basePkg.total_pkg_size || basePkg.file_size) || 0;
     const updateRequired = Number(updatePkg.total_pkg_size || updatePkg.file_size) || 0;
     const combinedSpace = baseRequired + updateRequired;
+    // Available-storage check commented out: PS5 may install to internal storage (/data) or M.2 NVMe (/mnt/ext1).
+    // Space checking is disabled until install target setting can be detected.
+    /*
     if (storage && storage.free && storage.free < combinedSpace) {
       if (showToast) showToast(
         `Insufficient storage! Needs ${formatBytes(combinedSpace)}, but only ${formatBytes(storage.free)} is available.`,
@@ -244,6 +251,7 @@ export function useInstaller(props) {
       );
       return;
     }
+    */
 
     if (selectedTitleIdRef && selectedTitleIdRef.current) {
       const currentY = window.scrollY || window.pageYOffset || (document.documentElement && document.documentElement.scrollTop) || (document.body && document.body.scrollTop) || 0;

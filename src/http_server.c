@@ -285,10 +285,19 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
     if (strcmp(method, "GET") == 0 && strcmp(url, "/api/storage") == 0) {
         uint64_t free_b = 0, total_b = 0, used_b = 0;
         system_get_storage_info(&free_b, &total_b, &used_b);
-        char buf[256];
+
+        uint64_t nvme_free = 0, nvme_total = 0, nvme_used = 0;
+        int nvme_avail = (system_get_nvme_storage_info(&nvme_free, &nvme_total, &nvme_used) == 0);
+
+        char buf[512];
         snprintf(buf, sizeof(buf),
-                 "{\"free\":%llu,\"total\":%llu,\"used\":%llu,\"path\":\"/data\",\"label\":\"Internal Storage\"}",
-                 (unsigned long long)free_b, (unsigned long long)total_b, (unsigned long long)used_b);
+                 "{\"free\":%llu,\"total\":%llu,\"used\":%llu,\"path\":\"/data\",\"label\":\"Internal\","
+                 "\"internal\":{\"free\":%llu,\"total\":%llu,\"used\":%llu,\"path\":\"/data\",\"label\":\"Internal\"},"
+                 "\"nvme\":{\"available\":%s,\"free\":%llu,\"total\":%llu,\"used\":%llu,\"path\":\"/mnt/ext1\",\"label\":\"M.2 NVMe\"}}",
+                 (unsigned long long)free_b, (unsigned long long)total_b, (unsigned long long)used_b,
+                 (unsigned long long)free_b, (unsigned long long)total_b, (unsigned long long)used_b,
+                 nvme_avail ? "true" : "false",
+                 (unsigned long long)nvme_free, (unsigned long long)nvme_total, (unsigned long long)nvme_used);
         struct MHD_Response *resp = MHD_create_response_from_buffer(
             strlen(buf), (void *)buf, MHD_RESPMEM_MUST_COPY);
         add_cors_headers(resp);

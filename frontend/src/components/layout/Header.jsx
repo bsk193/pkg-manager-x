@@ -17,8 +17,8 @@ export default function Header({ appVersion, storage, showSettings, showSmbPage,
             </h1>
           </div>
 
-          <div className="flex items-center space-x-4">
-            {/* Storage Display Widget */}
+          <div className="flex items-center space-x-3 sm:space-x-4">
+            {/* Internal Storage Display Widget */}
             {storage && (
               <div className="flex items-center space-x-3 bg-white/5 px-3.5 py-1.5 rounded-[2px] border border-white/10 text-xs">
                 <svg className="w-4 h-4 text-blue-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -27,13 +27,13 @@ export default function Header({ appVersion, storage, showSettings, showSmbPage,
                   <line x1="10" y1="15" x2="10.01" y2="15" />
                 </svg>
                 <div className="flex flex-col">
-                  <span className="text-zinc-400 font-mono text-[10px]">INTERNAL STORAGE</span>
+                  <span className="text-zinc-400 font-mono text-[10px]">INTERNAL</span>
                   <div className="flex items-center space-x-2">
                     <span className="font-bold text-white font-mono">
-                      {formatBytes(storage.free)} free
+                      {formatBytes(storage.internal?.free ?? storage.free)} free
                     </span>
                     <span className="text-zinc-500 font-mono">
-                      / {formatBytes(storage.total)}
+                      / {formatBytes(storage.internal?.total ?? storage.total)}
                     </span>
                   </div>
                 </div>
@@ -46,7 +46,43 @@ export default function Header({ appVersion, storage, showSettings, showSmbPage,
                       style={{
                         width: `${Math.min(
                           100,
-                          Math.max(0, Math.round(((storage.total - storage.free) / storage.total) * 100))
+                          Math.max(0, Math.round((((storage.internal?.used ?? storage.used)) / ((storage.internal?.total ?? storage.total) || 1)) * 100))
+                        )}%`
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* M.2 NVMe Storage Display Widget */}
+            {storage?.nvme && storage.nvme.available && (
+              <div className="flex items-center space-x-3 bg-white/5 px-3.5 py-1.5 rounded-[2px] border border-white/10 text-xs">
+                <svg className="w-4 h-4 text-purple-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <rect x="2" y="3" width="20" height="18" rx="2" />
+                  <path d="M4 7h16M4 12h16M4 17h16" />
+                </svg>
+                <div className="flex flex-col">
+                  <span className="text-zinc-400 font-mono text-[10px]">M.2 NVME</span>
+                  <div className="flex items-center space-x-2">
+                    <span className="font-bold text-white font-mono">
+                      {formatBytes(storage.nvme.free)} free
+                    </span>
+                    <span className="text-zinc-500 font-mono">
+                      / {formatBytes(storage.nvme.total)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Micro Progress Bar */}
+                <div className="w-16 hidden md:block">
+                  <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
+                    <div
+                      className="bg-purple-500 h-full rounded-full transition-all duration-500"
+                      style={{
+                        width: `${Math.min(
+                          100,
+                          Math.max(0, Math.round((storage.nvme.used / (storage.nvme.total || 1)) * 100))
                         )}%`
                       }}
                     />

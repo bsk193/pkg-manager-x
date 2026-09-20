@@ -110,7 +110,7 @@ static int mkdir_recursive(const char *dir_path) {
     return 0;
 }
 
-static uint64_t get_available_disk_space(const char *path) {
+__attribute__((unused)) static uint64_t get_available_disk_space(const char *path) {
     if (getenv("PKG_FORCE_SPACE_CHECK_FAIL")) {
         return 1024; /* 1 KB to test space failure path */
     }
@@ -1257,6 +1257,9 @@ int installer_start(const char *pkg_path) {
     }
 
     /* Validate storage space: requires only 1x storage (installed package size) */
+    /* NOTE: Commented out because PS5 users may install to internal storage (/data) or an M.2
+     * NVMe SSD (/mnt/ext1), and we cannot currently detect which install drive is configured in PS5 settings.
+     * When install target detection is implemented, validate storage against that specific drive.
     uint64_t required_space = detail.total_pkg_size > 0 ? detail.total_pkg_size : detail.file_size;
     const char *check_dir = getenv("PKG_TMP_DIR");
     if (!check_dir || check_dir[0] == '\0') {
@@ -1268,8 +1271,9 @@ int installer_start(const char *pkg_path) {
         ps5_notify("Not enough storage space! Need %llu MB, have %llu MB",
                    (unsigned long long)(required_space / (1024 * 1024)),
                    (unsigned long long)(avail_space / (1024 * 1024)));
-        return -10; /* Insufficient storage space */
+        return -10; // Insufficient storage space
     }
+    */
 
     /* Ensure staging directory exists for multi-part packages */
     if (detail.is_multipart) {
@@ -1506,6 +1510,7 @@ void installer_shutdown(void) {
         pthread_join(g_monitor_thread, NULL);
         g_monitor_thread_created = 0;
     }
+    stream_server_session_stop();
 #if defined(__Prospero__) || defined(PS5_BUILD)
     sceAppInstUtilTerminate();
 #endif
@@ -1528,5 +1533,45 @@ int system_get_storage_info(uint64_t *out_free, uint64_t *out_total, uint64_t *o
     *out_free  = 350000000000ULL;
     *out_used  = 317200000000ULL;
     return 0;
+}
+
+int system_get_nvme_storage_info(uint64_t *out_free, uint64_t *out_total, uint64_t *out_used) {
+    if (!out_free || !out_total || !out_used) return -1;
+    *out_free = 0;
+    *out_total = 0;
+    *out_used = 0;
+
+    const char *env_path = getenv("PKG_EXT1_DIR");
+    const char *ext_path = (env_path && env_path[0] != '\0') ? env_path : "/mnt/ext1";
+
+    struct stat st_ext;
+    if (stat(ext_path, &st_ext) != 0) {
+        return -1;
+    }
+
+    /* If default path /mnt/ext1, verify it is a distinct mount, not an unmounted folder on root */
+    if (!env_path) {
+        struct stat st_parent;
+        if (stat("/mnt", &st_parent) == 0) {
+            if (st_ext.st_dev == st_parent.st_dev) {
+                return -1;
+            }
+        } else if (stat("/", &st_parent) == 0) {
+            if (st_ext.st_dev == st_parent.st_dev) {
+                return -1;
+            }
+        }
+    }
+
+    struct statvfs sv;
+    if (statvfs(ext_path, &sv) == 0 && sv.f_blocks > 0) {
+        uint64_t bsize = sv.f_frsize ? sv.f_frsize : sv.f_bsize;
+        *out_total = (uint64_t)sv.f_blocks * bsize;
+        *out_free = (uint64_t)sv.f_bavail * bsize;
+        *out_used = (*out_total >= *out_free) ? (*out_total - *out_free) : 0;
+        return 0;
+    }
+
+    return -1;
 }
 

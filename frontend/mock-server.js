@@ -441,7 +441,22 @@ const mockStorage = {
   total: 667200000000,
   used: 254618000000,
   path: '/data',
-  label: 'Console Storage'
+  label: 'Internal',
+  internal: {
+    free: 412582000000,
+    total: 667200000000,
+    used: 254618000000,
+    path: '/data',
+    label: 'Internal'
+  },
+  nvme: {
+    available: true,
+    free: 1425890000000,
+    total: 2000398000000,
+    used: 574508000000,
+    path: '/mnt/ext1',
+    label: 'M.2 NVMe'
+  }
 };
 
 const mockSettings = {

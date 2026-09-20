@@ -232,6 +232,24 @@ static void test_storage_info(void) {
     assert(total_b > 0);
     printf("Storage info: total=%llu, free=%llu, used=%llu\n",
            (unsigned long long)total_b, (unsigned long long)free_b, (unsigned long long)used_b);
+
+    /* NVMe storage info test: default /mnt/ext1 on host fails gracefully (-1) */
+    uint64_t nv_free = 0, nv_total = 0, nv_used = 0;
+    unsetenv("PKG_EXT1_DIR");
+    int nv_ret = system_get_nvme_storage_info(&nv_free, &nv_total, &nv_used);
+    (void)nv_ret;
+
+    /* NVMe storage info test with simulated mock mount via PKG_EXT1_DIR */
+    system("mkdir -p /tmp/mock_nvme_ext1");
+    setenv("PKG_EXT1_DIR", "/tmp/mock_nvme_ext1", 1);
+    nv_ret = system_get_nvme_storage_info(&nv_free, &nv_total, &nv_used);
+    assert(nv_ret == 0);
+    assert(nv_total > 0);
+    printf("M.2 NVMe mock storage info: total=%llu, free=%llu, used=%llu\n",
+           (unsigned long long)nv_total, (unsigned long long)nv_free, (unsigned long long)nv_used);
+    unsetenv("PKG_EXT1_DIR");
+    system("rm -rf /tmp/mock_nvme_ext1");
+
     printf("Storage info test passed.\n");
 }
 

@@ -271,7 +271,9 @@ export default function TitleDetailView({ title: selectedTitle, onBack, onInstal
                     const updTotalParts = Number(pkg.total_parts) || 1;
                     const updFullSize = Number(pkg.total_pkg_size || pkg.file_size) || 0;
                     const requiredSpace = updFullSize;
-                    const notEnoughSpace = storage && storage.free && storage.free < requiredSpace;
+                    // Available-storage check commented out: PS5 may install to internal storage (/data) or M.2 NVMe (/mnt/ext1).
+                    // const notEnoughSpace = storage && storage.free && storage.free < requiredSpace;
+                    const notEnoughSpace = false;
                     const canInstall = pkg.can_install !== false;
                     const isInstallDisabled = !canInstall || notEnoughSpace || installerStatus.is_installing;
 
@@ -388,7 +390,9 @@ export default function TitleDetailView({ title: selectedTitle, onBack, onInstal
                     const dlcTotalParts = Number(pkg.total_parts) || 1;
                     const dlcFullSize = Number(pkg.total_pkg_size || pkg.file_size) || 0;
                     const requiredSpace = dlcFullSize;
-                    const notEnoughSpace = storage && storage.free && storage.free < requiredSpace;
+                    // Available-storage check commented out: PS5 may install to internal storage (/data) or M.2 NVMe (/mnt/ext1).
+                    // const notEnoughSpace = storage && storage.free && storage.free < requiredSpace;
+                    const notEnoughSpace = false;
                     const canInstall = pkg.can_install !== false;
                     const isInstallDisabled = !canInstall || notEnoughSpace || installerStatus.is_installing;
 
@@ -526,7 +530,9 @@ export default function TitleDetailView({ title: selectedTitle, onBack, onInstal
                     const otherTotalParts = Number(pkg.total_parts) || 1;
                     const otherFullSize = Number(pkg.total_pkg_size || pkg.file_size) || 0;
                     const requiredSpace = otherFullSize;
-                    const notEnoughSpace = storage && storage.free && storage.free < requiredSpace;
+                    // Available-storage check commented out: PS5 may install to internal storage (/data) or M.2 NVMe (/mnt/ext1).
+                    // const notEnoughSpace = storage && storage.free && storage.free < requiredSpace;
+                    const notEnoughSpace = false;
                     const canInstall = pkg.can_install !== false;
                     const isInstallDisabled = !canInstall || notEnoughSpace || installerStatus.is_installing;
 
