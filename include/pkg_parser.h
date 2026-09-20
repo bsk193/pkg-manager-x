@@ -6,6 +6,8 @@
 
 #define PKG_TITLE_ID_LEN 32
 #define PKG_TITLE_NAME_LEN 256
+#define PKG_LOCALIZED_TITLES_LEN 2048
+#define PKG_DEFAULT_LANG_LEN 32
 #define PKG_CONTENT_ID_LEN 64
 #define PKG_PATH_LEN 512
 
@@ -21,6 +23,8 @@ typedef struct {
     char filename[256];
     char title_id[PKG_TITLE_ID_LEN];
     char title_name[PKG_TITLE_NAME_LEN];
+    char localized_titles[PKG_LOCALIZED_TITLES_LEN]; /* JSON object string: {"ar-AE":"...","en-US":"..."} */
+    char default_language[PKG_DEFAULT_LANG_LEN];     /* e.g. "en-US" */
     char content_id[PKG_CONTENT_ID_LEN];
     char app_version[32];
     uint64_t file_size;
@@ -38,6 +42,38 @@ typedef struct {
     uint64_t mtime;          /* File modification timestamp */
     char blurhash[64];       /* BlurHash placeholder for icon0.png ("" if none) */
 } pkg_detail_t;
+
+/**
+ * Resolves the best-matching title from a localized_titles JSON object given
+ * an Accept-Language header string (or comma-separated list of languages).
+ * Falls back to default_lang, English, or the first localized title.
+ * Returns 0 on success and populates out, or negative on failure.
+ */
+int pkg_parser_resolve_localized_title(const char *loc_json, const char *default_lang,
+                                       const char *accept_lang, char *out, size_t out_max);
+
+/**
+ * Parses PS5 param.json buffer to extract titleId, category, version,
+ * localized titles map, default language, and best default title.
+ */
+void pkg_parser_parse_param_json(const char *json_buf, size_t data_sz,
+                                 char *out_title_id, size_t tid_max,
+                                 char *out_title_name, size_t tname_max,
+                                 char *out_category, size_t cat_max,
+                                 char *out_version, size_t ver_max,
+                                 char *out_localized_titles, size_t loc_max,
+                                 char *out_default_lang, size_t def_lang_max);
+
+/**
+ * Parses PS4 param.sfo buffer to extract titleId, category, version,
+ * localized titles map, default language, and default title.
+ */
+void pkg_parser_parse_param_sfo(const uint8_t *sfo, size_t sfo_len, char *out_title, size_t title_max,
+                                char *out_title_id, size_t title_id_max,
+                                char *out_version, size_t version_max,
+                                char *out_category, size_t category_max,
+                                char *out_localized_titles, size_t loc_max,
+                                char *out_default_lang, size_t def_lang_max);
 
 /**
  * Parses a PKG file (PS5 FIH or PS4 CNT format) and extracts metadata:

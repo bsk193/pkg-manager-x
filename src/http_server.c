@@ -267,7 +267,8 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
     /* ── GET /api/packages ─────────────────────────────────────── */
     if (strcmp(method, "GET") == 0 && strcmp(url, "/api/packages") == 0) {
         const char *drive_param = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "drive");
-        char *json = pkg_scanner_packages_for_drive_to_json(drive_param);
+        const char *accept_lang = MHD_lookup_connection_value(conn, MHD_HEADER_KIND, "Accept-Language");
+        char *json = pkg_scanner_packages_for_drive_to_json_ex(drive_param, accept_lang);
         if (!json) {
             json = strdup("[]");
         }

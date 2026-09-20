@@ -402,6 +402,8 @@ int pkg_cache_lookup(const char *checksum, pkg_detail_t *out_detail) {
     char val[512];
     extract_json_field(buf, "title_id", out_detail->title_id, sizeof(out_detail->title_id));
     extract_json_field(buf, "title_name", out_detail->title_name, sizeof(out_detail->title_name));
+    extract_json_field(buf, "localized_titles", out_detail->localized_titles, sizeof(out_detail->localized_titles));
+    extract_json_field(buf, "default_language", out_detail->default_language, sizeof(out_detail->default_language));
     extract_json_field(buf, "content_id", out_detail->content_id, sizeof(out_detail->content_id));
     extract_json_field(buf, "app_version", out_detail->app_version, sizeof(out_detail->app_version));
     extract_json_field(buf, "pkg_type_str", out_detail->pkg_type_str, sizeof(out_detail->pkg_type_str));
@@ -467,8 +469,11 @@ static int write_meta_json(const char *dir_path, const pkg_detail_t *detail, con
     if (!f) return -1;
 
     char esc_title_id[128], esc_title_name[512], esc_content_id[256], esc_app_ver[64], esc_type_str[32], esc_cat[32];
+    char esc_loc[PKG_LOCALIZED_TITLES_LEN * 2], esc_def_lang[64];
     escape_json_str(detail->title_id, esc_title_id, sizeof(esc_title_id));
     escape_json_str(detail->title_name, esc_title_name, sizeof(esc_title_name));
+    escape_json_str(detail->localized_titles, esc_loc, sizeof(esc_loc));
+    escape_json_str(detail->default_language, esc_def_lang, sizeof(esc_def_lang));
     escape_json_str(detail->content_id, esc_content_id, sizeof(esc_content_id));
     escape_json_str(detail->app_version, esc_app_ver, sizeof(esc_app_ver));
     escape_json_str(detail->pkg_type_str, esc_type_str, sizeof(esc_type_str));
@@ -477,6 +482,8 @@ static int write_meta_json(const char *dir_path, const pkg_detail_t *detail, con
     fprintf(f, "{\n"
                "  \"title_id\": \"%s\",\n"
                "  \"title_name\": \"%s\",\n"
+               "  \"localized_titles\": \"%s\",\n"
+               "  \"default_language\": \"%s\",\n"
                "  \"content_id\": \"%s\",\n"
                "  \"app_version\": \"%s\",\n"
                "  \"file_size\": %llu,\n"
@@ -493,7 +500,7 @@ static int write_meta_json(const char *dir_path, const pkg_detail_t *detail, con
                "  \"mtime\": %llu,\n"
                "  \"blurhash\": \"%s\"\n"
                "}\n",
-            esc_title_id, esc_title_name, esc_content_id, esc_app_ver,
+            esc_title_id, esc_title_name, esc_loc, esc_def_lang, esc_content_id, esc_app_ver,
             (unsigned long long)detail->file_size,
             (unsigned long long)(detail->total_pkg_size > 0 ? detail->total_pkg_size : detail->file_size),
             (unsigned long long)detail->icon_offset, detail->icon_size,

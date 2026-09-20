@@ -87,6 +87,13 @@ int pkg_scanner_get_drive_at(size_t index, pkg_drive_t *out);
 char *pkg_scanner_drives_to_json(void);
 
 /**
+ * Serializes packages for a specific drive into JSON array, optionally resolving
+ * display titles using accept_language header.
+ * Caller must free() the returned buffer.
+ */
+char *pkg_scanner_packages_for_drive_to_json_ex(const char *drive_id_or_path, const char *accept_language);
+
+/**
  * Serializes packages for a specific drive (by id e.g. "usb0" or path e.g. "/mnt/usb0") into JSON array.
  * If drive_id_or_path is NULL or empty, returns all packages.
  * Caller must free() the returned buffer.

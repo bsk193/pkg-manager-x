@@ -576,8 +576,15 @@ const server = http.createServer((req, res) => {
       }
     }
 
+    const acceptLang = req.headers['accept-language'] || '';
+    const outputPkgs = pkgs.map(p => ({
+      localized_titles: {},
+      default_language: '',
+      ...p
+    }));
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(pkgs));
+    res.end(JSON.stringify(outputPkgs));
     return;
   }
 

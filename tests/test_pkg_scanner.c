@@ -710,6 +710,50 @@ int main(void) {
       printf("Quick scan (drive remaining unmounted): count=%d, changed=%d (expected: 0)\n", q_count, changed);
       assert(changed == 0);
 
+      /* Step L: Multi-Language Package Scanning & Accept-Language Resolution */
+      printf("\n=== Testing Multi-Language Package Scanning & Accept-Language Resolution ===\n");
+      system("mkdir -p /tmp/mock_multilang_test");
+      assert(fixture_write_ps5_pkg_multilang("/tmp/mock_multilang_test/ml.pkg",
+                                             "PPSA90099", "en-US", "gd", "01.000.000", 0) == 0);
+      assert(fixture_write_ps5_pkg("/tmp/mock_multilang_test/single.pkg",
+                                   "PPSA90011", "SingleLangGame", "gd", "01.000.000", 0) == 0);
+
+      setenv("PKG_SCAN_DIR", "/tmp/mock_multilang_test", 1);
+      pkg_scanner_init();
+      int ml_count = pkg_scanner_scan();
+      assert(ml_count == 2);
+
+      /* Without Accept-Language, defaults to defaultLanguage ("English Title") */
+      char *json_def = pkg_scanner_packages_for_drive_to_json_ex("/tmp/mock_multilang_test", NULL);
+      assert(json_def != NULL);
+      assert(strstr(json_def, "\"title_name\":\"English Title\"") != NULL);
+      assert(strstr(json_def, "\"default_language\":\"en-US\"") != NULL);
+      assert(strstr(json_def, "\"localized_titles\":{") != NULL);
+      assert(strstr(json_def, "\"ar-AE\":\"Arabic Title\"") != NULL);
+      assert(strstr(json_def, "\"title_name\":\"SingleLangGame\"") != NULL);
+      free(json_def);
+
+      /* With Accept-Language: ar, resolves to Arabic Title */
+      char *json_ar = pkg_scanner_packages_for_drive_to_json_ex("/tmp/mock_multilang_test", "ar-AE,ar;q=0.9");
+      assert(json_ar != NULL);
+      assert(strstr(json_ar, "\"title_name\":\"Arabic Title\"") != NULL);
+      assert(strstr(json_ar, "\"title_name\":\"SingleLangGame\"") != NULL);
+      free(json_ar);
+
+      /* With Accept-Language: pl, resolves to Polish Title */
+      char *json_pl = pkg_scanner_packages_for_drive_to_json_ex("/tmp/mock_multilang_test", "pl-PL,pl;q=0.8");
+      assert(json_pl != NULL);
+      assert(strstr(json_pl, "\"title_name\":\"Polish Title\"") != NULL);
+      assert(strstr(json_pl, "\"title_name\":\"SingleLangGame\"") != NULL);
+      free(json_pl);
+
+      /* With unsupported Accept-Language (e.g. ja), falls back to defaultLanguage */
+      char *json_ja = pkg_scanner_packages_for_drive_to_json_ex("/tmp/mock_multilang_test", "ja-JP,ja;q=0.9");
+      assert(json_ja != NULL);
+      assert(strstr(json_ja, "\"title_name\":\"English Title\"") != NULL);
+      free(json_ja);
+
+      system("rm -rf /tmp/mock_multilang_test");
       system("rm -rf /tmp/mock_manifest_test /tmp/mock_manifest_cache /tmp/mock_usb_empty*");
       unsetenv("PKG_CACHE_DIR");
       unsetenv("PKG_SCAN_DIR");

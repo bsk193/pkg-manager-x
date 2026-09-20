@@ -121,6 +121,28 @@ static inline size_t fixture_build_json(char *out, size_t cap,
     return (size_t)n;
 }
 
+static inline size_t fixture_build_multilang_json(char *out, size_t cap,
+                                                  const char *title_id, const char *default_lang,
+                                                  const char *category, const char *content_ver) {
+    int n = snprintf(out, cap,
+                     "{\"titleId\":\"%s\","
+                     "\"category\":\"%s\",\"contentVersion\":\"%s\","
+                     "\"localizedParameters\":{"
+                     "\"ar-AE\":{\"titleName\":\"Arabic Title\"},"
+                     "\"defaultLanguage\":\"%s\","
+                     "\"en-US\":{\"titleName\":\"English Title\"},"
+                     "\"pl-PL\":{\"titleName\":\"Polish Title\"}"
+                     "}}",
+                     title_id ? title_id : "",
+                     category ? category : "gd",
+                     content_ver ? content_ver : "01.000.000",
+                     default_lang ? default_lang : "en-US");
+    if (n <= 0 || (size_t)n >= cap) {
+        return 0;
+    }
+    return (size_t)n;
+}
+
 typedef struct {
     const char *title_id;
     const char *title;
@@ -128,6 +150,8 @@ typedef struct {
     const char *version;    /* SFO "01.00" style or JSON "01.000.000" style */
     int with_icon;
     const char *content_id; /* NULL => derived EP0001-<tid>_00-TEST000000000001 */
+    int is_multilang;
+    const char *default_lang;
 } fixture_pkg_spec_t;
 
 /* Writes one CNT-based package. is_ps5 selects FIH+CNT vs raw CNT.
@@ -142,9 +166,15 @@ static inline int fixture_write_pkg(const char *path, int is_ps5, const fixture_
     const char *payload_name = NULL;
     if (is_ps5) {
         payload_name = "param.json";
-        payload_len = fixture_build_json((char *)payload, sizeof(payload),
-                                         spec->title_id, spec->title,
-                                         spec->category, spec->version);
+        if (spec->is_multilang) {
+            payload_len = fixture_build_multilang_json((char *)payload, sizeof(payload),
+                                                       spec->title_id, spec->default_lang,
+                                                       spec->category, spec->version);
+        } else {
+            payload_len = fixture_build_json((char *)payload, sizeof(payload),
+                                             spec->title_id, spec->title,
+                                             spec->category, spec->version);
+        }
     } else {
         payload_name = "param.sfo";
         payload_len = fixture_build_sfo(payload, sizeof(payload),
@@ -295,6 +325,20 @@ static inline int fixture_write_ps5_pkg(const char *path, const char *title_id,
     spec.category = category;
     spec.version = content_ver;
     spec.with_icon = with_icon;
+    return fixture_write_pkg(path, 1, &spec);
+}
+
+static inline int fixture_write_ps5_pkg_multilang(const char *path, const char *title_id,
+                                                  const char *default_lang, const char *category,
+                                                  const char *content_ver, int with_icon) {
+    fixture_pkg_spec_t spec;
+    memset(&spec, 0, sizeof(spec));
+    spec.title_id = title_id;
+    spec.default_lang = default_lang;
+    spec.category = category;
+    spec.version = content_ver;
+    spec.with_icon = with_icon;
+    spec.is_multilang = 1;
     return fixture_write_pkg(path, 1, &spec);
 }
 

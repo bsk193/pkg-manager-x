@@ -7,6 +7,7 @@
 
 #include "leftovers.h"
 #include "app_info.h"
+#include "pkg_parser.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -163,27 +164,15 @@ static int read_param_json_title(const char *filepath, char *out_title, size_t m
     if (n <= 0) return -1;
     buf[n] = '\0';
 
-    const char *key = "\"titleName\":";
-    const char *p = strstr(buf, key);
-    if (!p) {
-        key = "\"title\":";
-        p = strstr(buf, key);
-    }
-    if (p) {
-        p += strlen(key);
-        while (*p == ' ' || *p == '\t') p++;
-        if (*p == '"') {
-            p++;
-            size_t idx = 0;
-            while (*p && *p != '"' && idx + 1 < max_title) {
-                if (*p == '\\' && *(p + 1)) p++;
-                out_title[idx++] = *p++;
-            }
-            out_title[idx] = '\0';
-            return 0;
-        }
-    }
-    return -1;
+    char tid[PKG_TITLE_ID_LEN] = {0};
+    char cat[16] = {0};
+    char ver[32] = {0};
+    char loc[PKG_LOCALIZED_TITLES_LEN] = {0};
+    char def_lang[PKG_DEFAULT_LANG_LEN] = {0};
+    pkg_parser_parse_param_json(buf, (size_t)n, tid, sizeof(tid), out_title, max_title,
+                                cat, sizeof(cat), ver, sizeof(ver),
+                                loc, sizeof(loc), def_lang, sizeof(def_lang));
+    return (out_title[0] != '\0') ? 0 : -1;
 }
 
 /* Read version from param.sfo */

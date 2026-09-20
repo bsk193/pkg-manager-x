@@ -85,11 +85,494 @@ static int json_extract_key(const char *json, size_t json_len, const char *key, 
     return -1;
 }
 
+/* Helper to extract value string for a specific key from a flat JSON object {"k":"v", ...} */
+static int extract_val_for_key(const char *json, const char *key, char *out, size_t out_max) {
+    char pattern[64];
+    snprintf(pattern, sizeof(pattern), "\"%s\":\"", key);
+    const char *p = strstr(json, pattern);
+    if (!p) return -1;
+    p += strlen(pattern);
+    size_t idx = 0;
+    while (*p && *p != '"' && idx + 1 < out_max) {
+        if (*p == '\\' && *(p + 1)) p++;
+        out[idx++] = *p++;
+    }
+    out[idx] = '\0';
+    return 0;
+}
+
+int pkg_parser_resolve_localized_title(const char *loc_json, const char *default_lang,
+                                       const char *accept_lang, char *out, size_t out_max) {
+    if (!loc_json || loc_json[0] != '{' || !out || out_max == 0) return -1;
+    out[0] = '\0';
+
+    if (accept_lang && accept_lang[0]) {
+        const char *p = accept_lang;
+        while (*p) {
+            while (*p == ' ' || *p == '\t' || *p == ',') p++;
+            if (!*p) break;
+            const char *item_start = p;
+            while (*p && *p != ',' && *p != ';') p++;
+            size_t tag_len = p - item_start;
+            while (tag_len > 0 && isspace((unsigned char)item_start[tag_len - 1])) tag_len--;
+
+            if (tag_len > 0 && tag_len < 32) {
+                char tag[32];
+                memcpy(tag, item_start, tag_len);
+                tag[tag_len] = '\0';
+
+                /* 1. Exact match */
+                if (extract_val_for_key(loc_json, tag, out, out_max) == 0 && out[0]) {
+                    return 0;
+                }
+
+                /* 2. Prefix match: e.g. "en" matches "en-US", or "en-GB" matches "en" */
+                char primary[16] = {0};
+                const char *dash = strchr(tag, '-');
+                if (!dash) dash = strchr(tag, '_');
+                size_t plen = dash ? (size_t)(dash - tag) : tag_len;
+                if (plen < sizeof(primary)) {
+                    memcpy(primary, tag, plen);
+                    primary[plen] = '\0';
+
+                    char pat1[32], pat2[32];
+                    snprintf(pat1, sizeof(pat1), "\"%s-", primary);
+                    snprintf(pat2, sizeof(pat2), "\"%s\":", primary);
+
+                    const char *found = strstr(loc_json, pat1);
+                    if (!found) found = strstr(loc_json, pat2);
+                    if (found) {
+                        found++; /* skip opening quote */
+                        const char *end_key = strchr(found, '"');
+                        if (end_key) {
+                            size_t klen = end_key - found;
+                            char matched_key[32];
+                            if (klen < sizeof(matched_key)) {
+                                memcpy(matched_key, found, klen);
+                                matched_key[klen] = '\0';
+                                if (extract_val_for_key(loc_json, matched_key, out, out_max) == 0 && out[0]) {
+                                    return 0;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            /* Skip any ;q=... quality values until next comma */
+            while (*p && *p != ',') p++;
+            if (*p == ',') p++;
+        }
+    }
+
+    /* Fallback 1: default_lang */
+    if (default_lang && default_lang[0]) {
+        if (extract_val_for_key(loc_json, default_lang, out, out_max) == 0 && out[0]) {
+            return 0;
+        }
+        char def_primary[16] = {0};
+        const char *dash = strchr(default_lang, '-');
+        if (!dash) dash = strchr(default_lang, '_');
+        size_t plen = dash ? (size_t)(dash - default_lang) : strlen(default_lang);
+        if (plen < sizeof(def_primary)) {
+            memcpy(def_primary, default_lang, plen);
+            def_primary[plen] = '\0';
+            char pat1[32];
+            snprintf(pat1, sizeof(pat1), "\"%s-", def_primary);
+            const char *found = strstr(loc_json, pat1);
+            if (found) {
+                found++;
+                const char *end_k = strchr(found, '"');
+                if (end_k) {
+                    size_t kl = end_k - found;
+                    char mk[32];
+                    if (kl < sizeof(mk)) {
+                        memcpy(mk, found, kl);
+                        mk[kl] = '\0';
+                        if (extract_val_for_key(loc_json, mk, out, out_max) == 0 && out[0]) {
+                            return 0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /* Fallback 2: English */
+    const char *en_match = strstr(loc_json, "\"en-");
+    if (!en_match) en_match = strstr(loc_json, "\"en\":");
+    if (en_match) {
+        en_match++;
+        const char *eq = strchr(en_match, '"');
+        if (eq) {
+            char k[32];
+            size_t l = eq - en_match;
+            if (l < sizeof(k)) {
+                memcpy(k, en_match, l);
+                k[l] = '\0';
+                if (extract_val_for_key(loc_json, k, out, out_max) == 0 && out[0]) {
+                    return 0;
+                }
+            }
+        }
+    }
+
+    /* Fallback 3: first value in loc_json */
+    const char *colon = strchr(loc_json, ':');
+    if (colon) {
+        if (*(colon + 1) == '"') {
+            const char *vs = colon + 2;
+            const char *ve = strchr(vs, '"');
+            if (ve) {
+                size_t l = ve - vs;
+                if (l + 1 < out_max) {
+                    memcpy(out, vs, l);
+                    out[l] = '\0';
+                    return 0;
+                }
+            }
+        }
+    }
+
+    return -1;
+}
+
+void pkg_parser_parse_param_json(const char *json_buf, size_t data_sz,
+                                 char *out_title_id, size_t tid_max,
+                                 char *out_title_name, size_t tname_max,
+                                 char *out_category, size_t cat_max,
+                                 char *out_version, size_t ver_max,
+                                 char *out_localized_titles, size_t loc_max,
+                                 char *out_default_lang, size_t def_lang_max) {
+    if (!json_buf || data_sz == 0) return;
+    const char *end = json_buf + data_sz;
+
+    if (out_title_id && tid_max > 0 && out_title_id[0] == '\0') {
+        char tid[PKG_TITLE_ID_LEN] = {0};
+        if (json_extract_key(json_buf, data_sz, "titleId", tid, sizeof(tid)) == 0) {
+            strncpy(out_title_id, tid, tid_max - 1);
+            out_title_id[tid_max - 1] = '\0';
+        }
+    }
+
+    if (out_category && cat_max > 0 && out_category[0] == '\0') {
+        char cat_buf[16] = {0};
+        if (json_extract_key(json_buf, data_sz, "category", cat_buf, sizeof(cat_buf)) == 0) {
+            strncpy(out_category, cat_buf, cat_max - 1);
+            out_category[cat_max - 1] = '\0';
+        }
+    }
+
+    if (out_version && ver_max > 0 && out_version[0] == '\0') {
+        char ver[32] = {0};
+        if (json_extract_key(json_buf, data_sz, "contentVersion", ver, sizeof(ver)) == 0 ||
+            json_extract_key(json_buf, data_sz, "appVersion", ver, sizeof(ver)) == 0 ||
+            json_extract_key(json_buf, data_sz, "version", ver, sizeof(ver)) == 0) {
+            if (ver[0] != '\0') {
+                int maj = 0, min = 0, patch = 0;
+                if (sscanf(ver, "%d.%d.%d", &maj, &min, &patch) == 3) {
+                    if (min == 0 && patch > 0) {
+                        snprintf(out_version, ver_max, "v%d.%02d", maj, patch);
+                    } else if (patch == 0) {
+                        snprintf(out_version, ver_max, "v%d.%02d", maj, min);
+                    } else {
+                        snprintf(out_version, ver_max, "v%d.%d.%d", maj, min, patch);
+                    }
+                } else if (ver[0] != 'v' && ver[0] != 'V') {
+                    snprintf(out_version, ver_max, "v%.29s", ver);
+                } else {
+                    strncpy(out_version, ver, ver_max - 1);
+                    out_version[ver_max - 1] = '\0';
+                }
+            }
+        }
+    }
+
+    /* Check for localizedParameters block */
+    const char *lp = strstr(json_buf, "\"localizedParameters\"");
+    const char *lp_start = NULL;
+    const char *lp_end = NULL;
+
+    if (lp && lp < end) {
+        const char *colon = strchr(lp + 21, ':');
+        if (colon && colon < end) {
+            const char *brace = strchr(colon + 1, '{');
+            if (brace && brace < end) {
+                int depth = 0;
+                const char *p = brace;
+                int in_str = 0;
+                while (p < end) {
+                    if (*p == '\\' && in_str && (p + 1) < end) {
+                        p += 2;
+                        continue;
+                    }
+                    if (*p == '"') in_str = !in_str;
+                    else if (!in_str) {
+                        if (*p == '{') depth++;
+                        else if (*p == '}') {
+                            depth--;
+                            if (depth == 0) {
+                                lp_start = brace;
+                                lp_end = p;
+                                break;
+                            }
+                        }
+                    }
+                    p++;
+                }
+            }
+        }
+    }
+
+    /* Check if there is a root / global title outside localizedParameters */
+    char global_title[PKG_TITLE_NAME_LEN] = {0};
+    const char *cand_patterns[] = {"\"titleName\"", "\"title\""};
+    for (int cp = 0; cp < 2 && global_title[0] == '\0'; cp++) {
+        const char *curr = json_buf;
+        while (curr < end) {
+            const char *f = strstr(curr, cand_patterns[cp]);
+            if (!f || f >= end) break;
+            /* If this occurrence is outside localizedParameters */
+            if (!lp_start || f < lp_start || f > lp_end) {
+                const char *c = strchr(f + strlen(cand_patterns[cp]), ':');
+                if (c && c < end) {
+                    const char *q = c + 1;
+                    while (q < end && isspace((unsigned char)*q)) q++;
+                    if (q < end && *q == '"') {
+                        q++;
+                        size_t gidx = 0;
+                        while (q < end && *q != '"') {
+                            if (*q == '\\' && (q + 1) < end) q++;
+                            if (gidx + 1 < sizeof(global_title)) global_title[gidx++] = *q;
+                            q++;
+                        }
+                        global_title[gidx] = '\0';
+                        break;
+                    }
+                }
+            }
+            curr = f + strlen(cand_patterns[cp]);
+        }
+    }
+
+    if (out_default_lang && def_lang_max > 0) {
+        out_default_lang[0] = '\0';
+    }
+    if (out_localized_titles && loc_max > 0) {
+        out_localized_titles[0] = '\0';
+    }
+
+    /* If localizedParameters exists, parse it */
+    if (lp_start && lp_end) {
+        /* Extract defaultLanguage */
+        char def_lang[32] = {0};
+        const char *dl = strstr(lp_start, "\"defaultLanguage\"");
+        if (dl && dl < lp_end) {
+            const char *dl_colon = strchr(dl + 17, ':');
+            if (dl_colon && dl_colon < lp_end) {
+                const char *q = dl_colon + 1;
+                while (q < lp_end && isspace((unsigned char)*q)) q++;
+                if (q < lp_end && *q == '"') {
+                    q++;
+                    size_t didx = 0;
+                    while (q < lp_end && *q != '"') {
+                        if (*q == '\\' && (q + 1) < lp_end) q++;
+                        if (didx + 1 < sizeof(def_lang)) def_lang[didx++] = *q;
+                        q++;
+                    }
+                    def_lang[didx] = '\0';
+                }
+            }
+        }
+        if (out_default_lang && def_lang_max > 0 && def_lang[0]) {
+            strncpy(out_default_lang, def_lang, def_lang_max - 1);
+            out_default_lang[def_lang_max - 1] = '\0';
+        }
+
+        /* Iterate language entries in localizedParameters */
+        struct {
+            char lang[32];
+            char title[PKG_TITLE_NAME_LEN];
+        } entries[64];
+        size_t count = 0;
+
+        const char *p = lp_start + 1;
+        while (p < lp_end && count < 64) {
+            while (p < lp_end && *p != '"') p++;
+            if (p >= lp_end) break;
+
+            char key[64] = {0};
+            p++;
+            size_t kidx = 0;
+            while (p < lp_end && *p != '"') {
+                if (kidx + 1 < sizeof(key)) key[kidx++] = *p;
+                p++;
+            }
+            if (p >= lp_end) break;
+            p++;
+
+            while (p < lp_end && isspace((unsigned char)*p)) p++;
+            if (p >= lp_end || *p != ':') continue;
+            p++;
+
+            while (p < lp_end && isspace((unsigned char)*p)) p++;
+            if (p >= lp_end) break;
+
+            if (*p == '"') {
+                p++;
+                while (p < lp_end && *p != '"') {
+                    if (*p == '\\' && (p + 1) < lp_end) p++;
+                    p++;
+                }
+                if (p < lp_end) p++;
+                continue;
+            }
+
+            if (*p == '{') {
+                const char *obj_start = p;
+                int obj_depth = 0;
+                const char *obj_end = NULL;
+                int obj_in_str = 0;
+                while (p < lp_end) {
+                    if (*p == '\\' && obj_in_str && (p + 1) < lp_end) {
+                        p += 2;
+                        continue;
+                    }
+                    if (*p == '"') obj_in_str = !obj_in_str;
+                    else if (!obj_in_str) {
+                        if (*p == '{') obj_depth++;
+                        else if (*p == '}') {
+                            obj_depth--;
+                            if (obj_depth == 0) {
+                                obj_end = p;
+                                p++;
+                                break;
+                            }
+                        }
+                    }
+                    p++;
+                }
+                if (!obj_end) break;
+
+                const char *tn = strstr(obj_start, "\"titleName\"");
+                if (tn && tn < obj_end) {
+                    const char *tn_colon = strchr(tn + 11, ':');
+                    if (tn_colon && tn_colon < obj_end) {
+                        const char *q = tn_colon + 1;
+                        while (q < obj_end && isspace((unsigned char)*q)) q++;
+                        if (q < obj_end && *q == '"') {
+                            q++;
+                            char tval[PKG_TITLE_NAME_LEN] = {0};
+                            size_t tidx = 0;
+                            while (q < obj_end && *q != '"') {
+                                if (*q == '\\' && (q + 1) < obj_end) q++;
+                                if (tidx + 1 < sizeof(tval)) tval[tidx++] = *q;
+                                q++;
+                            }
+                            tval[tidx] = '\0';
+                            if (tval[0] && key[0]) {
+                                strncpy(entries[count].lang, key, sizeof(entries[count].lang) - 1);
+                                entries[count].lang[sizeof(entries[count].lang) - 1] = '\0';
+                                strncpy(entries[count].title, tval, sizeof(entries[count].title) - 1);
+                                entries[count].title[sizeof(entries[count].title) - 1] = '\0';
+                                count++;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        /* Build out_localized_titles JSON string */
+        if (out_localized_titles && loc_max > 2 && count > 0) {
+            size_t pos = 0;
+            out_localized_titles[pos++] = '{';
+            for (size_t i = 0; i < count; i++) {
+                char esc_t[PKG_TITLE_NAME_LEN * 2];
+                size_t eidx = 0;
+                for (size_t c = 0; entries[i].title[c] && eidx + 2 < sizeof(esc_t); c++) {
+                    if (entries[i].title[c] == '"' || entries[i].title[c] == '\\') {
+                        esc_t[eidx++] = '\\';
+                    }
+                    esc_t[eidx++] = entries[i].title[c];
+                }
+                esc_t[eidx] = '\0';
+
+                int w = snprintf(out_localized_titles + pos, loc_max - pos,
+                                 "%s\"%s\":\"%s\"",
+                                 (i > 0 ? "," : ""),
+                                 entries[i].lang,
+                                 esc_t);
+                if (w > 0 && (size_t)w < loc_max - pos) {
+                    pos += (size_t)w;
+                } else {
+                    break;
+                }
+            }
+            if (pos < loc_max - 1) {
+                out_localized_titles[pos++] = '}';
+                out_localized_titles[pos] = '\0';
+            } else {
+                out_localized_titles[loc_max - 1] = '\0';
+            }
+        }
+
+        /* Determine best default title */
+        if (out_title_name && tname_max > 0 && out_title_name[0] == '\0') {
+            /* 1. Global title if present */
+            if (global_title[0]) {
+                strncpy(out_title_name, global_title, tname_max - 1);
+                out_title_name[tname_max - 1] = '\0';
+            }
+            /* 2. Title for defaultLanguage */
+            else if (def_lang[0]) {
+                for (size_t i = 0; i < count; i++) {
+                    if (strcmp(entries[i].lang, def_lang) == 0) {
+                        strncpy(out_title_name, entries[i].title, tname_max - 1);
+                        out_title_name[tname_max - 1] = '\0';
+                        break;
+                    }
+                }
+            }
+            /* 3. Title for English */
+            if (out_title_name[0] == '\0') {
+                for (size_t i = 0; i < count; i++) {
+                    if (strncmp(entries[i].lang, "en", 2) == 0) {
+                        strncpy(out_title_name, entries[i].title, tname_max - 1);
+                        out_title_name[tname_max - 1] = '\0';
+                        break;
+                    }
+                }
+            }
+            /* 4. First localized title */
+            if (out_title_name[0] == '\0' && count > 0) {
+                strncpy(out_title_name, entries[0].title, tname_max - 1);
+                out_title_name[tname_max - 1] = '\0';
+            }
+        }
+    } else {
+        /* No localizedParameters: use global title if found */
+        if (out_title_name && tname_max > 0 && out_title_name[0] == '\0' && global_title[0]) {
+            strncpy(out_title_name, global_title, tname_max - 1);
+            out_title_name[tname_max - 1] = '\0';
+        }
+    }
+}
+
+static const char *s_sfo_lang_map[30] = {
+    "ja-JP", "en-US", "fr-FR", "es-ES", "de-DE", "it-IT", "nl-NL", "pt-PT",
+    "ru-RU", "ko-KR", "zh-Hant", "zh-Hans", "fi-FI", "sv-SE", "da-DK", "no-NO",
+    "pl-PL", "pt-BR", "en-GB", "tr-TR", "es-419", "ar-AE", "fr-CA", "cs-CZ",
+    "hu-HU", "el-GR", "ro-RO", "th-TH", "vi-VN", "id-ID"
+};
+
 /* Helper to parse PS4 param.sfo */
-static void parse_param_sfo(const uint8_t *sfo, size_t sfo_len, char *out_title, size_t title_max,
-                            char *out_title_id, size_t title_id_max,
-                            char *out_version, size_t version_max,
-                            char *out_category, size_t category_max) {
+void pkg_parser_parse_param_sfo(const uint8_t *sfo, size_t sfo_len, char *out_title, size_t title_max,
+                                char *out_title_id, size_t title_id_max,
+                                char *out_version, size_t version_max,
+                                char *out_category, size_t category_max,
+                                char *out_localized_titles, size_t loc_max,
+                                char *out_default_lang, size_t def_lang_max) {
     if (sfo_len < 20 || memcmp(sfo, "\x00PSF", 4) != 0) {
         return;
     }
@@ -104,6 +587,12 @@ static void parse_param_sfo(const uint8_t *sfo, size_t sfo_len, char *out_title,
 
     char sfo_app_ver[32] = {0};
     char sfo_version[32] = {0};
+
+    struct {
+        char lang[32];
+        char title[PKG_TITLE_NAME_LEN];
+    } sfo_loc[32];
+    size_t sfo_loc_count = 0;
 
     const uint8_t *entries = sfo + 20;
     for (uint32_t i = 0; i < entry_count; i++) {
@@ -130,6 +619,16 @@ static void parse_param_sfo(const uint8_t *sfo, size_t sfo_len, char *out_title,
             while (copy_len > 0 && data[copy_len - 1] == '\0') copy_len--;
             strncpy(out_title, data, copy_len);
             out_title[copy_len] = '\0';
+        } else if (strncmp(key, "TITLE_", 6) == 0 && sfo_loc_count < 32) {
+            int l_idx = atoi(key + 6);
+            if (l_idx >= 0 && l_idx < 30) {
+                size_t copy_len = data_len < PKG_TITLE_NAME_LEN ? data_len : PKG_TITLE_NAME_LEN - 1;
+                while (copy_len > 0 && data[copy_len - 1] == '\0') copy_len--;
+                strncpy(sfo_loc[sfo_loc_count].lang, s_sfo_lang_map[l_idx], sizeof(sfo_loc[sfo_loc_count].lang) - 1);
+                strncpy(sfo_loc[sfo_loc_count].title, data, copy_len);
+                sfo_loc[sfo_loc_count].title[copy_len] = '\0';
+                sfo_loc_count++;
+            }
         } else if (strcmp(key, "TITLE_ID") == 0 && out_title_id[0] == '\0') {
             size_t copy_len = data_len < title_id_max ? data_len : title_id_max - 1;
             while (copy_len > 0 && data[copy_len - 1] == '\0') copy_len--;
@@ -150,6 +649,62 @@ static void parse_param_sfo(const uint8_t *sfo, size_t sfo_len, char *out_title,
             while (copy_len > 0 && data[copy_len - 1] == '\0') copy_len--;
             strncpy(sfo_version, data, copy_len);
             sfo_version[copy_len] = '\0';
+        }
+    }
+
+    /* Fallback title if TITLE wasn't present but TITLE_XX was */
+    if (out_title[0] == '\0' && sfo_loc_count > 0) {
+        /* Prefer en-US (index 01) if available */
+        int found = 0;
+        for (size_t i = 0; i < sfo_loc_count; i++) {
+            if (strcmp(sfo_loc[i].lang, "en-US") == 0) {
+                strncpy(out_title, sfo_loc[i].title, title_max - 1);
+                out_title[title_max - 1] = '\0';
+                found = 1;
+                break;
+            }
+        }
+        if (!found) {
+            strncpy(out_title, sfo_loc[0].title, title_max - 1);
+            out_title[title_max - 1] = '\0';
+        }
+    }
+
+    if (sfo_loc_count > 0) {
+        if (out_default_lang && def_lang_max > 0 && out_default_lang[0] == '\0') {
+            strncpy(out_default_lang, "en-US", def_lang_max - 1);
+            out_default_lang[def_lang_max - 1] = '\0';
+        }
+        if (out_localized_titles && loc_max > 2) {
+            size_t pos = 0;
+            out_localized_titles[pos++] = '{';
+            for (size_t i = 0; i < sfo_loc_count; i++) {
+                char esc_t[PKG_TITLE_NAME_LEN * 2];
+                size_t eidx = 0;
+                for (size_t c = 0; sfo_loc[i].title[c] && eidx + 2 < sizeof(esc_t); c++) {
+                    if (sfo_loc[i].title[c] == '"' || sfo_loc[i].title[c] == '\\') {
+                        esc_t[eidx++] = '\\';
+                    }
+                    esc_t[eidx++] = sfo_loc[i].title[c];
+                }
+                esc_t[eidx] = '\0';
+                int w = snprintf(out_localized_titles + pos, loc_max - pos,
+                                 "%s\"%s\":\"%s\"",
+                                 (i > 0 ? "," : ""),
+                                 sfo_loc[i].lang,
+                                 esc_t);
+                if (w > 0 && (size_t)w < loc_max - pos) {
+                    pos += (size_t)w;
+                } else {
+                    break;
+                }
+            }
+            if (pos < loc_max - 1) {
+                out_localized_titles[pos++] = '}';
+                out_localized_titles[pos] = '\0';
+            } else {
+                out_localized_titles[loc_max - 1] = '\0';
+            }
         }
     }
 
@@ -425,41 +980,13 @@ int pkg_parser_parse(const char *file_path, pkg_detail_t *out) {
             if (json_buf) {
                 if (pread(fd, json_buf, data_sz, cnt_offset + data_off) == (ssize_t)data_sz) {
                     json_buf[data_sz] = '\0';
-                    char tid[PKG_TITLE_ID_LEN] = {0};
-                    char tname[PKG_TITLE_NAME_LEN] = {0};
-
-                    if (json_extract_key(json_buf, data_sz, "titleId", tid, sizeof(tid)) == 0) {
-                        strncpy(out->title_id, tid, sizeof(out->title_id) - 1);
-                    }
-                    if (json_extract_key(json_buf, data_sz, "titleName", tname, sizeof(tname)) == 0) {
-                        strncpy(out->title_name, tname, sizeof(out->title_name) - 1);
-                    }
-
-                    char cat_buf[16] = {0};
-                    if (json_extract_key(json_buf, data_sz, "category", cat_buf, sizeof(cat_buf)) == 0 && out->category[0] == '\0') {
-                        strncpy(out->category, cat_buf, sizeof(out->category) - 1);
-                    }
-                    char ver[32] = {0};
-                    if (json_extract_key(json_buf, data_sz, "contentVersion", ver, sizeof(ver)) == 0 ||
-                        json_extract_key(json_buf, data_sz, "appVersion", ver, sizeof(ver)) == 0 ||
-                        json_extract_key(json_buf, data_sz, "version", ver, sizeof(ver)) == 0) {
-                        if (ver[0] != '\0') {
-                            int maj = 0, min = 0, patch = 0;
-                            if (sscanf(ver, "%d.%d.%d", &maj, &min, &patch) == 3) {
-                                if (min == 0 && patch > 0) {
-                                    snprintf(out->app_version, sizeof(out->app_version), "v%d.%02d", maj, patch);
-                                } else if (patch == 0) {
-                                    snprintf(out->app_version, sizeof(out->app_version), "v%d.%02d", maj, min);
-                                } else {
-                                    snprintf(out->app_version, sizeof(out->app_version), "v%d.%d.%d", maj, min, patch);
-                                }
-                            } else if (ver[0] != 'v' && ver[0] != 'V') {
-                                snprintf(out->app_version, sizeof(out->app_version), "v%.29s", ver);
-                            } else {
-                                strncpy(out->app_version, ver, sizeof(out->app_version) - 1);
-                            }
-                        }
-                    }
+                    pkg_parser_parse_param_json(json_buf, data_sz,
+                                                out->title_id, sizeof(out->title_id),
+                                                out->title_name, sizeof(out->title_name),
+                                                out->category, sizeof(out->category),
+                                                out->app_version, sizeof(out->app_version),
+                                                out->localized_titles, sizeof(out->localized_titles),
+                                                out->default_language, sizeof(out->default_language));
                 }
                 free(json_buf);
             }
@@ -473,8 +1000,10 @@ int pkg_parser_parse(const char *file_path, pkg_detail_t *out) {
                     char stitle[PKG_TITLE_NAME_LEN] = {0};
                     char stid[PKG_TITLE_ID_LEN] = {0};
                     char sver[32] = {0};
-                    parse_param_sfo(sfo_buf, data_sz, stitle, sizeof(stitle), stid, sizeof(stid), sver, sizeof(sver),
-                                    out->category, sizeof(out->category));
+                    pkg_parser_parse_param_sfo(sfo_buf, data_sz, stitle, sizeof(stitle), stid, sizeof(stid), sver, sizeof(sver),
+                                                out->category, sizeof(out->category),
+                                                out->localized_titles, sizeof(out->localized_titles),
+                                                out->default_language, sizeof(out->default_language));
                     if (out->title_id[0] == '\0' && stid[0] != '\0') {
                         strncpy(out->title_id, stid, sizeof(out->title_id) - 1);
                     }

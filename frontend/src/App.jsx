@@ -3,7 +3,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import BlurIcon, { iconUrlFor } from './BlurIcon';
 import { formatBytes, formatEta, formatVersion } from './utils/formatters';
 import { getSourceInfo } from './utils/sourceInfo';
-import { getBrowserTitle, getFullVersion } from './utils/title';
+import { getBrowserTitle, getFullVersion, getLocalizedTitle } from './utils/title';
 import { DONATE_URL, isPlayStation, DONATE_MODAL_STORAGE_KEY, DONATE_MODAL_INTERVAL_MS, ALL_SOURCES_DRIVE } from './constants/config';
 import { checkVersion } from './api/health';
 import { getStorage } from './api/storage';
@@ -135,7 +135,13 @@ export default function App() {
     try {
       const driveKey = targetDrive.id || targetDrive.path;
       const data = await getPackages(driveKey);
-      setPackages(data);
+      const processed = Array.isArray(data)
+        ? data.map((pkg) => {
+            const locTitle = getLocalizedTitle(pkg);
+            return locTitle ? { ...pkg, title_name: locTitle } : pkg;
+          })
+        : data;
+      setPackages(processed);
     } catch (err) {
       // ignore
     } finally {
@@ -207,7 +213,18 @@ export default function App() {
       if (p.filename && p.filename.startsWith('.')) return false;
       if (!searchQuery.trim()) return true;
       const q = searchQuery.toLowerCase();
+      let matchLocalized = false;
+      if (p.localized_titles) {
+        let lt = p.localized_titles;
+        if (typeof lt === 'string' && lt.trim().startsWith('{')) {
+          try { lt = JSON.parse(lt); } catch (e) { lt = null; }
+        }
+        if (lt && typeof lt === 'object') {
+          matchLocalized = Object.values(lt).some((v) => typeof v === 'string' && v.toLowerCase().includes(q));
+        }
+      }
       return (
+        matchLocalized ||
         (p.title_name && p.title_name.toLowerCase().indexOf(q) !== -1) ||
         (p.title_id && p.title_id.toLowerCase().indexOf(q) !== -1) ||
         (p.content_id && p.content_id.toLowerCase().indexOf(q) !== -1) ||

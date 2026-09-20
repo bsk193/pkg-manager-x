@@ -33,14 +33,6 @@ static inline uint32_t smb_read_be32(const uint8_t *p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
 
-static inline uint16_t smb_read_le16(const uint8_t *p) {
-    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
-}
-
-static inline uint32_t smb_read_le32(const uint8_t *p) {
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-}
-
 static inline uint64_t smb_read_le64(const uint8_t *p) {
     uint64_t v = 0;
     for (int i = 0; i < 8; i++) {
@@ -880,54 +872,6 @@ int smb_client_calc_checksum(const char *smb_url, char *out_checksum, size_t out
     return 0;
 }
 
-/* Helper to extract a JSON string */
-static int smb_json_extract_key(const char *json, size_t json_len, const char *key, char *out, size_t out_max) {
-    char pattern[128];
-    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-
-    const char *p = json;
-    const char *end = json + json_len;
-
-    while (p < end) {
-        const char *found = strstr(p, pattern);
-        if (!found || found >= end) return -1;
-
-        const char *colon = strchr(found + strlen(pattern), ':');
-        if (!colon || colon >= end) return -1;
-
-        const char *q = colon + 1;
-        while (q < end && (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n')) q++;
-
-        if (q < end && *q == '"') {
-            q++;
-            size_t idx = 0;
-            while (q < end && *q != '"') {
-                if (*q == '\\' && (q + 1) < end) q++;
-                if (idx + 1 < out_max) out[idx++] = *q;
-                q++;
-            }
-            out[idx] = '\0';
-            return 0;
-        }
-        /* Unquoted scalar (true/false/null/numbers, as written by our own
-           meta.json serializer): read until a structural delimiter. */
-        if (q < end && *q != '{' && *q != '[') {
-            size_t idx = 0;
-            while (q < end && *q != ',' && *q != '}' && *q != ']' &&
-                   *q != '\r' && *q != '\n') {
-                if (*q == ' ' || *q == '\t') break;
-                if (idx + 1 < out_max) out[idx++] = *q;
-                q++;
-            }
-            while (idx > 0 && (out[idx - 1] == ' ' || out[idx - 1] == '\t')) idx--;
-            out[idx] = '\0';
-            return 0;
-        }
-        p = found + strlen(pattern);
-    }
-    return -1;
-}
-
 /* Parse PKG metadata directly from an SMB package using pread chunks */
 int smb_client_parse_pkg(const char *smb_url, pkg_detail_t *out) {
     if (!smb_url || !out) return -1;
@@ -1087,40 +1031,13 @@ int smb_client_parse_pkg(const char *smb_url, pkg_detail_t *out) {
             if (json_buf) {
                 if (smb_file_session_read(sess, json_buf, data_sz, cnt_offset + data_off) == (ssize_t)data_sz) {
                     json_buf[data_sz] = '\0';
-                    char tid[PKG_TITLE_ID_LEN] = {0};
-                    char tname[PKG_TITLE_NAME_LEN] = {0};
-                    if (smb_json_extract_key(json_buf, data_sz, "titleId", tid, sizeof(tid)) == 0) {
-                        strncpy(out->title_id, tid, sizeof(out->title_id) - 1);
-                    }
-                    if (smb_json_extract_key(json_buf, data_sz, "titleName", tname, sizeof(tname)) == 0) {
-                        strncpy(out->title_name, tname, sizeof(out->title_name) - 1);
-                    }
-
-                    char cat_buf[16] = {0};
-                    if (smb_json_extract_key(json_buf, data_sz, "category", cat_buf, sizeof(cat_buf)) == 0 && out->category[0] == '\0') {
-                        strncpy(out->category, cat_buf, sizeof(out->category) - 1);
-                    }
-                    char ver[32] = {0};
-                    if (smb_json_extract_key(json_buf, data_sz, "contentVersion", ver, sizeof(ver)) == 0 ||
-                        smb_json_extract_key(json_buf, data_sz, "appVersion", ver, sizeof(ver)) == 0 ||
-                        smb_json_extract_key(json_buf, data_sz, "version", ver, sizeof(ver)) == 0) {
-                        if (ver[0] != '\0') {
-                            int maj = 0, min = 0, patch = 0;
-                            if (sscanf(ver, "%d.%d.%d", &maj, &min, &patch) == 3) {
-                                if (min == 0 && patch > 0) {
-                                    snprintf(out->app_version, sizeof(out->app_version), "v%d.%02d", maj, patch);
-                                } else if (patch == 0) {
-                                    snprintf(out->app_version, sizeof(out->app_version), "v%d.%02d", maj, min);
-                                } else {
-                                    snprintf(out->app_version, sizeof(out->app_version), "v%d.%d.%d", maj, min, patch);
-                                }
-                            } else if (ver[0] != 'v' && ver[0] != 'V') {
-                                snprintf(out->app_version, sizeof(out->app_version), "v%.29s", ver);
-                            } else {
-                                strncpy(out->app_version, ver, sizeof(out->app_version) - 1);
-                            }
-                        }
-                    }
+                    pkg_parser_parse_param_json(json_buf, data_sz,
+                                                out->title_id, sizeof(out->title_id),
+                                                out->title_name, sizeof(out->title_name),
+                                                out->category, sizeof(out->category),
+                                                out->app_version, sizeof(out->app_version),
+                                                out->localized_titles, sizeof(out->localized_titles),
+                                                out->default_language, sizeof(out->default_language));
                 }
                 free(json_buf);
             }
@@ -1131,62 +1048,22 @@ int smb_client_parse_pkg(const char *smb_url, pkg_detail_t *out) {
             uint8_t *sfo_buf = (uint8_t *)malloc(data_sz);
             if (sfo_buf) {
                 if (smb_file_session_read(sess, sfo_buf, data_sz, cnt_offset + data_off) == (ssize_t)data_sz) {
-                    if (data_sz >= 20 && memcmp(sfo_buf, "\x00PSF", 4) == 0) {
-                        uint32_t key_tbl_off = smb_read_le32(sfo_buf + 0x08);
-                        uint32_t val_tbl_off = smb_read_le32(sfo_buf + 0x0C);
-                        uint32_t entry_cnt = smb_read_le32(sfo_buf + 0x10);
-
-                        char sfo_app_ver[32] = {0};
-                        char sfo_version[32] = {0};
-
-                        for (uint32_t j = 0; j < entry_cnt && (0x14 + j * 16) + 16 <= data_sz; j++) {
-                            const uint8_t *se = sfo_buf + 0x14 + j * 16;
-                            uint16_t k_off = smb_read_le16(se);
-                            uint32_t v_len = smb_read_le32(se + 0x04);
-                            uint32_t v_off = smb_read_le32(se + 0x0C);
-
-                            if (key_tbl_off + k_off < data_sz && val_tbl_off + v_off + v_len <= data_sz) {
-                                const char *k = (const char *)(sfo_buf + key_tbl_off + k_off);
-                                const char *v = (const char *)(sfo_buf + val_tbl_off + v_off);
-
-                                if (strcmp(k, "TITLE_ID") == 0 && out->title_id[0] == '\0') {
-                                    size_t l = v_len < sizeof(out->title_id) ? v_len : sizeof(out->title_id) - 1;
-                                    while (l > 0 && v[l - 1] == '\0') l--;
-                                    strncpy(out->title_id, v, l);
-                                    out->title_id[l] = '\0';
-                                } else if (strcmp(k, "TITLE") == 0 && out->title_name[0] == '\0') {
-                                    size_t l = v_len < sizeof(out->title_name) ? v_len : sizeof(out->title_name) - 1;
-                                    while (l > 0 && v[l - 1] == '\0') l--;
-                                    strncpy(out->title_name, v, l);
-                                    out->title_name[l] = '\0';
-                                } else if (strcmp(k, "APP_VER") == 0 && sfo_app_ver[0] == '\0') {
-                                    size_t l = v_len < sizeof(sfo_app_ver) ? v_len : sizeof(sfo_app_ver) - 1;
-                                    while (l > 0 && v[l - 1] == '\0') l--;
-                                    strncpy(sfo_app_ver, v, l);
-                                    sfo_app_ver[l] = '\0';
-                                } else if (strcmp(k, "VERSION") == 0 && sfo_version[0] == '\0') {
-                                    size_t l = v_len < sizeof(sfo_version) ? v_len : sizeof(sfo_version) - 1;
-                                    while (l > 0 && v[l - 1] == '\0') l--;
-                                    strncpy(sfo_version, v, l);
-                                    sfo_version[l] = '\0';
-                                } else if (strcmp(k, "CATEGORY") == 0 && out->category[0] == '\0') {
-                                    size_t l = v_len < sizeof(out->category) ? v_len : sizeof(out->category) - 1;
-                                    while (l > 0 && v[l - 1] == '\0') l--;
-                                    strncpy(out->category, v, l);
-                                    out->category[l] = '\0';
-                                }
-                            }
-                        }
-
-                        const char *best_v = (sfo_app_ver[0] != '\0') ? sfo_app_ver : sfo_version;
-                        if (best_v && best_v[0] != '\0' && out->app_version[0] == '\0') {
-                            if (best_v[0] != 'v' && best_v[0] != 'V') {
-                                snprintf(out->app_version, sizeof(out->app_version), "v%.29s", best_v);
-                            } else {
-                                strncpy(out->app_version, best_v, sizeof(out->app_version) - 1);
-                                out->app_version[sizeof(out->app_version) - 1] = '\0';
-                            }
-                        }
+                    char stitle[PKG_TITLE_NAME_LEN] = {0};
+                    char stid[PKG_TITLE_ID_LEN] = {0};
+                    char sver[32] = {0};
+                    pkg_parser_parse_param_sfo(sfo_buf, data_sz, stitle, sizeof(stitle),
+                                               stid, sizeof(stid), sver, sizeof(sver),
+                                               out->category, sizeof(out->category),
+                                               out->localized_titles, sizeof(out->localized_titles),
+                                               out->default_language, sizeof(out->default_language));
+                    if (out->title_id[0] == '\0' && stid[0] != '\0') {
+                        strncpy(out->title_id, stid, sizeof(out->title_id) - 1);
+                    }
+                    if (out->title_name[0] == '\0' && stitle[0] != '\0') {
+                        strncpy(out->title_name, stitle, sizeof(out->title_name) - 1);
+                    }
+                    if (out->app_version[0] == '\0' && sver[0] != '\0') {
+                        strncpy(out->app_version, sver, sizeof(out->app_version) - 1);
                     }
                 }
                 free(sfo_buf);

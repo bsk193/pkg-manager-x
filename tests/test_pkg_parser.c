@@ -157,6 +157,41 @@ int main(void) {
 
     system("rm -rf /tmp/test_mpart_types");
 
-    printf("\n>>> ALL PKG PARSER TESTS (6 PACKAGES + MULTIPART TYPES) PASSED! <<<\n");
+    /* 8. Multi-Language Title Resolution */
+    printf("=== Testing Multi-Language Title Resolution ===\n");
+    assert(fixture_write_ps5_pkg_multilang("/tmp/test_parser_fixtures/multilang.pkg",
+                                           "PPSA90099", "en-US", "gd", "01.000.000", 0) == 0);
+    pkg_detail_t mldetail;
+    int mlres = pkg_parser_parse("/tmp/test_parser_fixtures/multilang.pkg", &mldetail);
+    assert(mlres == 0);
+    assert(mldetail.is_valid == 1);
+    /* Should NOT pick Arabic Title despite ar-AE appearing first in JSON */
+    assert(strcmp(mldetail.title_name, "English Title") == 0);
+    assert(strcmp(mldetail.default_language, "en-US") == 0);
+    assert(strstr(mldetail.localized_titles, "\"ar-AE\":\"Arabic Title\"") != NULL);
+    assert(strstr(mldetail.localized_titles, "\"en-US\":\"English Title\"") != NULL);
+    assert(strstr(mldetail.localized_titles, "\"pl-PL\":\"Polish Title\"") != NULL);
+
+    /* Test pkg_parser_resolve_localized_title */
+    char resolved[PKG_TITLE_NAME_LEN];
+    assert(pkg_parser_resolve_localized_title(mldetail.localized_titles, mldetail.default_language,
+                                              "ar-AE", resolved, sizeof(resolved)) == 0);
+    assert(strcmp(resolved, "Arabic Title") == 0);
+
+    assert(pkg_parser_resolve_localized_title(mldetail.localized_titles, mldetail.default_language,
+                                              "ar,en;q=0.9", resolved, sizeof(resolved)) == 0);
+    assert(strcmp(resolved, "Arabic Title") == 0);
+
+    assert(pkg_parser_resolve_localized_title(mldetail.localized_titles, mldetail.default_language,
+                                              "pl", resolved, sizeof(resolved)) == 0);
+    assert(strcmp(resolved, "Polish Title") == 0);
+
+    /* Fallback to default_language (en-US) when requested language not found */
+    assert(pkg_parser_resolve_localized_title(mldetail.localized_titles, mldetail.default_language,
+                                              "fr-FR,fr;q=0.9", resolved, sizeof(resolved)) == 0);
+    assert(strcmp(resolved, "English Title") == 0);
+
+    printf("\n>>> ALL PKG PARSER TESTS (6 PACKAGES + MULTIPART TYPES + MULTILANG) PASSED! <<<\n");
     return 0;
 }
+

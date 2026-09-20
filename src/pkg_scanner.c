@@ -222,10 +222,13 @@ static int save_manifest_locked(void) {
         const pkg_detail_t *p = &g_packages[i];
         char esc_path[1024], esc_fn[512], esc_tid[64], esc_tname[512], esc_cid[128];
         char esc_ver[64], esc_type[32], esc_cat[32], esc_bh[128];
+        char esc_loc[PKG_LOCALIZED_TITLES_LEN * 2], esc_def_lang[64];
         escape_json_str(p->path, esc_path, sizeof(esc_path));
         escape_json_str(p->filename, esc_fn, sizeof(esc_fn));
         escape_json_str(p->title_id, esc_tid, sizeof(esc_tid));
         escape_json_str(p->title_name, esc_tname, sizeof(esc_tname));
+        escape_json_str(p->localized_titles, esc_loc, sizeof(esc_loc));
+        escape_json_str(p->default_language, esc_def_lang, sizeof(esc_def_lang));
         escape_json_str(p->content_id, esc_cid, sizeof(esc_cid));
         escape_json_str(p->app_version, esc_ver, sizeof(esc_ver));
         escape_json_str(p->pkg_type_str, esc_type, sizeof(esc_type));
@@ -237,6 +240,8 @@ static int save_manifest_locked(void) {
                    "      \"filename\": \"%s\",\n"
                    "      \"title_id\": \"%s\",\n"
                    "      \"title_name\": \"%s\",\n"
+                   "      \"localized_titles\": \"%s\",\n"
+                   "      \"default_language\": \"%s\",\n"
                    "      \"content_id\": \"%s\",\n"
                    "      \"app_version\": \"%s\",\n"
                    "      \"file_size\": %llu,\n"
@@ -254,7 +259,7 @@ static int save_manifest_locked(void) {
                    "      \"mtime\": %llu,\n"
                    "      \"blurhash\": \"%s\"\n"
                    "    }%s\n",
-                esc_path, esc_fn, esc_tid, esc_tname, esc_cid, esc_ver,
+                esc_path, esc_fn, esc_tid, esc_tname, esc_loc, esc_def_lang, esc_cid, esc_ver,
                 (unsigned long long)p->file_size,
                 (unsigned long long)(p->total_pkg_size > 0 ? p->total_pkg_size : p->file_size),
                 (unsigned long long)p->icon_offset,
@@ -426,6 +431,8 @@ static int load_manifest_locked(void) {
                             extract_json_field(item, "filename", pkg->filename, sizeof(pkg->filename));
                             extract_json_field(item, "title_id", pkg->title_id, sizeof(pkg->title_id));
                             extract_json_field(item, "title_name", pkg->title_name, sizeof(pkg->title_name));
+                            extract_json_field(item, "localized_titles", pkg->localized_titles, sizeof(pkg->localized_titles));
+                            extract_json_field(item, "default_language", pkg->default_language, sizeof(pkg->default_language));
                             extract_json_field(item, "content_id", pkg->content_id, sizeof(pkg->content_id));
                             extract_json_field(item, "app_version", pkg->app_version, sizeof(pkg->app_version));
                             extract_json_field(item, "pkg_type_str", pkg->pkg_type_str, sizeof(pkg->pkg_type_str));
@@ -1764,7 +1771,7 @@ char *pkg_scanner_drives_to_json(void) {
     return json;
 }
 
-char *pkg_scanner_packages_for_drive_to_json(const char *drive_id_or_path) {
+char *pkg_scanner_packages_for_drive_to_json_ex(const char *drive_id_or_path, const char *accept_language) {
     pthread_mutex_lock(&g_scanner_mutex);
 
     /* Find matching drive path if drive_id_or_path was provided */
@@ -1783,7 +1790,7 @@ char *pkg_scanner_packages_for_drive_to_json(const char *drive_id_or_path) {
         }
     }
 
-    size_t buf_size = 64 + g_package_count * 2048;
+    size_t buf_size = 64 + g_package_count * 4096;
     char *json = (char *)malloc(buf_size);
     if (!json) {
         pthread_mutex_unlock(&g_scanner_mutex);
@@ -1887,6 +1894,7 @@ char *pkg_scanner_packages_for_drive_to_json(const char *drive_id_or_path) {
         char esc_filename[512];
         char esc_title_id[64];
         char esc_title_name[512];
+        char esc_def_lang[64];
         char esc_content_id[128];
         char esc_app_version[64];
         char esc_pkg_type[32];
@@ -1897,10 +1905,21 @@ char *pkg_scanner_packages_for_drive_to_json(const char *drive_id_or_path) {
         char esc_partial_desc[256];
         char esc_blurhash[128];
 
+        char display_title[PKG_TITLE_NAME_LEN];
+        strncpy(display_title, pkg->title_name, sizeof(display_title) - 1);
+        display_title[sizeof(display_title) - 1] = '\0';
+        if (accept_language && accept_language[0] && pkg->localized_titles[0] == '{') {
+            pkg_parser_resolve_localized_title(pkg->localized_titles, pkg->default_language,
+                                               accept_language, display_title, sizeof(display_title));
+        }
+
+        const char *loc_json_raw = (pkg->localized_titles[0] == '{') ? pkg->localized_titles : "{}";
+
         escape_json_string(pkg->path, esc_path, sizeof(esc_path));
         escape_json_string(pkg->filename, esc_filename, sizeof(esc_filename));
         escape_json_string(pkg->title_id, esc_title_id, sizeof(esc_title_id));
-        escape_json_string(pkg->title_name, esc_title_name, sizeof(esc_title_name));
+        escape_json_string(display_title, esc_title_name, sizeof(esc_title_name));
+        escape_json_string(pkg->default_language, esc_def_lang, sizeof(esc_def_lang));
         escape_json_string(pkg->content_id, esc_content_id, sizeof(esc_content_id));
         escape_json_string(pkg->app_version, esc_app_version, sizeof(esc_app_version));
         escape_json_string(pkg->pkg_type_str[0] ? pkg->pkg_type_str : "unknown", esc_pkg_type, sizeof(esc_pkg_type));
@@ -1921,6 +1940,8 @@ char *pkg_scanner_packages_for_drive_to_json(const char *drive_id_or_path) {
             "\"filename\":\"%s\","
             "\"title_id\":\"%s\","
             "\"title_name\":\"%s\","
+            "\"localized_titles\":%s,"
+            "\"default_language\":\"%s\","
             "\"content_id\":\"%s\","
             "\"app_version\":\"%s\","
             "\"file_size\":%llu,"
@@ -1948,6 +1969,8 @@ char *pkg_scanner_packages_for_drive_to_json(const char *drive_id_or_path) {
             esc_filename,
             esc_title_id,
             esc_title_name,
+            loc_json_raw,
+            esc_def_lang,
             esc_content_id,
             esc_app_version,
             (unsigned long long)pkg->file_size,
@@ -1982,6 +2005,10 @@ char *pkg_scanner_packages_for_drive_to_json(const char *drive_id_or_path) {
     }
     pthread_mutex_unlock(&g_scanner_mutex);
     return json;
+}
+
+char *pkg_scanner_packages_for_drive_to_json(const char *drive_id_or_path) {
+    return pkg_scanner_packages_for_drive_to_json_ex(drive_id_or_path, NULL);
 }
 
 char *pkg_scanner_to_json(void) {
