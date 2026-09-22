@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2.0
+## v1.2.1
 
 ### Direct Install
 - PKG files can now be installed from another device, such as a PC, directly to the console without a temporary disk copy
