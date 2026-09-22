@@ -12,6 +12,10 @@
 #include "notification.h"
 #include "app_info.h"
 #include "stream_server.h"
+#include "stream_debug_log.h"
+#include "pkg_cache.h"
+#include "ws_stream.h" /* NEW: live RAM sessions (additive; worker below unchanged) */
+#include "ws_upload.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -149,6 +153,55 @@ static uint64_t get_available_disk_space(const char *path) {
         return (uint64_t)sv.f_bavail * bsize;
     }
     return (uint64_t)-1;
+}
+
+static int title_id_has_prefix(const char *title_id, const char *prefix) {
+    return title_id && prefix && strncasecmp(title_id, prefix, 4) == 0;
+}
+
+static int package_is_ps4(const pkg_detail_t *detail) {
+    return detail && title_id_has_prefix(detail->title_id, "CUSA");
+}
+
+/* Validate the destinations the console can use for this package. PS4 titles
+ * can use USB extended storage; PS5 titles are restricted to internal/M.2. */
+static int validate_install_storage(const pkg_detail_t *detail, uint64_t required_space) {
+    uint64_t nvme_f = 0, nvme_t = 0, nvme_u = 0;
+    uint64_t usb_f = 0, usb_t = 0, usb_u = 0;
+    int has_nvme = (system_get_nvme_storage_info(&nvme_f, &nvme_t, &nvme_u) == 0);
+    int has_usb = package_is_ps4(detail) &&
+                  (system_get_usb_storage_info(&usb_f, &usb_t, &usb_u) == 0);
+
+    const char *check_dir = getenv("PKG_TMP_DIR");
+    if (!check_dir || check_dir[0] == '\0') check_dir = "/data";
+
+    uint64_t internal_f = get_available_disk_space(check_dir);
+    int has_internal = (internal_f != (uint64_t)-1);
+    uint64_t max_avail = has_internal ? internal_f : 0;
+    if (has_nvme && nvme_f > max_avail) max_avail = nvme_f;
+    if (has_usb && usb_f > max_avail) max_avail = usb_f;
+
+    if ((has_internal || has_nvme || has_usb) && max_avail < required_space) {
+        if (package_is_ps4(detail)) {
+            ps5_notify("Not enough storage space! Need %llu MB (Internal: %llu MB, M.2: %llu MB, USB: %llu MB)",
+                       (unsigned long long)(required_space / (1024 * 1024)),
+                       (unsigned long long)((has_internal ? internal_f : 0) / (1024 * 1024)),
+                       (unsigned long long)((has_nvme ? nvme_f : 0) / (1024 * 1024)),
+                       (unsigned long long)((has_usb ? usb_f : 0) / (1024 * 1024)));
+        } else if (has_nvme) {
+            ps5_notify("Not enough storage space! Need %llu MB (Internal: %llu MB, M.2: %llu MB)",
+                       (unsigned long long)(required_space / (1024 * 1024)),
+                       (unsigned long long)((has_internal ? internal_f : 0) / (1024 * 1024)),
+                       (unsigned long long)(nvme_f / (1024 * 1024)));
+        } else {
+            ps5_notify("Not enough storage space! Need %llu MB, have %llu MB",
+                       (unsigned long long)(required_space / (1024 * 1024)),
+                       (unsigned long long)((has_internal ? internal_f : 0) / (1024 * 1024)));
+        }
+        return -10;
+    }
+
+    return 0;
 }
 
 static void *installer_monitor_worker(void *arg) {
@@ -799,6 +852,26 @@ static void *stream_installer_worker(void *arg) {
         return NULL;
     }
 
+    /* Activate stream debug file logging if the setting is enabled.
+     * Opens after the stream server is up so total_size is finalized. */
+    {
+        app_settings_t dbg_settings;
+        pkg_cache_get_settings(&dbg_settings);
+        if (dbg_settings.pkg_install_debug) {
+            char dbg_tid[32] = {0}, dbg_cid[64] = {0}, dbg_kind[16] = {0};
+            uint64_t dbg_total = 0;
+            pthread_mutex_lock(&g_installer_mutex);
+            strncpy(dbg_tid, g_status.title_id, sizeof(dbg_tid) - 1);
+            strncpy(dbg_cid, g_status.content_id, sizeof(dbg_cid) - 1);
+            strncpy(dbg_kind, g_status.pkg_kind, sizeof(dbg_kind) - 1);
+            dbg_total = g_status.total_bytes;
+            pthread_mutex_unlock(&g_installer_mutex);
+            stream_debug_log_open(dbg_tid, dbg_cid, dbg_kind, worker_pkg_path, dbg_total);
+            /* Also enable verbose stream_server console logging when debug is active */
+            stream_server_set_debug(1);
+        }
+    }
+
     /* Unique URI per install: the system remembers recently used stream URLs
        across payload restarts (reusing package-1.pkg after a redeploy gets
        rejected), so key by wall-clock timestamp plus a per-install sequence
@@ -894,7 +967,9 @@ static void *stream_installer_worker(void *arg) {
     if (g_cancel_stream || !g_monitor_running) {
         /* Canceled or shutting down during retry waits: cancel/shutdown owns
            the status, just stop the server and exit. */
+        ws_live_abort();
         stream_server_session_stop();
+        ws_live_destroy();
         return NULL;
     }
 
@@ -906,7 +981,9 @@ static void *stream_installer_worker(void *arg) {
         strncpy(g_status.status_str, "error", sizeof(g_status.status_str) - 1);
         pthread_mutex_unlock(&g_installer_mutex);
         ps5_notify("Install error: 0x%08X (%s)", ret, rname ? rname : "unknown");
+        ws_live_abort();
         stream_server_session_stop();
+        ws_live_destroy();
         return NULL;
     }
 
@@ -1150,7 +1227,12 @@ static void *stream_installer_worker(void *arg) {
     pthread_mutex_unlock(&g_installer_mutex);
 #endif
 
+    /* NEW: release the live RAM session (noop for disk installs). Abort
+     * first so any reader blocked in ws_live_read wakes before/during
+     * the stop's vs_refs drain; destroy frees the ring. */
+    ws_live_abort();
     stream_server_session_stop();
+    ws_live_destroy();
     return NULL;
 }
 
@@ -1256,38 +1338,11 @@ int installer_start(const char *pkg_path) {
         return -13;
     }
 
-    /* Validate storage space: requires only 1x storage (installed package size).
-     * If an M.2 NVMe SSD (/mnt/ext1) is present, PS5 may be set to install to internal storage
-     * or the M.2 drive. If neither drive has enough available space, block the installation.
-     * If no M.2 SSD is present, validate against internal storage (/data). */
-    uint64_t nvme_f = 0, nvme_t = 0, nvme_u = 0;
-    int has_nvme = (system_get_nvme_storage_info(&nvme_f, &nvme_t, &nvme_u) == 0);
+    /* Validate against every storage destination supported by this package's
+     * platform. PS4 can use USB (/mnt/ext0); PS5 cannot. */
     uint64_t required_space = detail.total_pkg_size > 0 ? detail.total_pkg_size : detail.file_size;
-    const char *check_dir = getenv("PKG_TMP_DIR");
-    if (!check_dir || check_dir[0] == '\0') {
-        check_dir = "/data";
-    }
-
-    uint64_t avail_space = get_available_disk_space(check_dir);
-    int int_valid = (avail_space != (uint64_t)-1);
-    uint64_t max_avail = int_valid ? avail_space : 0;
-    if (has_nvme && nvme_f > max_avail) {
-        max_avail = nvme_f;
-    }
-
-    if ((int_valid || has_nvme) && max_avail < required_space) {
-        if (has_nvme) {
-            ps5_notify("Not enough storage space! Need %llu MB (Internal: %llu MB, M.2: %llu MB)",
-                       (unsigned long long)(required_space / (1024 * 1024)),
-                       (unsigned long long)((int_valid ? avail_space : 0) / (1024 * 1024)),
-                       (unsigned long long)(nvme_f / (1024 * 1024)));
-        } else {
-            ps5_notify("Not enough storage space! Need %llu MB, have %llu MB",
-                       (unsigned long long)(required_space / (1024 * 1024)),
-                       (unsigned long long)(avail_space / (1024 * 1024)));
-        }
-        return -10; /* Insufficient storage space */
-    }
+    int storage_check = validate_install_storage(&detail, required_space);
+    if (storage_check != 0) return storage_check;
 
     /* Ensure staging directory exists for multi-part packages */
     if (detail.is_multipart) {
@@ -1383,6 +1438,161 @@ int installer_start(const char *pkg_path) {
     return 0;
 }
 
+/* NEW: start an install from a live RAM session ("live:<id>", Direct
+ * Install without any disk spool). Mirrors installer_start's checks and
+ * commits, but metadata comes from pkg_parser_parse_mem over the uploaded
+ * header cache and total size comes from the browser. Multi-part is
+ * refused (live pushes are single packages). The existing background
+ * worker runs unchanged: "live:<id>" flows through to
+ * stream_server_session_start -> virtual_stream_open's live: scheme. */
+int installer_start_live(const char *live_uri) {
+    if (!live_uri || strncmp(live_uri, "live:", 5) != 0) {
+        return -1;
+    }
+    const char *sid = live_uri + 5;
+    if (sid[0] == '\0' || !ws_live_check_id(sid)) {
+        return -1;
+    }
+
+    pthread_mutex_lock(&g_installer_mutex);
+    int already = g_status.is_installing;
+    pthread_mutex_unlock(&g_installer_mutex);
+    if (already) {
+        return -2;
+    }
+
+    pthread_t old_thr;
+    int have_old = 0;
+    pthread_mutex_lock(&g_installer_mutex);
+    if (g_stream_thread_created) {
+        old_thr = g_stream_thread;
+        have_old = 1;
+        g_stream_thread_created = 0;
+    }
+    pthread_mutex_unlock(&g_installer_mutex);
+    if (have_old) {
+        pthread_join(old_thr, NULL);
+    }
+
+    uint64_t live_total = ws_live_get_total();
+    if (live_total == 0) {
+        return -1;
+    }
+
+    /* Wait for the parse-ready header prefix (browser may still be
+     * uploading it; the UI enables Install only at header_ready, so this
+     * is normally immediate). */
+    if (ws_live_wait_header(120) != 0) {
+        ps5_notify("Live install: header timed out, re-upload the package");
+        return -14;
+    }
+
+    uint8_t *hcache = (uint8_t *)malloc(WS_LIVE_SEG_SIZE);
+    if (!hcache) {
+        return -1;
+    }
+    size_t hlen = ws_live_get_header(hcache, WS_LIVE_SEG_SIZE);
+
+    pkg_detail_t detail;
+    int pm_stage = -1;
+    if (hlen == 0 ||
+        pkg_parser_parse_mem(hcache, hlen, live_total, live_uri, &detail,
+                             &pm_stage) != 0) {
+        /* Parity with disk installs: an unparseable header must not block
+         * the install (the system reads content_id from the stream itself).
+         * Log the stage so exotic layouts can be reported and fixed. */
+        install_log("[INSTALLER] Live header parse failed (stage %d, %zu bytes); "
+                    "proceeding with fallback metadata", pm_stage, hlen);
+        memset(&detail, 0, sizeof(detail));
+        strncpy(detail.path, live_uri, sizeof(detail.path) - 1);
+        strncpy(detail.filename, "live-package.pkg", sizeof(detail.filename) - 1);
+        strncpy(detail.title_id, "UNKNOWN", sizeof(detail.title_id) - 1);
+        strncpy(detail.title_name, "Package", sizeof(detail.title_name) - 1);
+        detail.total_pkg_size = live_total;
+        detail.file_size = live_total;
+    }
+    free(hcache);
+
+    /* The browser can read param.json/SFO at arbitrary package offsets
+     * before streaming. The one-segment live header cache often cannot. */
+    char browser_title[256] = {0}, browser_id[64] = {0};
+    char browser_version[32] = {0}, browser_kind[16] = {0};
+    if (ws_direct_get_metadata(sid, browser_title, sizeof(browser_title),
+                               browser_id, sizeof(browser_id), browser_version,
+                               sizeof(browser_version), browser_kind,
+                               sizeof(browser_kind)) == 0) {
+        if (browser_title[0]) snprintf(detail.title_name, sizeof(detail.title_name), "%s", browser_title);
+        if (browser_id[0]) snprintf(detail.title_id, sizeof(detail.title_id), "%s", browser_id);
+        if (browser_version[0]) snprintf(detail.app_version, sizeof(detail.app_version), "%s", browser_version);
+        if (!strcmp(browser_kind, "base") || !strcmp(browser_kind, "update") || !strcmp(browser_kind, "dlc"))
+            snprintf(detail.pkg_type_str, sizeof(detail.pkg_type_str), "%s", browser_kind);
+    }
+
+    if (detail.is_multipart) {
+        ps5_notify("Live install supports single packages only");
+        return -13;
+    }
+
+    char live_path_copy[512];
+    strncpy(live_path_copy, live_uri, sizeof(live_path_copy) - 1);
+    live_path_copy[sizeof(live_path_copy) - 1] = '\0';
+
+    /* 1x space: installed output only, no spool copy. USB is eligible for
+     * PS4 live installs too, while PS5 remains limited to internal/M.2. */
+    uint64_t required_space = detail.total_pkg_size > 0 ? detail.total_pkg_size : live_total;
+    int storage_check = validate_install_storage(&detail, required_space);
+    if (storage_check != 0) return storage_check;
+
+    pthread_mutex_lock(&g_installer_mutex);
+    if (g_status.is_installing) {
+        pthread_mutex_unlock(&g_installer_mutex);
+        return -2;
+    }
+    memset(&g_status, 0, sizeof(g_status));
+    g_status.is_installing = 1;
+    g_status.is_multipart = 0;
+    g_status.current_part = 0;
+    strncpy(g_status.pkg_path, live_path_copy, sizeof(g_status.pkg_path) - 1);
+    g_status.pkg_path[sizeof(g_status.pkg_path) - 1] = '\0';
+    strncpy(g_status.title_id, detail.title_id, sizeof(g_status.title_id) - 1);
+    g_status.title_id[sizeof(g_status.title_id) - 1] = '\0';
+    strncpy(g_status.title_name, detail.title_name, sizeof(g_status.title_name) - 1);
+    g_status.title_name[sizeof(g_status.title_name) - 1] = '\0';
+    strncpy(g_status.content_id, detail.content_id, sizeof(g_status.content_id) - 1);
+    g_status.content_id[sizeof(g_status.content_id) - 1] = '\0';
+    strncpy(g_status.pkg_kind, detail.pkg_type_str, sizeof(g_status.pkg_kind) - 1);
+    g_status.pkg_kind[sizeof(g_status.pkg_kind) - 1] = '\0';
+    strncpy(g_status.pkg_version, detail.app_version, sizeof(g_status.pkg_version) - 1);
+    g_status.pkg_version[sizeof(g_status.pkg_version) - 1] = '\0';
+    strncpy(g_status.status_str, "transferring", sizeof(g_status.status_str) - 1);
+    g_status.status_str[sizeof(g_status.status_str) - 1] = '\0';
+    snprintf(g_status.prompt_message, sizeof(g_status.prompt_message),
+             "Installing %.200s...",
+             g_status.title_name[0] != '\0' ? g_status.title_name : "Package");
+    g_status.total_bytes = required_space;
+    g_status.downloaded_bytes = 0;
+    g_status.stream_served_bytes = 0;
+    g_status.progress_percent = 0.0f;
+    g_status.start_time = time(NULL);
+    g_status.last_poll_time = time(NULL);
+    g_cancel_stream = 0;
+
+    if (pthread_create(&g_stream_thread, NULL, stream_installer_worker, NULL) != 0) {
+        g_status.is_installing = 0;
+        g_status.failed = 1;
+        pthread_mutex_unlock(&g_installer_mutex);
+        return -12;
+    }
+    g_stream_thread_created = 1;
+    char notify_title[256];
+    strncpy(notify_title, g_status.title_name[0] ? g_status.title_name : "Package",
+            sizeof(notify_title) - 1);
+    notify_title[sizeof(notify_title) - 1] = '\0';
+    pthread_mutex_unlock(&g_installer_mutex);
+    ps5_notify("Installing %s (live)...", notify_title);
+    return 0;
+}
+
 int installer_cancel(void) {
     pthread_mutex_lock(&g_installer_mutex);
     if (!g_status.is_installing) {
@@ -1395,7 +1605,10 @@ int installer_cancel(void) {
     strncpy(g_status.status_str, "canceled", sizeof(g_status.status_str) - 1);
     snprintf(g_status.prompt_message, sizeof(g_status.prompt_message), "Installation was canceled");
     pthread_mutex_unlock(&g_installer_mutex);
+    /* NEW: unblock live readers before the stop drains vs_refs, then free. */
+    ws_live_abort();
     stream_server_session_stop();
+    ws_live_destroy();
     ps5_notify("Installation canceled");
     return 0;
 }
@@ -1516,6 +1729,8 @@ char *installer_status_to_json(void) {
 void installer_shutdown(void) {
     g_cancel_stream = 1;
     g_monitor_running = 0;
+    /* NEW: unblock any live readers so the worker join below can't wedge. */
+    ws_live_abort();
     if (g_stream_thread_created) {
         pthread_join(g_stream_thread, NULL);
         g_stream_thread_created = 0;
@@ -1549,16 +1764,21 @@ int system_get_storage_info(uint64_t *out_free, uint64_t *out_total, uint64_t *o
     return 0;
 }
 
-int system_get_nvme_storage_info(uint64_t *out_free, uint64_t *out_total, uint64_t *out_used) {
+static int system_get_external_storage_info(const char *env_name,
+                                            const char *default_path,
+                                            const char *force_fail_env,
+                                            uint64_t *out_free,
+                                            uint64_t *out_total,
+                                            uint64_t *out_used) {
     if (!out_free || !out_total || !out_used) return -1;
     *out_free = 0;
     *out_total = 0;
     *out_used = 0;
 
-    const char *env_path = getenv("PKG_EXT1_DIR");
-    const char *ext_path = (env_path && env_path[0] != '\0') ? env_path : "/mnt/ext1";
+    const char *env_path = getenv(env_name);
+    const char *ext_path = (env_path && env_path[0] != '\0') ? env_path : default_path;
 
-    if (getenv("PKG_FORCE_NVME_SPACE_FAIL")) {
+    if (force_fail_env && getenv(force_fail_env)) {
         *out_total = 1024 * 1024 * 1024ULL;
         *out_free = 1024ULL;
         *out_used = *out_total - *out_free;
@@ -1596,3 +1816,14 @@ int system_get_nvme_storage_info(uint64_t *out_free, uint64_t *out_total, uint64
     return -1;
 }
 
+int system_get_nvme_storage_info(uint64_t *out_free, uint64_t *out_total, uint64_t *out_used) {
+    return system_get_external_storage_info("PKG_EXT1_DIR", "/mnt/ext1",
+                                            "PKG_FORCE_NVME_SPACE_FAIL",
+                                            out_free, out_total, out_used);
+}
+
+int system_get_usb_storage_info(uint64_t *out_free, uint64_t *out_total, uint64_t *out_used) {
+    return system_get_external_storage_info("PKG_EXT0_DIR", "/mnt/ext0",
+                                            "PKG_FORCE_USB_SPACE_FAIL",
+                                            out_free, out_total, out_used);
+}

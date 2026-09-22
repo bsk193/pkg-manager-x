@@ -25,6 +25,8 @@ import { useInstaller } from './hooks/useInstaller';
 import { useDonation } from './hooks/useDonation';
 import { useHistoryNavigation } from './hooks/useHistoryNavigation';
 import { useModalInert } from './hooks/useModalInert';
+import { useDirectUpload } from './hooks/useDirectUpload';
+import { uploadStatus } from './api/directInstall';
 
 import OfflineScreen from './components/screens/OfflineScreen';
 import LoadingScreen from './components/screens/LoadingScreen';
@@ -42,6 +44,7 @@ import TitleDetailView from './components/views/TitleDetailView';
 import PackageGridView from './components/views/PackageGridView';
 import DrivesView from './components/views/DrivesView';
 
+import DirectInstallView from './components/views/DirectInstallView';
 import DonateModal from './components/modals/DonateModal';
 import ClearCacheModal from './components/modals/ClearCacheModal';
 import SmbShareModal from './components/modals/SmbShareModal';
@@ -72,6 +75,38 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState('date-desc');
   const [selectedTitleId, setSelectedTitleId] = useState(null);
+  const [showDirectInstall, setShowDirectInstall] = useState(false);
+  const directTabId = useRef(Math.random().toString(36).slice(2) + Date.now());
+  const directUpload = useDirectUpload(directTabId.current);
+  const directTransferActive = directUpload.state === 'uploading' || directUpload.installing;
+  const directLeaseHeld = Boolean(directUpload.sessionId) &&
+    directUpload.state !== 'idle' && directUpload.state !== 'canceled';
+
+  useEffect(() => {
+    if (!directLeaseHeld) return;
+    const mark = () => localStorage.setItem('directInstallLease', JSON.stringify({
+      tab: directTabId.current, time: Date.now(), session: directUpload.sessionId
+    }));
+    mark();
+    const timer = setInterval(mark, 2000);
+    return () => {
+      clearInterval(timer);
+      try {
+        const lease = JSON.parse(localStorage.getItem('directInstallLease') || '{}');
+        if (lease.tab === directTabId.current) localStorage.removeItem('directInstallLease');
+      } catch (e) {}
+    };
+  }, [directLeaseHeld, directUpload.sessionId]);
+
+  useEffect(() => {
+    if (!directTransferActive) return;
+    const warn = (event) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [directTransferActive]);
 
   const selectedDriveRef = useRef(selectedDrive);
   selectedDriveRef.current = selectedDrive;
@@ -483,6 +518,8 @@ export default function App() {
     handleCloseSettings,
     handleOpenSmb,
     handleCloseSmb,
+    handleOpenDirectInstall,
+    handleCloseDirectInstall,
   } = useHistoryNavigation({
     setSelectedDrive,
     selectedDriveRef,
@@ -490,6 +527,8 @@ export default function App() {
     selectedTitleIdRef,
     setShowSettings,
     setShowSmbPage,
+    setShowDirectInstall,
+    directTransferActive,
     drives,
     fetchPackagesForDrive,
     fetchDrives,
@@ -515,6 +554,86 @@ export default function App() {
     showToast,
     initialRoute: selectedDrive ? { type: 'drive', driveId: selectedDrive.id || '__all__' } : { type: 'drives' },
   });
+  const handleCloseDirectInstallRef = useRef(handleCloseDirectInstall);
+  handleCloseDirectInstallRef.current = handleCloseDirectInstall;
+
+  const openDirectInstall = useCallback(async () => {
+    if (isPlayStation) return false;
+    try {
+      const status = await uploadStatus();
+      if (status.active) {
+        let lease = {};
+        try { lease = JSON.parse(localStorage.getItem('directInstallLease') || '{}'); } catch (e) {}
+        const anotherWindow = lease.tab && lease.tab !== directTabId.current && Date.now() - lease.time < 10000;
+        const anotherSession = status.session_id !== sessionStorage.getItem('directInstallSession');
+        if (anotherWindow || anotherSession) {
+          window.alert('Direct Install is already active in another window. Finish it there first.');
+          return false;
+        }
+      }
+    } catch (e) {
+      showToast('Could not check Direct Install status', 'error');
+      return false;
+    }
+    handleOpenDirectInstall();
+    return true;
+  }, [handleOpenDirectInstall, isPlayStation, showToast]);
+
+  useEffect(() => {
+    if (isPlayStation) return;
+
+    const hasFiles = (event) => Array.from(event.dataTransfer?.types || []).includes('Files');
+    const onDragOver = (event) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+    };
+    const onDrop = async (event) => {
+      if (event.__pkgManagerDropHandled || !hasFiles(event) || !event.dataTransfer?.files?.length) return;
+      event.preventDefault();
+      event.__pkgManagerDropHandled = true;
+
+      // Keep the current page and upload session intact while an install is active.
+      if (directUpload.state === 'uploading' || directUpload.state === 'checking' || directUpload.installing) return;
+
+      const file = event.dataTransfer.files[0];
+      if (await openDirectInstall()) directUpload.selectFile(file);
+    };
+
+    window.addEventListener('dragover', onDragOver);
+    window.addEventListener('drop', onDrop);
+    return () => {
+      window.removeEventListener('dragover', onDragOver);
+      window.removeEventListener('drop', onDrop);
+    };
+  }, [directUpload.installing, directUpload.selectFile, directUpload.state, isPlayStation, openDirectInstall]);
+
+  useEffect(() => {
+    if (!showDirectInstall || directUpload.sessionId) return;
+    let stopped = false;
+    let checking = false;
+    const check = async () => {
+      if (checking) return;
+      checking = true;
+      try {
+        const status = await uploadStatus();
+        if (stopped || !status.active) return;
+        const lease = JSON.parse(localStorage.getItem('directInstallLease') || '{}');
+        const anotherWindow = lease.tab && lease.tab !== directTabId.current && Date.now() - lease.time < 10000;
+        const anotherSession = status.session_id !== sessionStorage.getItem('directInstallSession');
+        if (anotherWindow || anotherSession) {
+          stopped = true;
+          window.alert('Direct Install is active in another window.');
+          handleCloseDirectInstallRef.current();
+        }
+      } catch (e) {} finally {
+        checking = false;
+      }
+    };
+    check();
+    const timer = setInterval(check, 3000);
+    return () => { stopped = true; clearInterval(timer); };
+  }, [directUpload.sessionId, showDirectInstall]);
 
   const isAnyModalOpen = Boolean(
     showDonateModal ||
@@ -644,10 +763,7 @@ export default function App() {
     return <LoadingScreen />;
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // VIEW A: Full-Screen Waiting For Disc / USB Part Overlay
-  // Completely hides background to prevent gamepad focus on elements underneath
-  // ──────────────────────────────────────────────────────────────────────────
+  // Waiting for a disc or USB package part.
   if (isWaitingForPart) {
     return <WaitingForPartScreen
       installerStatus={installerStatus}
@@ -656,10 +772,7 @@ export default function App() {
     />;
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // VIEW B: Full-Screen Active Installation Overlay
-  // Completely hides background to prevent gamepad focus on elements underneath
-  // ──────────────────────────────────────────────────────────────────────────
+  // Active installation overlay.
   if (isInstalling) {
     return <InstallingScreen
       installerStatus={installerStatus}
@@ -667,22 +780,21 @@ export default function App() {
       etaInfo={etaInfo}
       storage={storage}
       isDiscSource={isDiscSource}
-      onCancel={handleCancel}
+      onCancel={() => {
+        handleCancel();
+        if (installerStatus?.pkg_path?.startsWith('live:')) directUpload.cancel();
+      }}
       packages={packages}
+      directIconUrl={directUpload.iconUrl}
     />;
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // VIEW C: Full-Screen Refresh / Scan Progress Overlay
-  // Completely hides background to prevent gamepad focus on elements underneath
-  // ──────────────────────────────────────────────────────────────────────────
+  // Refresh and scan progress overlay.
   if (refreshing || scanStatus.is_scanning) {
     return <ScanningScreen scanStatus={scanStatus} />;
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // MAIN VIEW (Drives, Package Grid, or Title Detail View)
-  // ──────────────────────────────────────────────────────────────────────────
+  // Main application view.
   return (
     <div className="min-h-screen bg-[#0a0a0f] text-white flex flex-col font-ps5">
       <Toast notification={notification} />
@@ -700,6 +812,10 @@ export default function App() {
         showSettings={showSettings}
         showSmbPage={showSmbPage}
         onSettingsClick={() => {
+          if (showDirectInstall) {
+            if (directTransferActive && !window.confirm('A direct installation is in progress. Leave this page?')) return;
+            setShowDirectInstall(false);
+          }
           if (showSmbPage) {
             handleCloseSmb();
             return;
@@ -718,7 +834,14 @@ export default function App() {
 
       {/* Main Container */}
       <main className="w-full px-4 py-4 flex-1 space-y-6">
-        {showSmbPage ? (
+        {showDirectInstall ? (
+          <DirectInstallView
+            onBack={handleCloseDirectInstall}
+            up={directUpload}
+            storage={storage}
+            installerStatus={installerStatus}
+          />
+        ) : showSmbPage ? (
           <SmbManagementView
             settings={settings}
             onBack={handleCloseSmb}
@@ -802,6 +925,8 @@ export default function App() {
             drives={drives}
             storage={storage}
             onSelectDrive={handleSelectDrive}
+            onDirectInstall={openDirectInstall}
+            showDirectInstall={!isPlayStation}
             loadingDrives={loadingDrives}
             refreshAll={refreshAll}
           />

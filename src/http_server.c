@@ -19,6 +19,8 @@
 #include "leftovers.h"
 #include "app_diag.h"
 #include "app_installer.h"
+#include "ws_upload.h"
+#include "ws_stream.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -153,7 +155,9 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
     if (strcmp(method, "POST") == 0 && *upload_data_size != 0) {
         post_state_t *ps = (post_state_t *)*con_cls;
         if (!ps) return MHD_NO;
-        if (ps->oversize || ps->size + *upload_data_size + 1 > MAX_POST_BODY_SIZE) {
+        size_t body_limit = strcmp(url, "/api/upload/icon") == 0
+            ? WS_DIRECT_ICON_MAX : MAX_POST_BODY_SIZE - 1;
+        if (ps->oversize || *upload_data_size > body_limit - ps->size) {
             ps->oversize = 1;
             *upload_data_size = 0;
             return MHD_YES;
@@ -182,6 +186,194 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
             MHD_destroy_response(resp);
             return ret;
         }
+    }
+
+    /* ── Direct-install upload sessions ──────────────────────────────
+     * Narrow guarded branch: only URLs under /api/upload/ are handled here.
+     * With no browser calling these routes, control falls through to the
+     * untouched logic below. Chunk bytes travel over the WS listener
+     * (:18842, ws_upload.c), never through MHD/Post bodies. */
+    if (strncmp(url, "/api/upload/", 12) == 0) {
+        if (strcmp(method, "POST") == 0 && strcmp(url, "/api/upload/icon") == 0) {
+            post_state_t *ps = (post_state_t *)*con_cls;
+            const char *owner = MHD_lookup_connection_value(conn, MHD_HEADER_KIND, "X-Direct-Owner");
+            const char *sid = MHD_lookup_connection_value(conn, MHD_HEADER_KIND, "X-Direct-Session");
+            int ok = ps && ps->data && owner && sid &&
+                ws_direct_set_icon(owner, sid, (const uint8_t *)ps->data, ps->size) == 0;
+            const char *body = ok ? "{\"success\":true}" : "{\"success\":false}";
+            struct MHD_Response *resp = MHD_create_response_from_buffer(
+                strlen(body), (void *)body, MHD_RESPMEM_MUST_COPY);
+            add_cors_headers(resp);
+            MHD_add_response_header(resp, "Content-Type", "application/json");
+            enum MHD_Result ret = MHD_queue_response(conn,
+                ok ? MHD_HTTP_OK : MHD_HTTP_BAD_REQUEST, resp);
+            MHD_destroy_response(resp);
+            return ret;
+        }
+        /* Check local package metadata before offering a direct installation. */
+        if (strcmp(method, "POST") == 0 && strcmp(url, "/api/upload/check") == 0) {
+            post_state_t *ps = (post_state_t *)*con_cls;
+            pkg_detail_t pkg = {0};
+            char response[512];
+            unsigned int code = MHD_HTTP_OK;
+            if (!ps || !ps->data ||
+                extract_json_string_value(ps->data, "title_id", pkg.title_id, sizeof(pkg.title_id)) != 0 ||
+                extract_json_string_value(ps->data, "pkg_type", pkg.pkg_type_str, sizeof(pkg.pkg_type_str)) != 0 ||
+                extract_json_string_value(ps->data, "content_id", pkg.content_id, sizeof(pkg.content_id)) != 0 ||
+                extract_json_string_value(ps->data, "app_version", pkg.app_version, sizeof(pkg.app_version)) != 0 ||
+                !pkg.title_id[0] ||
+                (strcmp(pkg.pkg_type_str, "base") != 0 &&
+                 strcmp(pkg.pkg_type_str, "update") != 0 &&
+                 strcmp(pkg.pkg_type_str, "dlc") != 0) ||
+                (strcmp(pkg.pkg_type_str, "dlc") == 0 && !pkg.content_id[0])) {
+                code = MHD_HTTP_BAD_REQUEST;
+                snprintf(response, sizeof(response), "{\"error\":\"Invalid package metadata\"}");
+            } else {
+                pkg.pkg_type = strcmp(pkg.pkg_type_str, "update") == 0 ? PKG_TYPE_UPDATE :
+                               strcmp(pkg.pkg_type_str, "dlc") == 0 ? PKG_TYPE_DLC : PKG_TYPE_BASE;
+                pkg_install_eligibility_t eligibility;
+                pkg_scanner_check_install_eligibility(&pkg, &eligibility);
+                char reason[256], installed_version[96];
+                json_str_esc(eligibility.disabled_reason, reason, sizeof(reason));
+                json_str_esc(eligibility.installed_version, installed_version, sizeof(installed_version));
+                snprintf(response, sizeof(response),
+                         "{\"can_install\":%s,\"install_disabled_reason\":\"%s\","
+                         "\"is_installed\":%s,\"installed_version\":\"%s\"}",
+                         eligibility.can_install ? "true" : "false", reason,
+                         eligibility.is_installed ? "true" : "false", installed_version);
+            }
+            struct MHD_Response *resp = MHD_create_response_from_buffer(
+                strlen(response), response, MHD_RESPMEM_MUST_COPY);
+            add_cors_headers(resp);
+            MHD_add_response_header(resp, "Content-Type", "application/json");
+            enum MHD_Result ret = MHD_queue_response(conn, code, resp);
+            MHD_destroy_response(resp);
+            return ret;
+        }
+        /* POST /api/upload/init {"filename":"game.pkg","total":123} */
+        if (strcmp(method, "POST") == 0 && strcmp(url, "/api/upload/init") == 0) {
+            post_state_t *ps = (post_state_t *)*con_cls;
+            char fn[256] = {0};
+            char owner[65] = {0}, resume_sid[64] = {0};
+            char title[256] = {0}, title_id[64] = {0}, version[32] = {0}, kind[16] = {0};
+            uint64_t total = 0;
+            if (ps && ps->data) {
+                extract_json_string_value(ps->data, "filename", fn, sizeof(fn));
+                extract_json_string_value(ps->data, "owner", owner, sizeof(owner));
+                extract_json_string_value(ps->data, "session_id", resume_sid, sizeof(resume_sid));
+                extract_json_string_value(ps->data, "title_name", title, sizeof(title));
+                extract_json_string_value(ps->data, "title_id", title_id, sizeof(title_id));
+                extract_json_string_value(ps->data, "app_version", version, sizeof(version));
+                extract_json_string_value(ps->data, "pkg_type", kind, sizeof(kind));
+                const char *tp = strstr(ps->data, "\"total\"");
+                if (tp) {
+                    tp = strchr(tp + 7, ':');
+                    if (tp) total = strtoull(tp + 1, NULL, 10);
+                }
+            }
+            char resp_json[512];
+            unsigned int code = MHD_HTTP_OK;
+            if (fn[0] == '\0' || total == 0) {
+                snprintf(resp_json, sizeof(resp_json),
+                         "{\"success\":false,\"error\":\"filename and total required\"}");
+                code = MHD_HTTP_BAD_REQUEST;
+            } else {
+                char sid[64] = {0};
+                int rc = ws_direct_init_owned(fn, total, owner, resume_sid,
+                                              sid, sizeof(sid));
+                if (rc == -2) {
+                    snprintf(resp_json, sizeof(resp_json),
+                             "{\"success\":false,\"error\":\"Another upload is active\"}");
+                    code = MHD_HTTP_CONFLICT;
+                } else if (rc != 0) {
+                    snprintf(resp_json, sizeof(resp_json),
+                             "{\"success\":false,\"error\":\"Cannot start upload session\"}");
+                    code = MHD_HTTP_BAD_REQUEST;
+                } else {
+                    ws_direct_set_metadata(owner, sid, title, title_id, version, kind);
+                    /* The spool session exists but chunk bytes travel over
+                     * the :18842 listener: refuse loudly if it is down instead
+                     * of letting the browser time out against a dead port. */
+                    if (!ws_direct_listener_running()) {
+                        ws_direct_cancel_session();
+                        snprintf(resp_json, sizeof(resp_json),
+                                 "{\"success\":false,\"error\":\"Upload socket unavailable\"}");
+                        code = MHD_HTTP_INTERNAL_SERVER_ERROR;
+                    } else {
+                        uint64_t off = ws_live_get_resume_offset();
+                        snprintf(resp_json, sizeof(resp_json),
+                                 "{\"success\":true,\"session_id\":\"%s\",\"offset\":%llu,\"ws_port\":%d}",
+                                 sid, (unsigned long long)off,
+                                 ws_direct_listener_port() > 0 ?
+                                     ws_direct_listener_port() : WS_DIRECT_DEFAULT_PORT);
+                    }
+                }
+            }
+            struct MHD_Response *resp = MHD_create_response_from_buffer(
+                strlen(resp_json), (void *)resp_json, MHD_RESPMEM_MUST_COPY);
+            add_cors_headers(resp);
+            MHD_add_response_header(resp, "Content-Type", "application/json");
+            enum MHD_Result ret = MHD_queue_response(conn, code, resp);
+            MHD_destroy_response(resp);
+            return ret;
+        }
+        /* GET /api/upload/status */
+        if (strcmp(method, "GET") == 0 && strcmp(url, "/api/upload/status") == 0) {
+            char st[768] = {0};
+            ws_direct_get_status(st, sizeof(st));
+            struct MHD_Response *resp = MHD_create_response_from_buffer(
+                strlen(st), (void *)st, MHD_RESPMEM_MUST_COPY);
+            add_cors_headers(resp);
+            MHD_add_response_header(resp, "Content-Type", "application/json");
+            enum MHD_Result ret = MHD_queue_response(conn, MHD_HTTP_OK, resp);
+            MHD_destroy_response(resp);
+            return ret;
+        }
+        /* POST /api/upload/finish */
+        if (strcmp(method, "POST") == 0 && strcmp(url, "/api/upload/finish") == 0) {
+            char path[640] = {0};
+            char resp_json[1600];
+            unsigned int code = MHD_HTTP_OK;
+            if (ws_direct_finish_session(path, sizeof(path)) != 0) {
+                char st[768] = {0};
+                ws_direct_get_status(st, sizeof(st));
+                snprintf(resp_json, sizeof(resp_json),
+                         "{\"success\":false,\"error\":\"Upload incomplete\",\"status\":%s}", st);
+                code = MHD_HTTP_BAD_REQUEST;
+            } else {
+                char esc[700] = {0};
+                json_str_esc(path, esc, sizeof(esc));
+                snprintf(resp_json, sizeof(resp_json),
+                         "{\"success\":true,\"path\":\"%s\"}", esc);
+            }
+            struct MHD_Response *resp = MHD_create_response_from_buffer(
+                strlen(resp_json), (void *)resp_json, MHD_RESPMEM_MUST_COPY);
+            add_cors_headers(resp);
+            MHD_add_response_header(resp, "Content-Type", "application/json");
+            enum MHD_Result ret = MHD_queue_response(conn, code, resp);
+            MHD_destroy_response(resp);
+            return ret;
+        }
+        /* POST /api/upload/cancel */
+        if (strcmp(method, "POST") == 0 && strcmp(url, "/api/upload/cancel") == 0) {
+            post_state_t *ps = (post_state_t *)*con_cls;
+            char owner[65] = {0}, sid[64] = {0};
+            if (ps && ps->data) {
+                extract_json_string_value(ps->data, "owner", owner, sizeof(owner));
+                extract_json_string_value(ps->data, "session_id", sid, sizeof(sid));
+            }
+            int ok = ws_direct_cancel_owned(owner, sid) == 0;
+            const char *ok_resp = ok ? "{\"success\":true}" :
+                "{\"success\":false,\"error\":\"Session belongs to another window\"}";
+            struct MHD_Response *resp = MHD_create_response_from_buffer(
+                strlen(ok_resp), (void *)ok_resp, MHD_RESPMEM_PERSISTENT);
+            add_cors_headers(resp);
+            MHD_add_response_header(resp, "Content-Type", "application/json");
+            enum MHD_Result ret = MHD_queue_response(conn, ok ? MHD_HTTP_OK : MHD_HTTP_CONFLICT, resp);
+            MHD_destroy_response(resp);
+            return ret;
+        }
+        /* Unknown upload sub-path: fall through to 404 below. */
     }
 
     /* ── GET / or /index.html ──────────────────────────────────── */
@@ -289,15 +481,21 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
         uint64_t nvme_free = 0, nvme_total = 0, nvme_used = 0;
         int nvme_avail = (system_get_nvme_storage_info(&nvme_free, &nvme_total, &nvme_used) == 0);
 
-        char buf[512];
+        uint64_t usb_free = 0, usb_total = 0, usb_used = 0;
+        int usb_avail = (system_get_usb_storage_info(&usb_free, &usb_total, &usb_used) == 0);
+
+        char buf[768];
         snprintf(buf, sizeof(buf),
                  "{\"free\":%llu,\"total\":%llu,\"used\":%llu,\"path\":\"/data\",\"label\":\"Internal\","
                  "\"internal\":{\"free\":%llu,\"total\":%llu,\"used\":%llu,\"path\":\"/data\",\"label\":\"Internal\"},"
-                 "\"nvme\":{\"available\":%s,\"free\":%llu,\"total\":%llu,\"used\":%llu,\"path\":\"/mnt/ext1\",\"label\":\"M.2 NVMe\"}}",
+                 "\"nvme\":{\"available\":%s,\"free\":%llu,\"total\":%llu,\"used\":%llu,\"path\":\"/mnt/ext1\",\"label\":\"M.2 NVMe\"},"
+                 "\"usb\":{\"available\":%s,\"free\":%llu,\"total\":%llu,\"used\":%llu,\"path\":\"/mnt/ext0\",\"label\":\"USB\"}}",
                  (unsigned long long)free_b, (unsigned long long)total_b, (unsigned long long)used_b,
                  (unsigned long long)free_b, (unsigned long long)total_b, (unsigned long long)used_b,
                  nvme_avail ? "true" : "false",
-                 (unsigned long long)nvme_free, (unsigned long long)nvme_total, (unsigned long long)nvme_used);
+                 (unsigned long long)nvme_free, (unsigned long long)nvme_total, (unsigned long long)nvme_used,
+                 usb_avail ? "true" : "false",
+                 (unsigned long long)usb_free, (unsigned long long)usb_total, (unsigned long long)usb_used);
         struct MHD_Response *resp = MHD_create_response_from_buffer(
             strlen(buf), (void *)buf, MHD_RESPMEM_MUST_COPY);
         add_cors_headers(resp);
@@ -358,7 +556,21 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
     /* ── GET /api/icon ─────────────────────────────────────────── */
     if (strcmp(method, "GET") == 0 && strcmp(url, "/api/icon") == 0) {
         const char *pkg_path = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "path");
-        if (pkg_path && pkg_path[0] != '\0') {
+        if (pkg_path && strncmp(pkg_path, "live:", 5) == 0) {
+            uint8_t *icon_data = NULL;
+            size_t icon_size = 0;
+            if (ws_direct_get_icon(pkg_path + 5, &icon_data, &icon_size) == 0) {
+                struct MHD_Response *resp = MHD_create_response_from_buffer(
+                    icon_size, icon_data, MHD_RESPMEM_MUST_FREE);
+                add_cors_headers(resp);
+                MHD_add_response_header(resp, "Content-Type", "image/png");
+                MHD_add_response_header(resp, "Cache-Control", "no-store");
+                enum MHD_Result ret = MHD_queue_response(conn, MHD_HTTP_OK, resp);
+                MHD_destroy_response(resp);
+                return ret;
+            }
+        }
+        if (pkg_path && pkg_path[0] != '\0' && strncmp(pkg_path, "live:", 5) != 0) {
             int is_smb = (strncmp(pkg_path, "smb://", 6) == 0);
             uint8_t *icon_data = NULL;
             size_t icon_size = 0;
@@ -545,10 +757,11 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
         char *buf = (char *)malloc(spos + 1024);
         if (!buf) return MHD_NO;
         snprintf(buf, spos + 1024,
-                 "{\"move_installed_to_end\":%s,\"fade_installed_packages\":%s,\"all_sources_mode\":%s,\"smb_shares\":[%s]}",
+                 "{\"move_installed_to_end\":%s,\"fade_installed_packages\":%s,\"all_sources_mode\":%s,\"pkg_install_debug\":%s,\"smb_shares\":[%s]}",
                  s.move_installed_to_end ? "true" : "false",
                  s.fade_installed_packages ? "true" : "false",
-                 s.all_sources_mode ? "true" : "false", shares_json);
+                 s.all_sources_mode ? "true" : "false",
+                 s.pkg_install_debug ? "true" : "false", shares_json);
         struct MHD_Response *resp = MHD_create_response_from_buffer(
             strlen(buf), (void *)buf, MHD_RESPMEM_MUST_FREE);
         add_cors_headers(resp);
@@ -589,6 +802,15 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
                     s.all_sources_mode = 1;
                 } else if (strncmp(aptr + 19, "false", 5) == 0 || strncmp(aptr + 20, "false", 5) == 0) {
                     s.all_sources_mode = 0;
+                }
+            }
+
+            char *dptr = strstr(ps->data, "\"pkg_install_debug\":");
+            if (dptr) {
+                if (strncmp(dptr + 20, "true", 4) == 0 || strncmp(dptr + 21, "true", 4) == 0) {
+                    s.pkg_install_debug = 1;
+                } else if (strncmp(dptr + 20, "false", 5) == 0 || strncmp(dptr + 21, "false", 5) == 0) {
+                    s.pkg_install_debug = 0;
                 }
             }
 
@@ -806,6 +1028,33 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
             snprintf(response_buf, sizeof(response_buf),
                      "{\"success\":false,\"error\":\"Missing package path\"}");
             status_code = MHD_HTTP_BAD_REQUEST;
+        } else if (strncmp(target_path, "live:", 5) == 0) {
+            /* NEW: live RAM session (Direct Install, no disk file). */
+            int res = installer_start_live(target_path);
+            if (res == 0) {
+                snprintf(response_buf, sizeof(response_buf),
+                         "{\"success\":true,\"message\":\"Live installation started successfully\"}");
+            } else if (res == -2) {
+                snprintf(response_buf, sizeof(response_buf),
+                         "{\"success\":false,\"error\":\"Another package is currently installing\"}");
+                status_code = MHD_HTTP_CONFLICT;
+            } else if (res == -10) {
+                snprintf(response_buf, sizeof(response_buf),
+                         "{\"success\":false,\"error\":\"Insufficient storage space to install package\"}");
+                status_code = MHD_HTTP_BAD_REQUEST;
+            } else if (res == -13) {
+                snprintf(response_buf, sizeof(response_buf),
+                         "{\"success\":false,\"error\":\"Live install supports single packages only\"}");
+                status_code = MHD_HTTP_BAD_REQUEST;
+            } else if (res == -14) {
+                snprintf(response_buf, sizeof(response_buf),
+                         "{\"success\":false,\"error\":\"Live header timed out, re-upload the package\"}");
+                status_code = MHD_HTTP_BAD_REQUEST;
+            } else {
+                snprintf(response_buf, sizeof(response_buf),
+                         "{\"success\":false,\"error\":\"Failed to start live install (code %d)\"}", res);
+                status_code = MHD_HTTP_INTERNAL_SERVER_ERROR;
+            }
         } else {
             int res = installer_start(target_path);
             if (res == 0) {
@@ -996,4 +1245,3 @@ int http_server_restart_with_delay(int port, unsigned int delay_us) {
 int http_server_restart(int port) {
     return http_server_restart_with_delay(port, 500000);
 }
-

@@ -1,6 +1,6 @@
 # PKG Manager - Architecture & Implementation Details
 
-This document provides an in-depth architectural guide to the **PKG Manager** daemon, its internal subsystems, virtual HTTP streaming engine, PlayStation 5 system installer integration, and storage paradigms.
+This document provides an in-depth architectural guide to the **PKG Manager** daemon, its internal subsystems, virtual HTTP streaming engine, Direct Install upload path, PlayStation 5 system installer integration, and storage paradigms.
 
 ---
 
@@ -33,9 +33,10 @@ flowchart TB
         end
     end
 
-    subgraph STRM ["Virtual Streaming Pipeline (Port 8845)"]
+    subgraph STRM ["Virtual Streaming Pipeline (Ports 18841 / 18842)"]
         direction LR
-        SOCKET["<b>HTTP Range Server</b> (:8845)<br/><code>stream_server.c</code> (Raw BSD Sockets)"]
+        SOCKET["<b>HTTP Range Server</b> (:18841)<br/><code>stream_server.c</code> (Raw BSD Sockets)"]
+        WS["<b>Direct Install Upload</b> (:18842)<br/><code>ws_upload.c</code> (WebSocket)"]
         VSTREAM["<b>Virtual Stream Engine</b><br/><code>multipart.c</code> (Multi-part Slices & SMB)"]
     end
 
@@ -49,6 +50,7 @@ flowchart TB
 
     %% UI Interaction
     BROWSER <-->|"HTTP REST / Static Assets"| HTTP8844
+    BROWSER -->|"WebSocket PKG Upload"| WS
 
     %% Control Plane routing
     HTTP8844 -->|"Install Command"| INSTALLER
@@ -65,6 +67,7 @@ flowchart TB
     %% Center: Stream session mount
     INSTALLER -->|"Mount Session"| VSTREAM
     SOCKET -->|"Fetch Slices"| VSTREAM
+    WS -->|"RAM-backed Live Session"| VSTREAM
 
     %% Right: Storage reads
     STOR -->|"Scan Files & Headers"| SCANNER
@@ -80,20 +83,21 @@ flowchart TB
     class BROWSER client;
     class HTTP8844,APPINFO,INSTALLER,SCANNER ctrl;
     class USB,DISC,SMB,DATA stor;
-    class SOCKET,VSTREAM strm;
+    class SOCKET,WS,VSTREAM strm;
     class SCE,RECEIVER,APPDB,NOTIF ps5;
 ```
 
 ---
 
-## 2. Dual HTTP Server Architecture
+## 2. Network Services Architecture
 
-The daemon operates **two distinct HTTP servers** on separate TCP ports to isolate interactive UI/API traffic from system package streaming:
+The daemon exposes three network services on separate TCP ports to isolate interactive UI/API traffic from package streaming and Direct Install uploads:
 
 | Port | Implementation | Primary Role | Features |
 |:---|:---|:---|:---|
 | **8844** | `libmicrohttpd` (MHD) | UI & REST API | Serves bundled React SPA, handles JSON REST endpoints, and serves cached package icons. |
-| **8845** | Raw BSD Sockets (`stream_server.c`) | Virtual Stream Pipeline | Serves HTTP/1.1 206 Partial Content byte ranges directly to the PS5 background installer with custom socket timeouts and `MSG_NOSIGNAL` sends. |
+| **18841** | Raw BSD Sockets (`stream_server.c`) | Virtual Stream Pipeline | Serves HTTP/1.1 206 Partial Content byte ranges directly to the PS5 background installer with custom socket timeouts and `MSG_NOSIGNAL` sends. |
+| **18842** | Raw WebSocket listener (`ws_upload.c`) | Direct Install Upload | Receives PKG chunks from a LAN browser and feeds the RAM-backed live stream session used by the installer. |
 
 ### REST API Endpoints (Port 8844)
 
@@ -103,13 +107,14 @@ The primary web server handles all interactive user requests:
 - **Package Discovery**: `/api/drives`, `/api/packages`, `/api/packages/quick-scan`, `/api/packages/refresh`, `/api/scan/status`.
 - **Package Icons**: `/api/icon` (extracts or serves cached `icon0.png`), `/api/icon-error`.
 - **Installation Control**: `/api/install` (starts installation), `/api/cancel` (aborts current installation), `/api/poll` / `/api/status` (live progress), `/api/shortcut/install`.
+- **Direct Install Control**: `/api/upload/init`, `/api/upload/status`, `/api/upload/icon`, `/api/upload/finish`, and `/api/upload/cancel`.
 - **SMB & Metadata Cache**: `/api/smb/test`, `/api/cache/stats`, `/api/cache/clear`.
 - **Leftovers Cleanup**: `/api/leftovers` (scans unlinked patches/DLCs), `/api/leftovers/delete` (purges selected orphans).
 
-### Range Streaming Server (Port 8845)
+### Range Streaming Server (Port 18841)
 
 The dedicated stream server (`stream_server.c`) handles package delivery to the PS5 background installer:
-- Listens on raw BSD sockets at port 8845.
+- Listens on raw BSD sockets at port 18841.
 - Serves HTTP/1.1 `206 Partial Content` (and `HEAD`) responses directly via the virtual stream engine (`virtual_stream_read()`).
 - Uses socket timeouts (`SO_RCVTIMEO`/`SO_SNDTIMEO`) and `MSG_NOSIGNAL` to handle client disconnects cleanly without process interruption.
 - Session name pinning: each installation pins an exact session filename (e.g. `package-<unixtime>-<seq>.pkg`). Any stray or unexpected requests immediately return `404 Not Found`.
@@ -119,10 +124,10 @@ The dedicated stream server (`stream_server.c`) handles package delivery to the 
 
 ## 3. Storage Model & Virtual Range Streaming
 
-Instead of copying package files to the console's internal storage before installing, PKG Manager exposes packages via a virtual HTTP range-streaming endpoint on port 8845:
+Instead of copying package files to the console's internal storage before installing, PKG Manager exposes packages via a virtual HTTP range-streaming endpoint on port 18841:
 
 ```text
-http://127.0.0.1:8845/stream/install/package-<unixtime>-<seq>.pkg
+http://127.0.0.1:18841/stream/install/package-<unixtime>-<seq>.pkg
 ```
 
 ### Key Advantages
@@ -133,10 +138,13 @@ http://127.0.0.1:8845/stream/install/package-<unixtime>-<seq>.pkg
 2. **Direct Installation from Network Shares (SMB)**:
    The native PS5 package installer cannot access Samba/SMB network shares directly. The virtual stream engine bridges network reads into standard HTTP range responses, enabling direct network installation without mounting shares in the OS or copying packages locally first.
 
-3. **Multi-Part & Optical Disc Swapping**:
+3. **Direct Install from a LAN Device**:
+   A browser on a PC or other LAN device uploads a local PKG over WebSocket port 18842. The daemon keeps the upload in a bounded RAM-backed live session and exposes it through the same range-streaming path used by regular installs.
+
+4. **Multi-Part & Optical Disc Swapping**:
    For packages split across multiple files or optical discs (BD-R, DVD), the virtual stream translates byte offsets across parts on the fly using `pread()`, allowing multi-part installations without pre-reassembling the files.
 
-4. **Accurate Transfer Progress**:
+5. **Accurate Transfer Progress**:
    Streaming byte ranges through our own socket server allows the daemon to track delivery progress and stream metrics independently of system installer status polls.
 
 ---
@@ -231,14 +239,63 @@ int sceAppInstUtilGetInstallStatus(const char* content_id, SceAppInstallStatusIn
 ### Package Metadata & Installation Pipeline
 
 When invoking `sceAppInstUtilInstallByPackage`, `pkg_metadata_t` is populated as follows:
-- **`uri`**: Unique per-install streaming URL (`http://127.0.0.1:8845/stream/install/package-<unixtime>-<seq>.pkg`). Timestamping prevents URI collisions across successive installations.
+- **`uri`**: Unique per-install streaming URL (`http://127.0.0.1:18841/stream/install/package-<unixtime>-<seq>.pkg`). Timestamping prevents URI collisions across successive installations.
 - **`content_name`**: Formatted as `"<Title ID> (<Kind>)"` (e.g. `"CUSA00000 (Base)"` or `"CUSA00000 (Update)"`).
 - **`content_id`**: Passed as an empty string `""`; the system installer reads the initial package header from the stream to populate `pkg_info.content_id`.
 - **`ex_uri`**, **`playgo_scenario_id`**, **`icon_url`**: Passed as empty strings `""`.
 
+### Host-Side PS5 Stream Simulator
+
+To develop install methods (websocket client, direct stream creation) without a
+console, the PS5's request pattern against the stream server is reproduced on
+the host. The pattern, reverse-engineered from the captures in
+`.for_reference/stream_debug/`, has three phases:
+
+1. **Header acquisition** — a burst of short-lived connections, each re-reading
+   the first 64 KiB (`Range: bytes=0-65535`) so the installer can parse /
+   re-validate the package header.
+2. **Sidecar CRC probe** — a single Range-less GET of
+   `<content_id>.crc` that must return `404` when there is no companion file.
+3. **Bulk transfer** — two parallel long-lived connections serving contiguous
+   16 MiB byte-ranges across `[65536, end)` in an A/B ping-pong.
+
+Every request carries the query the console appends
+(`?product=0287&serverIpAddr=127.0.0.1&r=00000000`) against `:18841`.
+
+The pure client half is `tests/ps5_sim.c` (raw HTTP/1.1, no dependency on the
+server). `tests/test_stream_sim.c` pairs it against the real
+`src/stream_server.c` and asserts the model holds; it is part of `make test`.
+The standalone CLI (`tools/ps5_installer_sim.c`, launched via
+`tools/run_stream_sim.sh`) can either start its own local server or point the
+same replay at any live server — exactly the shape a future websocket / remote
+install method needs. A correct HTTP/1.1 keep-alive reader is essential here:
+absorbing body bytes into the header buffer desyncs a persistent connection and
+makes the exact body read block on bytes the server already sent.
+
+## 6. Direct-Install Upload Path
+
+```
+LAN browser (DirectInstallView) --ws://:18842--> ws_upload.c --RAM ring-->
+virtual_stream ("live:<id>") --:18841--> installer.c (existing worker) --> system installer
+```
+
+`src/ws_upload.c` is transport only; `src/ws_stream.c` owns the bytes
+(1 MB pinned header + 64 MB ring, `ws_live_*` symbols, no load-time side
+effects, abort/timeout on every wait). The only touch points in existing
+code are additive: a `live:` scheme branch in `virtual_stream_open`/`read`
+(`multipart.c`), one `pkg_parser_parse_mem()` function reusing the in-file
+sub-parsers, one `installer_start_live()` entry plus abort/destroy hooks
+(`installer.c`), and a guarded `/api/upload/` REST branch plus `live:` URI
+routing in `/api/install` (`http_server.c`). `src/stream_server.c` has
+zero diff, so the pull contract verified by `test_stream_sim` still holds
+byte-for-byte. Host proof: `test_ws_stream`, `test_parse_mem`,
+`test_ws_upload`, `test_direct_install_e2e`, and
+`tools/run_direct_install_sim.sh --demo` (fragmented socket push racing
+the standard `ps5_sim` pull replay, byte-exact).
+
 ---
 
-## 6. Package Parser & Metadata Engine (`pkg_parser.c`)
+## 7. Package Parser & Metadata Engine (`pkg_parser.c`)
 
 The package parser inspects packages directly on storage media using random-access `pread()`:
 
@@ -250,13 +307,13 @@ The package parser inspects packages directly on storage media using random-acce
 - **SFO & JSON Parser**: Reads `param.sfo` (for PS4 titles) or `param.json` (for PS5 native titles) from the CNT entry directory table to extract localized Title Name, Application Version, and Category.
 - **Package Category Classification**:
   - **Update**: `category` starting with `gp`, presence of playgo chunk patch (`app/playgo-chunk.dat` / entry `0x1008`), delta patch entries (`0x0407`, `0x0408`), or delta content type magic (`0x1E`, `0x41000000`).
-  - **DLC / Extra Content**: `category` starting with `ac`, `al`, equal to `addcont`, or CNT type magic `1`.
+  - **DLC / Extra Content**: `category` starting with `ac`, `al`, equal to `addcont`, or a CNT type whose low byte is `1` when `param.json` does not contain the standard base-application metadata fields. This avoids treating normal base packages that share the CNT value as DLC.
   - **Base App**: `category` starting with `gd`, `bd`, `gc`, `wt`, or default fallback when no update/DLC indicators are present.
 - **Icon Extraction**: Locates uncompressed `icon0.png` data (entry type `0x1200` or named `icon0.png`) and serves it via `/api/icon?path=...`.
 
 ---
 
-## 7. Storage & Drive Scanning (`pkg_scanner.c`)
+## 8. Storage & Drive Scanning (`pkg_scanner.c`)
 
 The scanner monitors all mount points and builds the unified catalog:
 
@@ -272,10 +329,13 @@ The scanner monitors all mount points and builds the unified catalog:
 3. **Multi-Part Deduplication**:
    - Scans and validates multi-part slices.
    - Displays only Part 1 in the UI package list with a "Disc 1 of N" badge. Secondary parts (`.part2..N`) are indexed internally for disc swapping but hidden from the main list.
+4. **Install Capacity**:
+   - Reports available capacity for internal, M.2, and extended USB storage (`/mnt/ext0`).
+   - Applies the supported storage targets when checking whether a package can be installed; PS4 packages can use internal, M.2, or extended USB storage, while PS5 packages use internal or M.2 storage.
 
 ---
 
-## 8. Installed Application Database (`app_info.c`)
+## 9. Installed Application Database (`app_info.c`)
 
 To prevent duplicate installations and guide the user:
 - Queries the PS5 system SQLite database at `/system_data/priv/mms/app.db` (table `tbl_appinfo`).
@@ -291,7 +351,7 @@ To prevent duplicate installations and guide the user:
 
 ---
 
-## 9. Manifest Caching & Quick Rescan (`pkg_scanner.c`)
+## 10. Manifest Caching & Quick Rescan (`pkg_scanner.c`)
 
 To eliminate slow cold scans upon daemon restart and drive navigation:
 1. **Manifest Persistence**: The discovered catalog of drives, files, and parsed metadata is serialized to `/data/pkgmgr/manifest.json` (or `/tmp/pkgmgr_manifest.json`).
@@ -306,7 +366,7 @@ To eliminate slow cold scans upon daemon restart and drive navigation:
 
 ---
 
-## 10. Orphaned Leftover Detection & Cleanup (`leftovers.c`)
+## 11. Orphaned Leftover Detection & Cleanup (`leftovers.c`)
 
 When base games are deleted, or after interrupted uninstalls, unreferenced patch or DLC data can remain on storage without being tracked by `app.db`:
 1. **Detection**:
@@ -319,7 +379,7 @@ When base games are deleted, or after interrupted uninstalls, unreferenced patch
 
 ---
 
-## 11. SMB Network Share Storage & Caching (`smb_client.c`, `pkg_cache.c`)
+## 12. SMB Network Share Storage & Caching (`smb_client.c`, `pkg_cache.c`)
 
 PKG Manager includes an embedded SMB2 client (`libsmb2`) allowing direct package installation over the local network without mounting network drives:
 1. **Share Discovery & Connection**: Connects to user-configured SMB shares with credentials stored in `/data/pkgmgr/settings.json`.
@@ -329,3 +389,4 @@ PKG Manager includes an embedded SMB2 client (`libsmb2`) allowing direct package
    - Remote SMB shares are treated as read-only; no cache files are written to network shares.
    - Subsequent scans load metadata and icons instantly from the local cache, avoiding network roundtrips.
 3. **Streaming Installation**: Packages on SMB shares are streamed via virtual range requests directly into the installation pipeline using `smb_file_session_read()`.
+   Reads are pipelined and credit-aware to reduce network latency; ideal local-network installations have reached approximately 110 MB/s.

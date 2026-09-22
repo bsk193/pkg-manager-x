@@ -1,6 +1,11 @@
 #ifndef PKG_CACHE_H
 #define PKG_CACHE_H
 
+/* Bump when persisted package metadata semantics change and cached package
+ * records must be reparsed. */
+#define PKG_CACHE_FORMAT_VERSION 2
+#define PKG_CACHE_FORMAT_TAG "pkg-cache-v2"
+
 #include <stdint.h>
 #include <stddef.h>
 #include "pkg_parser.h"
@@ -12,6 +17,7 @@ typedef struct {
     int move_installed_to_end;
     int fade_installed_packages;
     int all_sources_mode;
+    int pkg_install_debug;  /* 1 = log every stream server connection to /data/pkgmgr/ */
     smb_share_config_t smb_shares[MAX_SMB_SHARES];
     int smb_share_count;
 } app_settings_t;
@@ -52,4 +58,3 @@ char *pkg_cache_get_stats_json(void);
 int64_t pkg_cache_clear(void);
 
 #endif /* PKG_CACHE_H */
-

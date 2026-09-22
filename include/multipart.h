@@ -62,6 +62,8 @@ typedef struct {
 typedef struct {
     int is_multipart;
     int is_smb;
+    int is_live;           /* NEW: RAM live session (ws_stream.c), no file */
+    void *live;            /* ws_stream session handle (global singleton) */
     void *smb_session;
     uint32_t current_part;
     uint32_t total_parts;
@@ -135,6 +137,13 @@ void virtual_stream_set_part_notifier(virtual_stream_part_notify_fn fn);
 int virtual_stream_open(const char *initial_path, virtual_stream_t *stream);
 ssize_t virtual_stream_read(virtual_stream_t *stream, uint64_t pkg_offset, void *buf, size_t count);
 void virtual_stream_close(virtual_stream_t *stream);
+
+/**
+ * For SMB streams: returns the smb:// URL of the backing file so the caller
+ * can open its own private SMB session for parallel reads.  Returns NULL for
+ * non-SMB streams.
+ */
+const char *virtual_stream_get_smb_url(const virtual_stream_t *stream);
 
 #ifdef __cplusplus
 }
