@@ -28,7 +28,9 @@
 
 #include <smb2/smb2.h>
 #include <smb2/libsmb2.h>
+#include <smb2/libsmb2-raw.h>
 #include <smb2/smb2-errors.h>
+#include <smb2/libsmb2-share-enum.h>
 #include "libsmb2-private.h"
 #include "installer.h"
 
@@ -370,26 +372,23 @@ static void smb_test_error_cb(struct smb2_context *smb2, const char *error_strin
 static void smb_log_nt_diagnostic(uint32_t nt_err, const char *server, const char *share) {
     if (nt_err == 0xC000015B) {
         install_log("[SMB TEST] -> DIAGNOSTIC: NT status 0x%08X (STATUS_LOGON_TYPE_NOT_GRANTED).", nt_err);
-        install_log("[SMB TEST] -> Windows security policy blocks network logons for this account.");
-        install_log("[SMB TEST] -> On Windows 10/11, 'Guest' is in 'Deny access to this computer from the network' by default.");
-        install_log("[SMB TEST] -> FIX 1: Open secpol.msc on Windows -> Local Policies -> User Rights Assignment -> double-click 'Deny access to this computer from the network' -> select 'Guest' -> click Remove.");
-        install_log("[SMB TEST] -> FIX 2 (Recommended): In Settings, enter a local Windows user account and password instead of Guest.");
+        install_log("[SMB TEST] -> The SMB server does not allow this account to log in over the network.");
+        install_log("[SMB TEST] -> Check the server's remote-access policy, or enter credentials for an account allowed to connect.");
     } else if (nt_err == 0xC0000072 || nt_err == 0xC000006D || nt_err == 0xC000006E) {
         install_log("[SMB TEST] -> DIAGNOSTIC: NT status 0x%08X (%s).", nt_err, nterror_to_str(nt_err));
-        install_log("[SMB TEST] -> On Windows 10/11, the local 'Guest' account is DISABLED by default.");
-        install_log("[SMB TEST] -> FIX 1 (Enable Guest): On the Windows PC, open PowerShell/CMD as Admin and run: 'net user Guest /active:yes'.");
-        install_log("[SMB TEST] -> FIX 2 (Use Windows User): In Settings, enter your local Windows username and password.");
+        install_log("[SMB TEST] -> The SMB server rejected the supplied credentials or the account is unavailable.");
+        install_log("[SMB TEST] -> Check the username, password, workgroup/domain, and whether guest access is enabled on the server.");
     } else if (nt_err == 0xC0000022) {
         install_log("[SMB TEST] -> DIAGNOSTIC: NT status 0x%08X (STATUS_ACCESS_DENIED).", nt_err);
-        install_log("[SMB TEST] -> Windows denied anonymous access or folder permissions lack 'Everyone'/'Guest'.");
-        install_log("[SMB TEST] -> FIX: In Windows folder Properties -> Security tab -> Edit -> Add 'Everyone' and 'Guest' with Read permissions, or enter a Windows account with password.");
+        install_log("[SMB TEST] -> The SMB server denied access to the share or requested path.");
+        install_log("[SMB TEST] -> Check the account's share and filesystem permissions, or enter credentials for an account with access.");
     } else if (nt_err == 0xC00000CC) {
         install_log("[SMB TEST] -> DIAGNOSTIC: NT status 0x%08X (STATUS_BAD_NETWORK_NAME).", nt_err);
-        install_log("[SMB TEST] -> Share '%s' was not found on '%s'. Verify the exact share name (use the SMB share name, not a Windows path).",
+        install_log("[SMB TEST] -> Share '%s' was not found on '%s'. Verify the exact SMB share name, not a local filesystem path.",
                     share ? share : "", server ? server : "");
     } else if (nt_err == 0xC000000D) {
         install_log("[SMB TEST] -> DIAGNOSTIC: NT status 0x%08X (STATUS_INVALID_PARAMETER).", nt_err);
-        install_log("[SMB TEST] -> Windows rejected anonymous logon (common post-KB5026436 where SMB signing is required).");
+        install_log("[SMB TEST] -> The SMB server rejected the connection parameters. Check the server settings and supplied credentials.");
     } else if (nt_err == 0xC0000203) {
         install_log("[SMB TEST] -> DIAGNOSTIC: NT status 0x%08X (STATUS_USER_SESSION_DELETED). Server closed the SMB session.", nt_err);
     } else if (nt_err != 0) {
@@ -423,7 +422,7 @@ static struct smb2_context *smb_connect(const smb_share_config_t *cfg, char *out
 
     smb2_set_timeout(ctx, 10);
     /* Set security_mode to 0 (do not request signing).
-     * If the server REQUIRES signing (e.g. Windows 11 Enterprise), libsmb2
+     * If the server requires signing, libsmb2
      * will automatically enable it from the server's NEGOTIATE response.
      * But if the server only SUPPORTS signing (e.g. Samba / Linux NAS),
      * setting 0 avoids burning CPU on software AES-CMAC-128 / HMAC-SHA256
@@ -470,13 +469,13 @@ static struct smb2_context *smb_connect(const smb_share_config_t *cfg, char *out
 
         if (out_err && err_sz > 0) {
             if (nt_err == 0xC000015B) {
-                snprintf(out_err, err_sz, "Logon type not granted (0x%08X): Windows policy blocks this account from network logon. In secpol.msc, remove Guest from 'Deny access to this computer from the network', or enter Windows credentials.",
+                snprintf(out_err, err_sz, "Logon type not granted (0x%08X): The SMB server does not allow this account to connect over the network. Check its remote-access policy or use an account that is allowed to connect.",
                          nt_err);
             } else if (nt_err == 0xC000006D || nt_err == 0xC0000072 || nt_err == 0xC000006E) {
-                snprintf(out_err, err_sz, "Logon rejected (0x%08X %s): Windows rejected the logon (Guest account is disabled by default on Windows 10/11). Enable it ('net user Guest /active:yes' in Windows) or enter Windows credentials.",
+                snprintf(out_err, err_sz, "Logon rejected (0x%08X %s): The SMB server rejected the supplied credentials or the account is unavailable. Check the username, password, workgroup/domain, and guest-access settings.",
                          nt_err, nt_str ? nt_str : "STATUS_LOGON_FAILURE");
             } else if (nt_err == 0xC0000022) {
-                snprintf(out_err, err_sz, "Access denied (0x%08X STATUS_ACCESS_DENIED): Windows denied unauthenticated access. Verify folder NTFS & Share permissions grant access, or enter Windows credentials.",
+                snprintf(out_err, err_sz, "Access denied (0x%08X STATUS_ACCESS_DENIED): The SMB server denied access to the share or requested path. Check the account's share and filesystem permissions, or use credentials for an account with access.",
                          nt_err);
             } else if (nt_err == 0xC00000CC) {
                 snprintf(out_err, err_sz, "Share '%s' not found on '%s' (0x%08X STATUS_BAD_NETWORK_NAME)",
@@ -517,11 +516,10 @@ int smb_client_test_connection(const smb_share_config_t *cfg, char *out_err, siz
                 clean_cfg.port > 0 ? clean_cfg.port : SMB_DEFAULT_PORT,
                 clean_cfg.share,
                 clean_cfg.path[0] ? clean_cfg.path : "/");
-    install_log("[SMB TEST] Config: user='%s', workgroup='%s', password=%s, read_only=%d",
+    install_log("[SMB TEST] Config: user='%s', workgroup='%s', password=%s",
                 clean_cfg.username[0] ? clean_cfg.username : "(none/guest)",
                 clean_cfg.workgroup[0] ? clean_cfg.workgroup : "(none)",
-                clean_cfg.password[0] ? "(configured)" : "(none)",
-                clean_cfg.is_read_only);
+                clean_cfg.password[0] ? "(configured)" : "(none)");
 
     struct smb2_context *ctx = smb_connect(&clean_cfg, out_err, err_sz, 1);
     if (!ctx) {
@@ -555,43 +553,215 @@ int smb_client_test_connection(const smb_share_config_t *cfg, char *out_err, siz
     smb2_closedir(ctx, dir);
     install_log("[SMB TEST] Folder access verified: path '%s' is accessible", target_dir[0] ? target_dir : "/");
 
-    /* Test write permissions if configured as read-write */
-    if (!clean_cfg.is_read_only) {
-        char test_file[512];
-        if (target_dir[0] != '\0') {
-            snprintf(test_file, sizeof(test_file), "%s/.pkgmgr_test", target_dir);
-        } else {
-            snprintf(test_file, sizeof(test_file), ".pkgmgr_test");
-        }
-        install_log("[SMB TEST] Testing write permission (creating test file '%s')...", test_file);
-
-        struct smb2fh *tfh = smb2_open(ctx, test_file, O_WRONLY | O_CREAT | O_TRUNC);
-        if (tfh) {
-            smb2_close(ctx, tfh);
-            smb2_unlink(ctx, test_file);
-            install_log("[SMB TEST] Write permission confirmed (successfully created & removed test file)");
-        } else {
-            const char *err = smb2_get_error(ctx);
-            if (!err || !*err) err = "Access denied";
-            uint32_t nt_err = (uint32_t)smb2_get_nterror(ctx);
-            install_log("[SMB TEST] Write permission DENIED: nt_status=0x%08X (%s), error='%s'. Share will be treated as Read-Only.",
-                        (unsigned int)nt_err, nterror_to_str(nt_err), err);
-            if (out_err && err_sz > 0) {
-                snprintf(out_err, err_sz, "Connected, but share is read-only (%s)", err);
-            }
-            smb2_destroy_context(ctx);
-            install_log("[SMB TEST] ==================== SMB CONNECTION TEST RESULT: SUCCESS (READ-ONLY) ====================");
-            return 1; /* Note 1 = connected but read-only */
-        }
-    }
-
     smb2_destroy_context(ctx);
-    install_log("[SMB TEST] Share mode: %s", clean_cfg.is_read_only ? "Read-Only" : "Read/Write");
+    install_log("[SMB TEST] Share mode: Read-Only (SMB sources are read-only)");
     install_log("[SMB TEST] ==================== SMB CONNECTION TEST RESULT: SUCCESS ====================");
     if (out_err && err_sz > 0) {
-        snprintf(out_err, err_sz, "Connected successfully (%s)", clean_cfg.is_read_only ? "Read-Only" : "Read/Write");
+        snprintf(out_err, err_sz, "Connected successfully (Read-Only)");
     }
     return 0;
+}
+
+static int smb_share_info_cmp(const void *a, const void *b) {
+    const smb_share_info_t *sa = (const smb_share_info_t *)a;
+    const smb_share_info_t *sb = (const smb_share_info_t *)b;
+    /* Disk shares first, non-special first, non-hidden first, then name. */
+    if (sa->is_disk != sb->is_disk) return sb->is_disk - sa->is_disk;
+    if (sa->is_special != sb->is_special) return sa->is_special - sb->is_special;
+    if (sa->is_hidden != sb->is_hidden) return sa->is_hidden - sb->is_hidden;
+    return strcasecmp(sa->name, sb->name);
+}
+
+static int smb_dir_entry_cmp(const void *a, const void *b) {
+    const smb_dir_entry_t *ea = (const smb_dir_entry_t *)a;
+    const smb_dir_entry_t *eb = (const smb_dir_entry_t *)b;
+    if (ea->is_dir != eb->is_dir) return eb->is_dir - ea->is_dir;
+    return strcasecmp(ea->name, eb->name);
+}
+
+int smb_client_list_shares(const smb_share_config_t *cfg,
+                           smb_share_info_t *out, int max_out,
+                           char *out_err, size_t err_sz) {
+    if (!cfg || !out || max_out <= 0) {
+        if (out_err && err_sz > 0) snprintf(out_err, err_sz, "Invalid arguments");
+        return -1;
+    }
+    if (max_out > MAX_SMB_BROWSE_SHARES) max_out = MAX_SMB_BROWSE_SHARES;
+
+    smb_share_config_t clean_cfg = *cfg;
+    smb_client_sanitize_config(&clean_cfg);
+    if (clean_cfg.server[0] == '\0') {
+        if (out_err && err_sz > 0) snprintf(out_err, err_sz, "Server address is required");
+        return -1;
+    }
+
+    /* Connect to IPC$ for share enumeration (credentials only, no share needed). */
+    smb_share_config_t ipc_cfg = clean_cfg;
+    strncpy(ipc_cfg.share, "IPC$", sizeof(ipc_cfg.share) - 1);
+    ipc_cfg.share[sizeof(ipc_cfg.share) - 1] = '\0';
+
+    char conn_err[256] = {0};
+    struct smb2_context *ctx = smb_connect(&ipc_cfg, conn_err, sizeof(conn_err), 0);
+    if (!ctx) {
+        if (out_err && err_sz > 0) {
+            snprintf(out_err, err_sz, "%s",
+                     conn_err[0] ? conn_err : "Failed to connect to server");
+        }
+        install_log("[SMB BROWSE] list_shares: connect to IPC$ on '%s' failed: %s",
+                    clean_cfg.server, conn_err[0] ? conn_err : "unknown");
+        return -1;
+    }
+
+    struct srvsvc_NetrShareEnum_rep *rep = smb2_share_enum_sync(ctx, SHARE_INFO_1);
+    if (!rep) {
+        const char *err = smb2_get_error(ctx);
+        if (!err || !*err) err = "Share enumeration failed";
+        uint32_t nt_err = (uint32_t)smb2_get_nterror(ctx);
+        install_log("[SMB BROWSE] list_shares: enum failed on '%s': %s (nt=0x%08X)",
+                    clean_cfg.server, err, (unsigned int)nt_err);
+        smb_log_nt_diagnostic(nt_err, clean_cfg.server, "IPC$");
+        if (out_err && err_sz > 0) snprintf(out_err, err_sz, "%s", err);
+        smb2_destroy_context(ctx);
+        return -1;
+    }
+
+    int n = 0;
+    if (rep->ses.Level == SHARE_INFO_1) {
+        uint32_t entries = rep->ses.ShareEnum.Level1.EntriesRead;
+        for (uint32_t i = 0; i < entries && n < max_out; i++) {
+            const char *nm = rep->ses.ShareEnum.Level1.share_info_1[i].netname;
+            if (!nm || !*nm) continue;
+            smb_share_info_t *dst = &out[n];
+            memset(dst, 0, sizeof(*dst));
+            strncpy(dst->name, nm, sizeof(dst->name) - 1);
+            const char *rm = rep->ses.ShareEnum.Level1.share_info_1[i].remark;
+            if (rm) strncpy(dst->remark, rm, sizeof(dst->remark) - 1);
+            dst->type = rep->ses.ShareEnum.Level1.share_info_1[i].type;
+            dst->is_disk = ((dst->type & 3) == SRVSVC_SHARE_TYPE_DISKTREE);
+            dst->is_hidden = (dst->type & SRVSVC_SHARE_TYPE_HIDDEN) != 0;
+            dst->is_special = (strcasecmp(nm, "IPC$") == 0 ||
+                               strcasecmp(nm, "ADMIN$") == 0 ||
+                               ((dst->type & 3) == SRVSVC_SHARE_TYPE_IPC));
+            n++;
+        }
+    } else if (rep->ses.Level == SHARE_INFO_0) {
+        uint32_t entries = rep->ses.ShareEnum.Level0.EntriesRead;
+        for (uint32_t i = 0; i < entries && n < max_out; i++) {
+            const char *nm = rep->ses.ShareEnum.Level0.share_info_0[i].netname;
+            if (!nm || !*nm) continue;
+            smb_share_info_t *dst = &out[n];
+            memset(dst, 0, sizeof(*dst));
+            strncpy(dst->name, nm, sizeof(dst->name) - 1);
+            dst->is_special = (strcasecmp(nm, "IPC$") == 0 ||
+                               strcasecmp(nm, "ADMIN$") == 0);
+            n++;
+        }
+    }
+
+    smb2_free_data(ctx, rep);
+    smb2_destroy_context(ctx);
+
+    if (n > 1) qsort(out, (size_t)n, sizeof(out[0]), smb_share_info_cmp);
+    install_log("[SMB BROWSE] list_shares: server='%s' -> %d shares", clean_cfg.server, n);
+    if (out_err && err_sz > 0) out_err[0] = '\0';
+    return n;
+}
+
+int smb_client_list_dir(const smb_share_config_t *cfg, const char *subpath,
+                        smb_dir_entry_t *out, int max_out,
+                        char *out_err, size_t err_sz) {
+    if (!cfg || !out || max_out <= 0) {
+        if (out_err && err_sz > 0) snprintf(out_err, err_sz, "Invalid arguments");
+        return -1;
+    }
+    if (max_out > MAX_SMB_BROWSE_ENTRIES) max_out = MAX_SMB_BROWSE_ENTRIES;
+
+    smb_share_config_t clean_cfg = *cfg;
+    smb_client_sanitize_config(&clean_cfg);
+    if (clean_cfg.server[0] == '\0' || clean_cfg.share[0] == '\0') {
+        if (out_err && err_sz > 0) snprintf(out_err, err_sz, "Server and share are required");
+        return -1;
+    }
+
+    /* Resolve target dir: explicit subpath wins, else configured path. */
+    char target[512] = {0};
+    const char *raw = (subpath && *subpath) ? subpath : clean_cfg.path;
+    if (raw) {
+        size_t d = 0;
+        const char *p = raw;
+        while (*p == '/' || *p == '\\') p++;
+        for (; *p && d + 1 < sizeof(target); p++) {
+            char ch = (*p == '\\') ? '/' : *p;
+            if (ch == '/' && d > 0 && target[d - 1] == '/') continue;
+            target[d++] = ch;
+        }
+        target[d] = '\0';
+        while (d > 0 && target[d - 1] == '/') target[--d] = '\0';
+    }
+
+    /* Browse paths come from an HTTP request. Keep them below the selected
+     * share root even if a caller bypasses the guided picker. */
+    const char *segment = target;
+    while (*segment) {
+        const char *end = strchr(segment, '/');
+        size_t len = end ? (size_t)(end - segment) : strlen(segment);
+        if ((len == 1 && segment[0] == '.') ||
+            (len == 2 && segment[0] == '.' && segment[1] == '.')) {
+            if (out_err && err_sz > 0) snprintf(out_err, err_sz, "Invalid folder path");
+            return -1;
+        }
+        if (!end) break;
+        segment = end + 1;
+    }
+
+    char conn_err[256] = {0};
+    struct smb2_context *ctx = smb_connect(&clean_cfg, conn_err, sizeof(conn_err), 0);
+    if (!ctx) {
+        if (out_err && err_sz > 0) {
+            snprintf(out_err, err_sz, "%s",
+                     conn_err[0] ? conn_err : "Failed to connect to share");
+        }
+        return -1;
+    }
+
+    struct smb2dir *dir = smb2_opendir(ctx, target);
+    if (!dir) {
+        const char *err = smb2_get_error(ctx);
+        if (!err || !*err) err = "Folder not found or access denied";
+        if (out_err && err_sz > 0) snprintf(out_err, err_sz, "%s", err);
+        smb2_destroy_context(ctx);
+        return -1;
+    }
+
+    int n = 0;
+    struct smb2dirent *ent;
+    while ((ent = smb2_readdir(ctx, dir)) != NULL) {
+        if (strcmp(ent->name, ".") == 0 || strcmp(ent->name, "..") == 0) continue;
+        if (ent->name[0] == '.') continue;
+        if (ent->name[0] == '\0') continue;
+
+        int is_dir = (ent->st.smb2_type == SMB2_TYPE_DIRECTORY);
+        if (!is_dir) {
+            /* Show directories + .pkg files only; skip other files. */
+            size_t nlen = strlen(ent->name);
+            if (nlen <= 4 || strcasecmp(ent->name + nlen - 4, ".pkg") != 0) continue;
+        }
+        if (n >= max_out) break;
+        smb_dir_entry_t *dst = &out[n];
+        memset(dst, 0, sizeof(*dst));
+        strncpy(dst->name, ent->name, sizeof(dst->name) - 1);
+        dst->is_dir = is_dir;
+        dst->size = (uint64_t)ent->st.smb2_size;
+        dst->mtime = (uint32_t)ent->st.smb2_mtime;
+        n++;
+    }
+
+    smb2_closedir(ctx, dir);
+    smb2_destroy_context(ctx);
+
+    if (n > 1) qsort(out, (size_t)n, sizeof(out[0]), smb_dir_entry_cmp);
+    if (out_err && err_sz > 0) out_err[0] = '\0';
+    return n;
 }
 
 /* Recursive directory scanner helper over SMB */

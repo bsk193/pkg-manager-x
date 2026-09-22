@@ -18,7 +18,7 @@ LIBS     := $(TARGET)/lib/libmicrohttpd.a \
             $(LIBSMB2) \
             -L$(TARGET)/lib -lpthread \
             -lSceNetCtl -lSceUserService -lSceSystemService \
-            -lSceAppInstUtil -lSceIpmi -lSceNet
+            -lSceAppInstUtil -lSceNet
 
 SRCS := src/main.c src/pkg_parser.c src/pkg_scanner.c src/pkg_cache.c src/smb_client.c src/smb_debug_log.c src/installer.c \
         src/http_server.c src/stream_server.c src/stream_debug_log.c src/notification.c \
@@ -121,7 +121,7 @@ $(ELF): $(ASSET_HEADERS) $(LIBSMB2) $(SRCS) $(SRCS_WS)
 	$(STRIP) $(ELF)
 
 clean:
-	rm -f $(ELF) pkgmgr_v*.elf $(ASSET_HEADERS) src/*.o $(addprefix tests/,$(TESTS))
+	rm -f $(ELF) pkgmgr_v*.elf pkg-manager_v*.elf $(ASSET_HEADERS) src/*.o $(addprefix tests/,$(TESTS))
 	rm -rf $(addprefix tests/,$(addsuffix .dSYM,$(TESTS)))
 
 test: $(PARAM_JSON_HEADER) $(ICON0_PNG_HEADER)
