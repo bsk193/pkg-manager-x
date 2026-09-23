@@ -310,9 +310,9 @@ the latest received snapshot at close; browser reports after log closure cannot
 be included, so counts may omit the final acknowledgements.
 
 `src/ws_upload.c` is transport only; `src/ws_stream.c` owns the bytes
-(1 MB pinned header + 64 MB ring, `ws_live_*` symbols, no load-time side
-effects, abort/timeout on every wait). The only touch points in existing
-code are additive: a `live:` scheme branch in `virtual_stream_open`/`read`
+(1 MB pinned header + configurable ring, 64 MB by default, `ws_live_*`
+symbols, no load-time side effects, abort/timeout on every wait). The only
+touch points in existing code are additive: a `live:` scheme branch in `virtual_stream_open`/`read`
 (`multipart.c`), one `pkg_parser_parse_mem()` function reusing the in-file
 sub-parsers, one `installer_start_live()` entry plus abort/destroy hooks
 (`installer.c`), and a guarded `/api/upload/` REST branch plus `live:` URI
