@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { initUpload, uploadStatus, cancelUpload, cancelUploadOnUnload, checkUploadEligibility, uploadSessionIcon, wsUploadUrl } from '../api/directInstall';
 import { pollStatus, installPackage } from '../api/installer';
 import { parseLocalPkg } from '../utils/parseLocalPkg';
+import { createSegmentSender } from '../utils/segmentSender';
 
 function getOwner() {
   let owner = sessionStorage.getItem('directInstallOwner');
@@ -48,6 +49,7 @@ function waitForMessage(ws, timeoutMs) {
 export function useDirectUpload(tabId) {
   const [state, setState] = useState('idle');
   const [progress, setProgress] = useState(0);
+  const [uploadSpeed, setUploadSpeed] = useState(0);
   const [offset, setOffset] = useState(0);
   const [total, setTotal] = useState(0);
   const [fileName, setFileName] = useState('');
@@ -70,6 +72,8 @@ export function useDirectUpload(tabId) {
   const checkingRef = useRef(false);
   const uploadStatusInFlightRef = useRef(false);
   const unloadCancelSentRef = useRef(false);
+  const speedTimerRef = useRef(null);
+  const uploadRateRef = useRef({ samples: [], lastAt: 0 });
 
   useEffect(function () {
     const cancelOnUnload = function () {
@@ -82,6 +86,7 @@ export function useDirectUpload(tabId) {
     window.addEventListener('pagehide', cancelOnUnload);
     return function () {
       window.removeEventListener('pagehide', cancelOnUnload);
+      if (speedTimerRef.current) clearInterval(speedTimerRef.current);
     };
   }, []);
 
@@ -96,6 +101,9 @@ export function useDirectUpload(tabId) {
     cancelRef.current = false;
     unloadCancelSentRef.current = false;
     stopStatusPoll();
+    if (speedTimerRef.current) clearInterval(speedTimerRef.current);
+    speedTimerRef.current = null;
+    setUploadSpeed(0);
     if (wsRef.current) {
       try { wsRef.current.close(); } catch (e) {}
       wsRef.current = null;
@@ -250,19 +258,31 @@ export function useDirectUpload(tabId) {
     setFileName(file.name);
     setTotal(file.size);
     setState('uploading');
+    setUploadSpeed(0);
+    uploadRateRef.current = { samples: [], lastAt: 0 };
+    if (speedTimerRef.current) clearInterval(speedTimerRef.current);
+    speedTimerRef.current = setInterval(function () {
+      const now = Date.now();
+      const rate = uploadRateRef.current;
+      const recent = rate.samples.filter((sample) => now - sample.time <= 2000);
+      rate.samples = recent;
+      const activeUs = recent.reduce((sum, sample) => sum + sample.receiveUs, 0);
+      const receivedBytes = recent.reduce((sum, sample) => sum + sample.bytes, 0);
+      setUploadSpeed(rate.lastAt && now - rate.lastAt <= 1500 && activeUs > 0
+        ? receivedBytes * 1000000 / activeUs : 0);
+    }, 500);
     setError('');
     installCalledRef.current = false;
     installStartedRef.current = false;
     const SEG = 1024 * 1024;
     const NSEGS = Math.max(1, Math.ceil(file.size / SEG));
-    // Coordinate the sequential upload with seek requests from installer
-    // workers. Keep one segment in flight, retry busy writes, and leave the
+    // Coordinate bounded read-ahead with seek requests from installer
+    // workers. Keep a bounded number in flight, retry busy writes, and leave the
     // socket open to serve seeks until the installation finalizes.
-    const seekQueue = [];
-    let inflightSeg = -1;
+    let sender = null;
+    let demandMode = false;
     let baselineSeg = 0;
     const ackedSet = new Set();
-    let isPumping = false;
     let finished = false; // finish sent; only "complete" may arrive now
     let done = false;     // terminal: completed / failed / canceled
     let finishTimer = null;
@@ -282,41 +302,15 @@ export function useDirectUpload(tabId) {
       }
     };
 
-    const dispatchSegment = async function (s) {
-      inflightSeg = s;
-      const start = s * SEG;
-      const end = Math.min(start + SEG, file.size);
-      const buf = await file.slice(start, end).arrayBuffer();
-      ws.send(JSON.stringify({ op: 'seg', seg: s }));
-      ws.send(buf);
-    };
-
-    const pump = async function () {
-      // Priority-based demand paging: parked-reader seeks preempt the
-      // background baseline; with nothing to send we stand by (the
-      // dispatcher re-fires us on every ack/busy/seek).
-      if (isPumping || inflightSeg >= 0 || finished || done || cancelRef.current) return;
-      isPumping = true;
-      try {
-        while (seekQueue.length > 0) {
-          const s = seekQueue.shift();
-          if (s < 0 || s >= NSEGS) continue;
-          await dispatchSegment(s);
-          return;
-        }
-        while (baselineSeg < NSEGS && ackedSet.has(baselineSeg)) baselineSeg++;
-        if (baselineSeg < NSEGS) {
-          const s = baselineSeg++;
-          await dispatchSegment(s);
-          return;
-        }
-        // Baseline fully acked: event-driven standby. Do NOT close --
-        // the installer may still seek evicted segments (phase pivots).
-      } catch (e) {
-        fail(e);
-      } finally {
-        isPumping = false;
-      }
+    const recordReceiveRate = function (msg) {
+      const bytes = Number(msg.rx_bytes);
+      const receiveUs = Number(msg.rx_us);
+      if (!Number.isFinite(bytes) || !Number.isFinite(receiveUs) || bytes <= 0 || receiveUs <= 0) return;
+      const now = Date.now();
+      const rate = uploadRateRef.current;
+      rate.samples.push({ bytes, receiveUs, time: now });
+      rate.samples = rate.samples.filter((sample) => now - sample.time <= 2000);
+      rate.lastAt = now;
     };
 
     const installDispatcher = function () {
@@ -336,26 +330,20 @@ export function useDirectUpload(tabId) {
           return;
         }
         if (msg.op === 'ack' && typeof msg.seg === 'number') {
+          recordReceiveRate(msg);
           if (!ackedSet.has(msg.seg)) {
             ackedSet.add(msg.seg);
             setOffset(Math.min(file.size, ackedSet.size * SEG));
             setProgress(Math.round((ackedSet.size / NSEGS) * 100));
           }
-          if (inflightSeg === msg.seg) inflightSeg = -1;
-          pump();
+          sender.ack(msg.seg);
         } else if (msg.op === 'busy' && typeof msg.seg === 'number') {
-          // Ring momentarily full of unserved data: requeue at the head
-          // and retry shortly. The socket itself never wedges.
-          if (inflightSeg === msg.seg) inflightSeg = -1;
-          if (!ackedSet.has(msg.seg) && seekQueue.indexOf(msg.seg) < 0) {
-            seekQueue.unshift(msg.seg);
-          }
-          setTimeout(function () { pump(); }, 50);
+          recordReceiveRate(msg);
+          sender.busy(msg.seg);
         } else if (msg.op === 'seek' && typeof msg.seg === 'number') {
-          if (msg.seg >= 0 && msg.seg < NSEGS && seekQueue.indexOf(msg.seg) < 0) {
-            seekQueue.push(msg.seg);
-          }
-          pump();
+          sender.request(msg.seg);
+        } else if (msg.op === 'pong' && demandMode) {
+          // Keep the socket alive while the installer is not requesting data.
         } else if (msg.op === 'complete') {
           done = true;
           completionResolve((msg && (msg.uri || msg.path)) || '');
@@ -396,10 +384,9 @@ export function useDirectUpload(tabId) {
 
     // Silent-socket watchdog: without it a dead connection (no TCP
     // close, e.g. dropped Wi-Fi) hangs the UI forever, since the
-    // dispatcher itself has no timeouts. Pure standby (baseline fully
-    // acked, nothing in flight or queued) is legitimately silent for
-    // minutes while an install runs, so it is exempt; anything else
-    // must show server traffic at least every 60 s.
+    // dispatcher itself has no timeouts. Demand mode uses a heartbeat
+    // during installer pauses; legacy sequential mode exempts pure standby.
+    // Pending work or a heartbeat must receive a reply within 60 s.
     const watchTraffic = function () {
       watchdogTimer = setInterval(function () {
         if (done || cancelRef.current) {
@@ -409,7 +396,10 @@ export function useDirectUpload(tabId) {
           }
           return;
         }
-        const pending = ackedSet.size < NSEGS || inflightSeg >= 0 || seekQueue.length > 0;
+        const pending = demandMode || sender.hasPending();
+        if (demandMode && Date.now() - lastActivityAt > 15000 && ws.readyState === WebSocket.OPEN) {
+          try { ws.send(JSON.stringify({ op: 'ping' })); } catch (e) { fail(e); }
+        }
         if (pending && Date.now() - lastActivityAt > 60000) {
           fail(new Error('Upload stalled: no server reply for 60s'));
         }
@@ -437,6 +427,7 @@ export function useDirectUpload(tabId) {
           fail(new Error('Installation failed'));
           return;
         }
+        sender.flushStats();
         setInstalling(false);
         if (ackedSet.size < NSEGS) {
           // The installer may finish without reading every package byte.
@@ -492,11 +483,32 @@ export function useDirectUpload(tabId) {
       if (ready.op === 'error') throw new Error(ready.error || 'Server refused upload');
       if (ready.op !== 'ready') throw new Error('Bad server reply to init');
 
+      demandMode = Number.isInteger(ready.demand_window) && ready.demand_window > 0;
+      sender = createSegmentSender({
+        totalSegments: NSEGS,
+        startSegment: baselineSeg,
+        maxInFlight: ready.upload_window === 2 ? 2 : 1,
+        onStats: (stats) => {
+          if (ready.upload_window === 2 && ws.readyState === WebSocket.OPEN) {
+            try { ws.send(JSON.stringify({ op: 'sender_stats', ...stats })); } catch (e) { fail(e); }
+          }
+        },
+        demandWindow: Number.isInteger(ready.demand_window) ? Math.min(8, Math.max(0, ready.demand_window)) : 0,
+        acknowledged: ackedSet,
+        readSegment: (segment) => file.slice(segment * SEG, Math.min((segment + 1) * SEG, file.size)).arrayBuffer(),
+        sendSegment: (segment, buffer) => {
+          ws.send(JSON.stringify({ op: 'seg', seg: segment }));
+          ws.send(buffer);
+        },
+        shouldStop: () => done || finished || cancelRef.current,
+        onError: fail
+      });
       installDispatcher();
       watchTraffic();
       watchFinish();
-      await pump();
+      await sender.pump();
       await completion;
+      sender.stop();
       if (finishTimer) {
         clearInterval(finishTimer);
         finishTimer = null;
@@ -506,12 +518,16 @@ export function useDirectUpload(tabId) {
         watchdogTimer = null;
       }
       stopStatusPoll();
+      if (speedTimerRef.current) clearInterval(speedTimerRef.current);
+      speedTimerRef.current = null;
+      setUploadSpeed(0);
       try { ws.close(); } catch (e) {}
       wsRef.current = null;
 
       if (init.session_id) setInstallPath('live:' + init.session_id);
       setState('complete');
     } catch (e) {
+      if (sender) sender.stop();
       if (finishTimer) {
         clearInterval(finishTimer);
         finishTimer = null;
@@ -521,6 +537,9 @@ export function useDirectUpload(tabId) {
         watchdogTimer = null;
       }
       stopStatusPoll();
+      if (speedTimerRef.current) clearInterval(speedTimerRef.current);
+      speedTimerRef.current = null;
+      setUploadSpeed(0);
       if (ws) {
         try { ws.close(); } catch (err) {}
         wsRef.current = null;
@@ -532,7 +551,7 @@ export function useDirectUpload(tabId) {
     }
   }, [details, eligibility, pollHeader, tabId]);
 
-  return { state, progress, offset, total, fileName, sessionId, headerReady,
+  return { state, progress, offset, total, uploadSpeed, fileName, sessionId, headerReady,
     installPath, error, details, eligibility, iconUrl, installing, selectFile, upload, cancel, reset,
     owner: getOwner() };
 }

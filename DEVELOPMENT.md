@@ -98,16 +98,26 @@ while the rest still uploads:
   `src/http_server.c` (`POST /api/upload/init|finish|cancel`,
   `GET /api/upload/status`); chunk bytes never go through MHD.
 - Live session: `src/ws_stream.c` (`include/ws_stream.h`) — 1 MB pinned
-  header cache + 64 MB ring (`WS_LIVE_RING_MB`), blocking readers,
-  backpressure on writers, abort/timeout on every wait. Served through
-  the existing pipeline via the `live:<id>` virtual-stream scheme
-  (`src/multipart.c`), so `src/stream_server.c` is untouched.
+  header cache + configurable RAM ring (64 MB default, `WS_LIVE_RING_MB`),
+  blocking readers, bounded writer admission, and abort/timeout handling.
+  Served through the existing HTTP range path via the `live:<id>`
+  virtual-stream scheme (`src/multipart.c`, `src/stream_server.c`).
 - Metadata: additive `pkg_parser_parse_mem()`; install entry
   `installer_start_live()`; `/api/install` routes `live:` URIs.
 - Frontend: `DirectInstallView.jsx` + `api/directInstall.js` +
   `hooks/useDirectUpload.js` (Header "Direct Install" button and app-wide
   file drop). Install is
   enabled at `header_ready`, with sent/installed dual progress.
+- Upload scheduling: the sender uploads the header first, then follows installer
+  seeks with a bounded window of up to eight 1 MiB segments and up to two
+  uploads in flight.
+  Busy replies retry the same segment; requests for in-flight segments are
+  coalesced. The WebSocket listener starts on demand and closes when idle.
+- With install debug mode enabled, the install screen shows WebSocket receive
+  and install speed graphs. Stream logs include build identity, receive and
+  accepted throughput, cache duplicate/reload/eviction counters, and periodic
+  browser file-read and send-to-ACK timing summaries. The selected debug
+  directory keeps at most 20 stream logs and 20 SMB logs.
 - Host tests (all in `make test`): `test_ws_stream` (ring unit),
   `test_parse_mem` (parse vs parse_mem differential),
   `test_ws_upload` (codec + socket + fragmentation), `test_direct_install_e2e`
@@ -123,6 +133,10 @@ while the rest still uploads:
 
 - Frontend mock: `node frontend/mock-server.js` serves the same REST shape
   plus a memory-backed mock WS listener on `:18842`.
+- The sender scheduler also has focused Node.js tests, separate from `make test`:
+  ```bash
+  cd frontend && npm run test:upload
+  ```
 
 ## Automated Deploy
 

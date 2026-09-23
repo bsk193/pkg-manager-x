@@ -80,6 +80,8 @@ int ws_live_try_write(uint64_t offset, const void *data, size_t len);
 /* Total parked-reader count across all segments (0 when no session).
  * Used to suppress the socket idle kill while the installer waits. */
 int ws_live_waiter_count(void);
+/* Bounded speculative window for each browser seek (includes target). */
+int ws_live_demand_window(void);
 
 /* Mark the upload byte-complete (requires every segment present). */
 int ws_live_finish(void);

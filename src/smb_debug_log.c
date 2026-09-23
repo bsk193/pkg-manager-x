@@ -5,6 +5,7 @@
  */
 
 #include "smb_debug_log.h"
+#include "debug_log_retention.h"
 #include "installer.h"
 
 #include <stdio.h>
@@ -94,6 +95,8 @@ int smb_debug_log_open(const char *server, const char *share,
         install_log("[SMB_DEBUG] Failed to create debug log: %s", filepath);
         return -1;
     }
+
+    debug_log_retain_latest(dir, "smb_debug_", filepath, 20);
 
     g_smb_dbg_refcount = 1;
     g_smb_ses_start_ms = smb_dbg_now_us_internal() / 1000ULL;

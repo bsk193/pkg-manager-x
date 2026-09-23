@@ -125,6 +125,9 @@ int ws_direct_listener_start(int port);
 /* Ensure listener is running on the default port (lazy boot for daemon). */
 int ws_direct_ensure_listener(void);
 void ws_direct_listener_stop(void);
+/* Close the listener after the session and all WebSocket clients are gone.
+ * Returns 1 if it closed the listener, 0 otherwise. */
+int ws_direct_listener_stop_if_idle(void);
 int ws_direct_listener_running(void);
 int ws_direct_listener_port(void);
 

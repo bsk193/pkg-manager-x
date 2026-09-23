@@ -56,6 +56,23 @@ void stream_debug_log_response_done(int conn_id, int req_no, const char *peer,
                                     uint64_t bytes_sent, uint64_t content_len,
                                     const char *end_reason);
 
+/* Record binary message receive timing and successful RAM admission. */
+void stream_debug_log_ws_receive(uint64_t segment, uint64_t bytes,
+                                 uint64_t receive_us);
+void stream_debug_log_ws_accept(uint64_t segment, uint64_t bytes);
+/* Record one segment write attempt rejected because the RAM ring is busy. */
+void stream_debug_log_ws_busy(uint64_t segment, uint64_t bytes);
+
+/* Cumulative cache diagnostics: resident duplicate uploads, reuploads after
+ * eviction, and evictions with no bytes read during that residency. */
+void stream_debug_log_ws_cache(uint64_t duplicate_bytes, uint64_t reload_bytes,
+                               uint64_t unread_evicted_bytes);
+
+/* Browser cumulative timings. ACK latency includes transmission and overlapping
+ * in-flight work; it must not be subtracted from elapsed time. */
+void stream_debug_log_ws_sender(uint64_t read_us, uint64_t ack_us,
+                                uint64_t acks, uint64_t sent, uint64_t window);
+
 /* Record a connection close. */
 void stream_debug_log_conn_close(int conn_id, const char *peer, int reqs_served);
 

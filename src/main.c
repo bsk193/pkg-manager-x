@@ -15,6 +15,7 @@
 #include "pkg_scanner.h"
 #include "installer.h"
 #include "http_server.h"
+#include "ws_upload.h"
 #include "notification.h"
 #include "app_installer.h"
 
@@ -252,6 +253,7 @@ int main(int argc, char **argv) {
 
             /* Force full server restart — close the dead socket immediately */
             http_server_stop();
+            if (ws_direct_listener_running()) ws_direct_listener_stop();
 
             int changed = 0;
             pkg_scanner_scan_quick(NULL, &changed);
@@ -271,7 +273,6 @@ int main(int argc, char **argv) {
                 ps5_notify("PKG Manager: Server restart failed after standby");
                 strcpy(current_ip, "unknown");
             }
-
             /* Reset timer so we don't immediately re-check */
             network_check_timer = 0;
         }
@@ -284,6 +285,11 @@ int main(int argc, char **argv) {
             int server_up = http_server_is_running();
 
             watchdog_action_t action = http_server_watchdog_evaluate(server_up, has_ip, current_ip, new_ip);
+
+            /* Discard the old upload socket after a network change. The next
+             * upload request starts a fresh listener if one is needed. */
+            if (action != WATCHDOG_ACTION_NONE && ws_direct_listener_running())
+                ws_direct_listener_stop();
 
             if (action == WATCHDOG_ACTION_RESTORE_NETWORK) {
                 printf("[PKG Manager] Network state refresh: %s -> %s. Restarting server...\n",
@@ -315,10 +321,12 @@ int main(int argc, char **argv) {
                 }
             }
         }
+        ws_direct_listener_stop_if_idle();
     }
 
     printf("[PKG Manager] Shutting down...\n");
     http_server_stop();
+    ws_direct_listener_stop();
     installer_shutdown();
     sleep(1); /* Allow sockets and OS kernel handles to close cleanly */
     printf("[PKG Manager] Exited cleanly.\n");

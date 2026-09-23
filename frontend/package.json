@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "test:upload": "node --test ../tests/test_segment_sender.mjs",
     "mock": "node mock-server.js"
   },
   "dependencies": {

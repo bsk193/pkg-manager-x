@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.2.4
+
+### Direct Install
+- Improved transfer speeds to around 110 MB/s on a fast local network
+- Added an optional live speed display and more helpful diagnostic logs
+- Limit stored stream and SMB debug logs to the 20 most recent of each
+
+---
+
 ## v1.2.3
 
 ### Startup Reliability
