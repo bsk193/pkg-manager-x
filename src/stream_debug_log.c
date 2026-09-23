@@ -42,6 +42,10 @@ static uint64_t g_cache_duplicate, g_cache_reload, g_cache_unread;
 static uint64_t g_cache_last_ms;
 static int g_cache_dirty;
 
+static uint64_t g_sender_read_us, g_sender_ack_us, g_sender_acks, g_sender_sent;
+static uint64_t g_sender_window, g_sender_last_ms;
+static int g_sender_dirty;
+
 static uint64_t dbglog_now_ms(void) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -147,6 +151,38 @@ void stream_debug_log_ws_cache(uint64_t duplicate_bytes, uint64_t reload_bytes,
     pthread_mutex_unlock(&g_dbglog_mutex);
 }
 
+static void dbglog_write_sender_sample(uint64_t now) {
+    if (!g_dbglog_fp || !g_sender_dirty) return;
+    char line[384];
+    snprintf(line, sizeof(line),
+             "%llu\tWS_SENDER\t-\t-\t-\tread_wait_us=%llu\tack_latency_us=%llu\tack_count=%llu\tsent_count=%llu\twindow=%llu\n",
+             (unsigned long long)now,
+             (unsigned long long)g_sender_read_us,
+             (unsigned long long)g_sender_ack_us,
+             (unsigned long long)g_sender_acks,
+             (unsigned long long)g_sender_sent,
+             (unsigned long long)g_sender_window);
+    dbglog_write(line);
+    g_sender_last_ms = now;
+    g_sender_dirty = 0;
+}
+
+void stream_debug_log_ws_sender(uint64_t read_us, uint64_t ack_us,
+                                uint64_t acks, uint64_t sent, uint64_t window) {
+    pthread_mutex_lock(&g_dbglog_mutex);
+    if (g_dbglog_fp) {
+        g_sender_read_us = read_us;
+        g_sender_ack_us = ack_us;
+        g_sender_acks = acks;
+        g_sender_sent = sent;
+        g_sender_window = window;
+        g_sender_dirty = 1;
+        uint64_t now = dbglog_elapsed_ms();
+        if (now - g_sender_last_ms >= 1000) dbglog_write_sender_sample(now);
+    }
+    pthread_mutex_unlock(&g_dbglog_mutex);
+}
+
 static const char *dbglog_get_dir(void) {
     const char *env = getenv("PKG_DEBUG_DIR");
     if (env && env[0] != '\0') return env;
@@ -195,6 +231,9 @@ int stream_debug_log_open(const char *title_id, const char *content_id,
     g_cache_duplicate = g_cache_reload = g_cache_unread = 0;
     g_cache_last_ms = 0;
     g_cache_dirty = 0;
+    g_sender_read_us = g_sender_ack_us = g_sender_acks = g_sender_sent = 0;
+    g_sender_window = g_sender_last_ms = 0;
+    g_sender_dirty = 0;
     g_dbglog_ws_bytes = 0;
     g_dbglog_ws_pending_bytes = 0;
     g_dbglog_ws_last_ms = 0;
@@ -211,7 +250,7 @@ int stream_debug_log_open(const char *title_id, const char *content_id,
     g_dbglog_busy_last_segment = 0;
 
     /* Write file header with session metadata. */
-    char hdr[2048];
+    char hdr[3072];
     char date_str[64];
     strftime(date_str, sizeof(date_str), "%Y-%m-%d %H:%M:%S", &tmv);
 
@@ -239,6 +278,7 @@ int stream_debug_log_open(const char *title_id, const char *content_id,
              "#   WS_ACCEPT   - Aggregated bytes accepted into the live RAM stream\n"
              "#   WS_BACKPRESSURE - Aggregated busy writes caused by the full RAM ring\n"
              "#   WS_CACHE    - Cumulative duplicate_bytes (already resident), reloaded_bytes (previously evicted), unread_evicted_bytes (no read during residency)\n"
+             "#   WS_SENDER   - Browser cumulative read wait and ACK latency; ACK timings overlap with window=2 and include transfer time\n"
              "#   CONN_CLOSE   - TCP connection closed\n"
              "#\n\n",
              date_str, PKGMGR_VERSION, PKGMGR_BUILD_COMMIT, PKGMGR_BUILD_DATE,
@@ -394,6 +434,7 @@ void stream_debug_log_close(void) {
         dbglog_write_ws_sample(now);
         dbglog_write_busy_sample(now);
         dbglog_write_cache_sample(now);
+        dbglog_write_sender_sample(now);
         char line[256];
         snprintf(line, sizeof(line), "\n# Session ended at elapsed_ms=%llu\n",
                  (unsigned long long)dbglog_elapsed_ms());

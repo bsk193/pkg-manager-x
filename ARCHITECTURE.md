@@ -279,15 +279,16 @@ LAN browser (DirectInstallView) --ws://:18842--> ws_upload.c --RAM ring-->
 virtual_stream ("live:<id>") --:18841--> installer.c (existing worker) --> system installer
 ```
 
-The browser's `segmentSender.js` keeps one segment in flight and reads the next
-segment while waiting for its acknowledgement. Servers advertise `demand_window`
+The browser's `segmentSender.js` keeps up to two segments in flight when the
+server advertises `upload_window: 2`, otherwise one. It also prepares the next
+file read while uploads await acknowledgement. Servers advertise `demand_window`
 in the ready reply: the browser sends the pinned header first, then waits for
 installer seeks. Each seek queues up to eight segments starting at the requested
 segment (window = min(8, max(1, RAM slots / 4))). Explicit seeks take priority;
 speculative queued segments are capped at twice the window, and already ACKed
 segments are only resent on explicit demand. Older servers without the field
-retain sequential upload. A ping/pong heartbeat keeps demand-mode pauses alive. Seeks for the current in-flight segment are
-coalesced, while seeks arriving after its acknowledgement are honored because
+retain sequential upload. A ping/pong heartbeat keeps demand-mode pauses alive.
+Seeks for any in-flight segment are coalesced, while seeks arriving after its acknowledgement are honored because
 the RAM cache may have evicted it. Busy responses retry the same buffer, even
 when that segment was acknowledged during an earlier upload.
 
@@ -297,6 +298,16 @@ resident; `reloaded_bytes` counts accepted uploads previously stored but evicted
 `unread_evicted_bytes` counts evicted segments with no bytes read during that
 residency. A partially read segment is not counted as unread. These distinguish
 cache churn from physical receive throughput without per-segment log spam.
+
+`WS_SENDER` records cumulative browser timings once per second: `read_wait_us`
+is time actually awaiting file data in the sender (a prepared read usually adds
+almost zero); `ack_latency_us` sums send-to-successful-ACK latency across
+`ack_count` uploads, including transfer time. These latencies overlap with two
+segments in flight and are not an elapsed-time breakdown or a pure network RTT.
+`sent_count` includes retries, and `window` records the negotiated upload limit.
+Counters are scoped to the browser sender and reset on reconnect. The log flushes
+the latest received snapshot at close; browser reports after log closure cannot
+be included, so counts may omit the final acknowledgements.
 
 `src/ws_upload.c` is transport only; `src/ws_stream.c` owns the bytes
 (1 MB pinned header + 64 MB ring, `ws_live_*` symbols, no load-time side

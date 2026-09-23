@@ -655,9 +655,18 @@ static void handle_text_msg(int fd, const char *msg, long *pending_seg,
         uint64_t r = ws_live_get_resume_offset();
         char rep[320];
         snprintf(rep, sizeof(rep),
-                 "{\"op\":\"ready\",\"session_id\":\"%s\",\"offset\":%llu,\"demand_window\":%d}",
+                 "{\"op\":\"ready\",\"session_id\":\"%s\",\"offset\":%llu,\"demand_window\":%d,\"upload_window\":2}",
                  sid, (unsigned long long)r, ws_live_demand_window());
         send_text_locked(fd, rep);
+    } else if (strcmp(op, "sender_stats") == 0 && *authorized) {
+        uint64_t read_us, ack_us, acks, sent, window;
+        if (wsj_u64(msg, "read_wait_us", &read_us) == 0 &&
+            wsj_u64(msg, "ack_latency_us", &ack_us) == 0 &&
+            wsj_u64(msg, "ack_count", &acks) == 0 &&
+            wsj_u64(msg, "sent_count", &sent) == 0 &&
+            wsj_u64(msg, "window", &window) == 0) {
+            stream_debug_log_ws_sender(read_us, ack_us, acks, sent, window);
+        }
     } else if (strcmp(op, "ping") == 0 && *authorized) {
         send_text_locked(fd, "{\"op\":\"pong\"}");
     } else if (strcmp(op, "status") == 0) {

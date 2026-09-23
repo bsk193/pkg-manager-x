@@ -68,6 +68,11 @@ void stream_debug_log_ws_busy(uint64_t segment, uint64_t bytes);
 void stream_debug_log_ws_cache(uint64_t duplicate_bytes, uint64_t reload_bytes,
                                uint64_t unread_evicted_bytes);
 
+/* Browser cumulative timings. ACK latency includes transmission and overlapping
+ * in-flight work; it must not be subtracted from elapsed time. */
+void stream_debug_log_ws_sender(uint64_t read_us, uint64_t ack_us,
+                                uint64_t acks, uint64_t sent, uint64_t window);
+
 /* Record a connection close. */
 void stream_debug_log_conn_close(int conn_id, const char *peer, int reqs_served);
 

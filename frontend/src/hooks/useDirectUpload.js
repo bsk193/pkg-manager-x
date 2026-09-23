@@ -277,7 +277,7 @@ export function useDirectUpload(tabId) {
     const SEG = 1024 * 1024;
     const NSEGS = Math.max(1, Math.ceil(file.size / SEG));
     // Coordinate bounded read-ahead with seek requests from installer
-    // workers. Keep one segment in flight, retry busy writes, and leave the
+    // workers. Keep a bounded number in flight, retry busy writes, and leave the
     // socket open to serve seeks until the installation finalizes.
     let sender = null;
     let demandMode = false;
@@ -427,6 +427,7 @@ export function useDirectUpload(tabId) {
           fail(new Error('Installation failed'));
           return;
         }
+        sender.flushStats();
         setInstalling(false);
         if (ackedSet.size < NSEGS) {
           // The installer may finish without reading every package byte.
@@ -486,6 +487,12 @@ export function useDirectUpload(tabId) {
       sender = createSegmentSender({
         totalSegments: NSEGS,
         startSegment: baselineSeg,
+        maxInFlight: ready.upload_window === 2 ? 2 : 1,
+        onStats: (stats) => {
+          if (ready.upload_window === 2 && ws.readyState === WebSocket.OPEN) {
+            try { ws.send(JSON.stringify({ op: 'sender_stats', ...stats })); } catch (e) { fail(e); }
+          }
+        },
         demandWindow: Number.isInteger(ready.demand_window) ? Math.min(8, Math.max(0, ready.demand_window)) : 0,
         acknowledged: ackedSet,
         readSegment: (segment) => file.slice(segment * SEG, Math.min((segment + 1) * SEG, file.size)).arrayBuffer(),
