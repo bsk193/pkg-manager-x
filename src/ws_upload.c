@@ -9,6 +9,7 @@
 
 #include "ws_upload.h"
 #include "installer.h" /* install_log only; no MHD dependency added */
+#include "stream_debug_log.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,6 +38,12 @@
 #define WS_BIN_MSG_MAX (8 * 1024 * 1024)
 #define WS_IO_TIMEOUT_SEC 30
 #define WS_MAX_TRACKED 16
+
+static uint64_t ws_now_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+}
 
 /* ---------------- live session (RAM only, no disk spool) ----------------
  *
@@ -815,6 +822,8 @@ static void *ws_conn_worker(void *arg) {
      * (explicit addressing: the browser seeks freely). The full message is
      * buffered, then applied atomically at FIN. */
     size_t frag_bin_total = 0;
+    uint64_t binary_rx_start_us = 0;
+    uint64_t last_recv_start_us = ws_now_us();
     unsigned long n_text = 0, n_bin = 0, n_acks = 0, n_busy = 0;
     uint64_t bin_bytes = 0;
 
@@ -829,6 +838,13 @@ static void *ws_conn_worker(void *arg) {
             int used = ws_direct_frame_decode(rbuf, rlen2, &opcode, &fin,
                                               &poff, &plen);
             if (used == 0) {
+                if (rlen2 >= 2 && binary_rx_start_us == 0) {
+                    unsigned char pending_opcode = rbuf[0] & 0x0F;
+                    if (pending_opcode == 0x2 ||
+                        (pending_opcode == 0x0 && frag_op == 0x2)) {
+                        binary_rx_start_us = last_recv_start_us;
+                    }
+                }
                 if (rlen2 >= rcap) {
                     install_log("[WS] ERROR: message exceeds %u bytes, closing",
                                 WS_BIN_MSG_MAX);
@@ -890,6 +906,7 @@ static void *ws_conn_worker(void *arg) {
                 frag_op = 0x2;
                 frag_text_on = 1;
                 frag_bin_total = 0;
+                if (binary_rx_start_us == 0) binary_rx_start_us = last_recv_start_us;
                 if (pending_seg < 0) {
                     install_log("[WS] ERROR: binary without segment header, closing");
                     goto conn_done;
@@ -931,6 +948,10 @@ static void *ws_conn_worker(void *arg) {
                                 ws_direct_session_active());
                     send_text_locked(fd, "{\"op\":\"error\",\"error\":\"bad segment\"}");
                 } else {
+                    uint64_t receive_end_us = ws_now_us();
+                    uint64_t receive_us = receive_end_us > binary_rx_start_us
+                                        ? receive_end_us - binary_rx_start_us : 1;
+                    stream_debug_log_ws_receive(seg, frag_bin_total, receive_us);
                     /* Never block the worker on storage: an unstoreable
                      * segment gets "busy" (browser requeues + retries after
                      * 50 ms) so the socket keeps flowing and parked readers
@@ -940,12 +961,14 @@ static void *ws_conn_worker(void *arg) {
                     int wr = ws_live_try_write(seg * WS_LIVE_SEG_SIZE,
                                                bin_msg, frag_bin_total);
                     if (wr == 0) {
+                        stream_debug_log_ws_accept(seg, frag_bin_total);
                         bin_bytes += frag_bin_total;
                         n_bin++;
-                        char am[160];
+                        char am[224];
                         snprintf(am, sizeof(am),
-                                 "{\"op\":\"ack\",\"seg\":%llu}",
-                                 (unsigned long long)seg);
+                                 "{\"op\":\"ack\",\"seg\":%llu,\"rx_bytes\":%zu,\"rx_us\":%llu}",
+                                 (unsigned long long)seg, frag_bin_total,
+                                 (unsigned long long)receive_us);
                         if (send_text_locked(fd, am) != 0) {
                             install_log("[WS] ERROR: ack send failed: %s",
                                         strerror(errno));
@@ -957,10 +980,12 @@ static void *ws_conn_worker(void *arg) {
                          * producer outruns the readers (sequential
                          * overflow); the browser's 50 ms retry absorbs it. */
                         n_busy++;
-                        char bm[160];
+                        stream_debug_log_ws_busy(seg, frag_bin_total);
+                        char bm[224];
                         snprintf(bm, sizeof(bm),
-                                 "{\"op\":\"busy\",\"seg\":%llu}",
-                                 (unsigned long long)seg);
+                                 "{\"op\":\"busy\",\"seg\":%llu,\"rx_bytes\":%zu,\"rx_us\":%llu}",
+                                 (unsigned long long)seg, frag_bin_total,
+                                 (unsigned long long)receive_us);
                         send_text_locked(fd, bm);
                     } else {
                         install_log("[WS] chunk rejected (seg=%llu len=%zu wr=%d)",
@@ -971,6 +996,7 @@ static void *ws_conn_worker(void *arg) {
                 pending_seg = -1;
                 frag_text_on = 0;
                 frag_bin_total = 0;
+                binary_rx_start_us = 0;
             } /* end if (fin): message applied */
             } /* end else: accumulating fragments */
             if (fin) { frag_text_on = 0; }
@@ -989,6 +1015,7 @@ static void *ws_conn_worker(void *arg) {
             goto conn_done;
         }
         {
+            uint64_t recv_start_us = ws_now_us();
             ssize_t n = recv(fd, rbuf + rlen2, rcap - rlen2, 0);
             if (n < 0) {
                 if (errno == EINTR) continue;
@@ -1011,6 +1038,7 @@ static void *ws_conn_worker(void *arg) {
                 goto conn_done;
             }
             if (n == 0) goto conn_done; /* peer closed */
+            last_recv_start_us = recv_start_us;
             rlen2 += (size_t)n;
         }
     }

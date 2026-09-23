@@ -48,6 +48,7 @@ function waitForMessage(ws, timeoutMs) {
 export function useDirectUpload(tabId) {
   const [state, setState] = useState('idle');
   const [progress, setProgress] = useState(0);
+  const [uploadSpeed, setUploadSpeed] = useState(0);
   const [offset, setOffset] = useState(0);
   const [total, setTotal] = useState(0);
   const [fileName, setFileName] = useState('');
@@ -70,6 +71,8 @@ export function useDirectUpload(tabId) {
   const checkingRef = useRef(false);
   const uploadStatusInFlightRef = useRef(false);
   const unloadCancelSentRef = useRef(false);
+  const speedTimerRef = useRef(null);
+  const uploadRateRef = useRef({ samples: [], lastAt: 0 });
 
   useEffect(function () {
     const cancelOnUnload = function () {
@@ -82,6 +85,7 @@ export function useDirectUpload(tabId) {
     window.addEventListener('pagehide', cancelOnUnload);
     return function () {
       window.removeEventListener('pagehide', cancelOnUnload);
+      if (speedTimerRef.current) clearInterval(speedTimerRef.current);
     };
   }, []);
 
@@ -96,6 +100,9 @@ export function useDirectUpload(tabId) {
     cancelRef.current = false;
     unloadCancelSentRef.current = false;
     stopStatusPoll();
+    if (speedTimerRef.current) clearInterval(speedTimerRef.current);
+    speedTimerRef.current = null;
+    setUploadSpeed(0);
     if (wsRef.current) {
       try { wsRef.current.close(); } catch (e) {}
       wsRef.current = null;
@@ -250,6 +257,19 @@ export function useDirectUpload(tabId) {
     setFileName(file.name);
     setTotal(file.size);
     setState('uploading');
+    setUploadSpeed(0);
+    uploadRateRef.current = { samples: [], lastAt: 0 };
+    if (speedTimerRef.current) clearInterval(speedTimerRef.current);
+    speedTimerRef.current = setInterval(function () {
+      const now = Date.now();
+      const rate = uploadRateRef.current;
+      const recent = rate.samples.filter((sample) => now - sample.time <= 2000);
+      rate.samples = recent;
+      const activeUs = recent.reduce((sum, sample) => sum + sample.receiveUs, 0);
+      const receivedBytes = recent.reduce((sum, sample) => sum + sample.bytes, 0);
+      setUploadSpeed(rate.lastAt && now - rate.lastAt <= 1500 && activeUs > 0
+        ? receivedBytes * 1000000 / activeUs : 0);
+    }, 500);
     setError('');
     installCalledRef.current = false;
     installStartedRef.current = false;
@@ -280,6 +300,17 @@ export function useDirectUpload(tabId) {
         done = true;
         completionReject(err instanceof Error ? err : new Error(String(err)));
       }
+    };
+
+    const recordReceiveRate = function (msg) {
+      const bytes = Number(msg.rx_bytes);
+      const receiveUs = Number(msg.rx_us);
+      if (!Number.isFinite(bytes) || !Number.isFinite(receiveUs) || bytes <= 0 || receiveUs <= 0) return;
+      const now = Date.now();
+      const rate = uploadRateRef.current;
+      rate.samples.push({ bytes, receiveUs, time: now });
+      rate.samples = rate.samples.filter((sample) => now - sample.time <= 2000);
+      rate.lastAt = now;
     };
 
     const dispatchSegment = async function (s) {
@@ -336,6 +367,7 @@ export function useDirectUpload(tabId) {
           return;
         }
         if (msg.op === 'ack' && typeof msg.seg === 'number') {
+          recordReceiveRate(msg);
           if (!ackedSet.has(msg.seg)) {
             ackedSet.add(msg.seg);
             setOffset(Math.min(file.size, ackedSet.size * SEG));
@@ -344,6 +376,7 @@ export function useDirectUpload(tabId) {
           if (inflightSeg === msg.seg) inflightSeg = -1;
           pump();
         } else if (msg.op === 'busy' && typeof msg.seg === 'number') {
+          recordReceiveRate(msg);
           // Ring momentarily full of unserved data: requeue at the head
           // and retry shortly. The socket itself never wedges.
           if (inflightSeg === msg.seg) inflightSeg = -1;
@@ -506,6 +539,9 @@ export function useDirectUpload(tabId) {
         watchdogTimer = null;
       }
       stopStatusPoll();
+      if (speedTimerRef.current) clearInterval(speedTimerRef.current);
+      speedTimerRef.current = null;
+      setUploadSpeed(0);
       try { ws.close(); } catch (e) {}
       wsRef.current = null;
 
@@ -521,6 +557,9 @@ export function useDirectUpload(tabId) {
         watchdogTimer = null;
       }
       stopStatusPoll();
+      if (speedTimerRef.current) clearInterval(speedTimerRef.current);
+      speedTimerRef.current = null;
+      setUploadSpeed(0);
       if (ws) {
         try { ws.close(); } catch (err) {}
         wsRef.current = null;
@@ -532,7 +571,7 @@ export function useDirectUpload(tabId) {
     }
   }, [details, eligibility, pollHeader, tabId]);
 
-  return { state, progress, offset, total, fileName, sessionId, headerReady,
+  return { state, progress, offset, total, uploadSpeed, fileName, sessionId, headerReady,
     installPath, error, details, eligibility, iconUrl, installing, selectFile, upload, cancel, reset,
     owner: getOwner() };
 }

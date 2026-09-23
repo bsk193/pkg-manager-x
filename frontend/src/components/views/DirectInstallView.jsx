@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { formatBytes } from '../../utils/formatters';
 import { getInstallStorageOptions } from '../../utils/installStorage';
 
-export default function DirectInstallView({ up, onBack, storage, installerStatus }) {
+export default function DirectInstallView({ up, onBack, storage, installerStatus, debugEnabled = false }) {
   const fileRef = useRef(null);
   const [dragging, setDragging] = useState(false);
   const busy = up.state === 'uploading';
@@ -106,6 +106,11 @@ export default function DirectInstallView({ up, onBack, storage, installerStatus
           <div className="flex justify-between text-xs font-mono text-zinc-400">
             <span>Sending package</span><span>{formatBytes(up.offset)} / {formatBytes(up.total)} ({pct}%)</span>
           </div>
+          {debugEnabled && busy && (
+            <div className="flex justify-end text-xs font-mono text-cyan-300">
+              WebSocket receive: {formatBytes(up.uploadSpeed)}/s
+            </div>
+          )}
           <div className="w-full h-2.5 bg-white/10 rounded overflow-hidden">
             <div className="h-full bg-[#0095ff]" style={{ width: pct + '%' }} />
           </div>

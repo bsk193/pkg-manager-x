@@ -56,6 +56,13 @@ void stream_debug_log_response_done(int conn_id, int req_no, const char *peer,
                                     uint64_t bytes_sent, uint64_t content_len,
                                     const char *end_reason);
 
+/* Record binary message receive timing and successful RAM admission. */
+void stream_debug_log_ws_receive(uint64_t segment, uint64_t bytes,
+                                 uint64_t receive_us);
+void stream_debug_log_ws_accept(uint64_t segment, uint64_t bytes);
+/* Record one segment write attempt rejected because the RAM ring is busy. */
+void stream_debug_log_ws_busy(uint64_t segment, uint64_t bytes);
+
 /* Record a connection close. */
 void stream_debug_log_conn_close(int conn_id, const char *peer, int reqs_served);
 

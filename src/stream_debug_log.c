@@ -9,6 +9,7 @@
 
 #include "stream_debug_log.h"
 #include "installer.h"
+#include "version.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +23,20 @@
 static pthread_mutex_t g_dbglog_mutex = PTHREAD_MUTEX_INITIALIZER;
 static FILE *g_dbglog_fp = NULL;
 static uint64_t g_dbglog_session_start_ms = 0;
+static uint64_t g_dbglog_ws_bytes = 0;
+static uint64_t g_dbglog_ws_pending_bytes = 0;
+static uint64_t g_dbglog_ws_last_ms = 0;
+static uint64_t g_dbglog_ws_last_segment = 0;
+static uint64_t g_dbglog_rx_bytes = 0;
+static uint64_t g_dbglog_rx_pending_bytes = 0;
+static uint64_t g_dbglog_rx_active_us = 0;
+static uint64_t g_dbglog_rx_last_ms = 0;
+static uint64_t g_dbglog_rx_last_segment = 0;
+static uint64_t g_dbglog_busy_attempts = 0;
+static uint64_t g_dbglog_busy_pending_attempts = 0;
+static uint64_t g_dbglog_busy_pending_bytes = 0;
+static uint64_t g_dbglog_busy_last_ms = 0;
+static uint64_t g_dbglog_busy_last_segment = 0;
 
 static uint64_t dbglog_now_ms(void) {
     struct timeval tv;
@@ -39,6 +54,65 @@ static void dbglog_write(const char *line) {
     if (!g_dbglog_fp) return;
     fputs(line, g_dbglog_fp);
     fflush(g_dbglog_fp);
+}
+
+/* Caller holds g_dbglog_mutex. Upload events are batched to keep the debug
+ * file useful without writing and flushing once for every 1 MiB segment. */
+static void dbglog_write_ws_sample(uint64_t now) {
+    if (!g_dbglog_fp || g_dbglog_ws_pending_bytes == 0) return;
+    uint64_t interval = now - g_dbglog_ws_last_ms;
+    double mbps = interval ? (double)g_dbglog_ws_pending_bytes /
+                            ((double)interval * 1000.0) : 0.0;
+    char line[384];
+    snprintf(line, sizeof(line),
+             "%llu\tWS_ACCEPT\t-\t-\tbytes=%llu\tcumulative=%llu\tinterval_ms=%llu\tMB/s=%.2f\tlast_segment=%llu\n",
+             (unsigned long long)now,
+             (unsigned long long)g_dbglog_ws_pending_bytes,
+             (unsigned long long)g_dbglog_ws_bytes,
+             (unsigned long long)interval, mbps,
+             (unsigned long long)g_dbglog_ws_last_segment);
+    dbglog_write(line);
+    g_dbglog_ws_pending_bytes = 0;
+    g_dbglog_ws_last_ms = now;
+}
+
+static void dbglog_write_rx_sample(uint64_t now) {
+    if (!g_dbglog_fp || g_dbglog_rx_pending_bytes == 0) return;
+    uint64_t interval = now - g_dbglog_rx_last_ms;
+    double mbps = g_dbglog_rx_active_us
+                ? (double)g_dbglog_rx_pending_bytes / (double)g_dbglog_rx_active_us
+                : 0.0;
+    char line[384];
+    snprintf(line, sizeof(line),
+             "%llu\tWS_RX\t-\t-\tbytes=%llu\tcumulative=%llu\twall_ms=%llu\tactive_us=%llu\tMB/s=%.2f\tlast_segment=%llu\n",
+             (unsigned long long)now,
+             (unsigned long long)g_dbglog_rx_pending_bytes,
+             (unsigned long long)g_dbglog_rx_bytes,
+             (unsigned long long)interval,
+             (unsigned long long)g_dbglog_rx_active_us, mbps,
+             (unsigned long long)g_dbglog_rx_last_segment);
+    dbglog_write(line);
+    g_dbglog_rx_pending_bytes = 0;
+    g_dbglog_rx_active_us = 0;
+    g_dbglog_rx_last_ms = now;
+}
+
+static void dbglog_write_busy_sample(uint64_t now) {
+    if (!g_dbglog_fp || g_dbglog_busy_pending_attempts == 0) return;
+    uint64_t interval = now - g_dbglog_busy_last_ms;
+    char line[384];
+    snprintf(line, sizeof(line),
+             "%llu\tWS_BACKPRESSURE\t-\t-\tattempts=%llu\tbytes=%llu\tcumulative_attempts=%llu\tinterval_ms=%llu\tlast_segment=%llu\n",
+             (unsigned long long)now,
+             (unsigned long long)g_dbglog_busy_pending_attempts,
+             (unsigned long long)g_dbglog_busy_pending_bytes,
+             (unsigned long long)g_dbglog_busy_attempts,
+             (unsigned long long)interval,
+             (unsigned long long)g_dbglog_busy_last_segment);
+    dbglog_write(line);
+    g_dbglog_busy_pending_attempts = 0;
+    g_dbglog_busy_pending_bytes = 0;
+    g_dbglog_busy_last_ms = now;
 }
 
 static const char *dbglog_get_dir(void) {
@@ -86,6 +160,20 @@ int stream_debug_log_open(const char *title_id, const char *content_id,
     }
 
     g_dbglog_session_start_ms = dbglog_now_ms();
+    g_dbglog_ws_bytes = 0;
+    g_dbglog_ws_pending_bytes = 0;
+    g_dbglog_ws_last_ms = 0;
+    g_dbglog_ws_last_segment = 0;
+    g_dbglog_rx_bytes = 0;
+    g_dbglog_rx_pending_bytes = 0;
+    g_dbglog_rx_active_us = 0;
+    g_dbglog_rx_last_ms = 0;
+    g_dbglog_rx_last_segment = 0;
+    g_dbglog_busy_attempts = 0;
+    g_dbglog_busy_pending_attempts = 0;
+    g_dbglog_busy_pending_bytes = 0;
+    g_dbglog_busy_last_ms = 0;
+    g_dbglog_busy_last_segment = 0;
 
     /* Write file header with session metadata. */
     char hdr[2048];
@@ -95,6 +183,9 @@ int stream_debug_log_open(const char *title_id, const char *content_id,
     snprintf(hdr, sizeof(hdr),
              "# PKG Manager - Stream Debug Log\n"
              "# Generated: %s\n"
+             "# build_version: %s\n"
+             "# build_commit:  %s\n"
+             "# build_date:    %s\n"
              "#\n"
              "# title_id:   %s\n"
              "# content_id: %s\n"
@@ -109,9 +200,13 @@ int stream_debug_log_open(const char *title_id, const char *content_id,
              "#   CONN_OPEN    - New TCP connection accepted\n"
              "#   REQUEST      - HTTP request received and response sent\n"
              "#   BODY_DONE    - Response body fully/partially delivered\n"
+             "#   WS_RX       - WebSocket payload receive rate while bytes are arriving\n"
+             "#   WS_ACCEPT   - Aggregated bytes accepted into the live RAM stream\n"
+             "#   WS_BACKPRESSURE - Aggregated busy writes caused by the full RAM ring\n"
              "#   CONN_CLOSE   - TCP connection closed\n"
              "#\n\n",
-             date_str, tid, cid, kind,
+             date_str, PKGMGR_VERSION, PKGMGR_BUILD_COMMIT, PKGMGR_BUILD_DATE,
+             tid, cid, kind,
              pkg_path ? pkg_path : "",
              (unsigned long long)total_size);
 
@@ -192,6 +287,53 @@ void stream_debug_log_response_done(int conn_id, int req_no, const char *peer,
     pthread_mutex_unlock(&g_dbglog_mutex);
 }
 
+void stream_debug_log_ws_receive(uint64_t segment, uint64_t bytes,
+                                 uint64_t receive_us) {
+    pthread_mutex_lock(&g_dbglog_mutex);
+    if (!g_dbglog_fp) {
+        pthread_mutex_unlock(&g_dbglog_mutex);
+        return;
+    }
+    uint64_t now = dbglog_elapsed_ms();
+    g_dbglog_rx_bytes += bytes;
+    g_dbglog_rx_pending_bytes += bytes;
+    g_dbglog_rx_active_us += receive_us;
+    g_dbglog_rx_last_segment = segment;
+    if (now - g_dbglog_rx_last_ms >= 1000) dbglog_write_rx_sample(now);
+    pthread_mutex_unlock(&g_dbglog_mutex);
+}
+
+void stream_debug_log_ws_accept(uint64_t segment, uint64_t bytes) {
+    pthread_mutex_lock(&g_dbglog_mutex);
+    if (!g_dbglog_fp) {
+        pthread_mutex_unlock(&g_dbglog_mutex);
+        return;
+    }
+    uint64_t now = dbglog_elapsed_ms();
+    g_dbglog_ws_bytes += bytes;
+    g_dbglog_ws_pending_bytes += bytes;
+    g_dbglog_ws_last_segment = segment;
+    if (now - g_dbglog_ws_last_ms >= 1000) {
+        dbglog_write_ws_sample(now);
+    }
+    pthread_mutex_unlock(&g_dbglog_mutex);
+}
+
+void stream_debug_log_ws_busy(uint64_t segment, uint64_t bytes) {
+    pthread_mutex_lock(&g_dbglog_mutex);
+    if (!g_dbglog_fp) {
+        pthread_mutex_unlock(&g_dbglog_mutex);
+        return;
+    }
+    uint64_t now = dbglog_elapsed_ms();
+    g_dbglog_busy_attempts++;
+    g_dbglog_busy_pending_attempts++;
+    g_dbglog_busy_pending_bytes += bytes;
+    g_dbglog_busy_last_segment = segment;
+    if (now - g_dbglog_busy_last_ms >= 1000) dbglog_write_busy_sample(now);
+    pthread_mutex_unlock(&g_dbglog_mutex);
+}
+
 void stream_debug_log_conn_close(int conn_id, const char *peer, int reqs_served) {
     pthread_mutex_lock(&g_dbglog_mutex);
     if (!g_dbglog_fp) {
@@ -211,6 +353,10 @@ void stream_debug_log_conn_close(int conn_id, const char *peer, int reqs_served)
 void stream_debug_log_close(void) {
     pthread_mutex_lock(&g_dbglog_mutex);
     if (g_dbglog_fp) {
+        uint64_t now = dbglog_elapsed_ms();
+        dbglog_write_rx_sample(now);
+        dbglog_write_ws_sample(now);
+        dbglog_write_busy_sample(now);
         char line[256];
         snprintf(line, sizeof(line), "\n# Session ended at elapsed_ms=%llu\n",
                  (unsigned long long)dbglog_elapsed_ms());
@@ -218,6 +364,20 @@ void stream_debug_log_close(void) {
         fclose(g_dbglog_fp);
         g_dbglog_fp = NULL;
         g_dbglog_session_start_ms = 0;
+        g_dbglog_ws_bytes = 0;
+        g_dbglog_ws_pending_bytes = 0;
+        g_dbglog_ws_last_ms = 0;
+        g_dbglog_ws_last_segment = 0;
+        g_dbglog_rx_bytes = 0;
+        g_dbglog_rx_pending_bytes = 0;
+        g_dbglog_rx_active_us = 0;
+        g_dbglog_rx_last_ms = 0;
+        g_dbglog_rx_last_segment = 0;
+        g_dbglog_busy_attempts = 0;
+        g_dbglog_busy_pending_attempts = 0;
+        g_dbglog_busy_pending_bytes = 0;
+        g_dbglog_busy_last_ms = 0;
+        g_dbglog_busy_last_segment = 0;
     }
     pthread_mutex_unlock(&g_dbglog_mutex);
     install_log("[STREAM_DEBUG] Debug session closed");

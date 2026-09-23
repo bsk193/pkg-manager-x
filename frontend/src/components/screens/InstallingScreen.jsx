@@ -1,8 +1,9 @@
 import React from 'react';
 import BlurIcon, { iconUrlFor } from '../../BlurIcon';
 import { formatBytes } from '../../utils/formatters';
+import DebugSpeedOverlay from './DebugSpeedOverlay';
 
-export default function InstallingScreen({ installerStatus, batchInstall, etaInfo, storage, isDiscSource, onCancel, packages = [], directIconUrl }) {
+export default function InstallingScreen({ installerStatus, batchInstall, etaInfo, storage, isDiscSource, onCancel, packages = [], directIconUrl, debugSpeeds }) {
 const isBatch = !!(batchInstall && batchInstall.combinedTotal > 0);
     let totalBytes = installerStatus.total_bytes;
     let downloadedBytes = installerStatus.downloaded_bytes;
@@ -42,6 +43,7 @@ const isBatch = !!(batchInstall && batchInstall.combinedTotal > 0);
 
     return (
       <div className="fixed inset-0 z-50 bg-[#0a0a0f] text-white flex flex-col items-center justify-center p-6 overflow-hidden select-none">
+        {debugSpeeds && <DebugSpeedOverlay uploadSpeed={debugSpeeds.upload} installSpeed={debugSpeeds.install} />}
         <div className="relative z-10 flex flex-col items-center max-w-4xl w-full text-center">
           {/* Status Chip */}
           <div className="px-3 py-1 rounded-[2px] bg-blue-500/20 text-blue-300 border border-blue-500/30 text-xs uppercase font-bold tracking-wider mb-5">

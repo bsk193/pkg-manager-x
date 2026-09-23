@@ -813,6 +813,10 @@ export default function App() {
       etaInfo={etaInfo}
       storage={storage}
       isDiscSource={isDiscSource}
+      debugSpeeds={settings.pkg_install_debug && installerStatus?.pkg_path?.startsWith('live:') ? {
+        upload: directUpload.uploadSpeed,
+        install: speedCalcRef.current.speed
+      } : null}
       onCancel={() => {
         handleCancel();
         if (installerStatus?.pkg_path?.startsWith('live:')) directUpload.cancel();
@@ -873,6 +877,7 @@ export default function App() {
             up={directUpload}
             storage={storage}
             installerStatus={installerStatus}
+            debugEnabled={Boolean(settings.pkg_install_debug)}
           />
         ) : showSmbPage ? (
           <SmbManagementView
