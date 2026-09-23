@@ -655,9 +655,11 @@ static void handle_text_msg(int fd, const char *msg, long *pending_seg,
         uint64_t r = ws_live_get_resume_offset();
         char rep[320];
         snprintf(rep, sizeof(rep),
-                 "{\"op\":\"ready\",\"session_id\":\"%s\",\"offset\":%llu}",
-                 sid, (unsigned long long)r);
+                 "{\"op\":\"ready\",\"session_id\":\"%s\",\"offset\":%llu,\"demand_window\":%d}",
+                 sid, (unsigned long long)r, ws_live_demand_window());
         send_text_locked(fd, rep);
+    } else if (strcmp(op, "ping") == 0 && *authorized) {
+        send_text_locked(fd, "{\"op\":\"pong\"}");
     } else if (strcmp(op, "status") == 0) {
         char st[768];
         ws_direct_get_status(st, sizeof(st));

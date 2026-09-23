@@ -279,6 +279,25 @@ LAN browser (DirectInstallView) --ws://:18842--> ws_upload.c --RAM ring-->
 virtual_stream ("live:<id>") --:18841--> installer.c (existing worker) --> system installer
 ```
 
+The browser's `segmentSender.js` keeps one segment in flight and reads the next
+segment while waiting for its acknowledgement. Servers advertise `demand_window`
+in the ready reply: the browser sends the pinned header first, then waits for
+installer seeks. Each seek queues up to eight segments starting at the requested
+segment (window = min(8, max(1, RAM slots / 4))). Explicit seeks take priority;
+speculative queued segments are capped at twice the window, and already ACKed
+segments are only resent on explicit demand. Older servers without the field
+retain sequential upload. A ping/pong heartbeat keeps demand-mode pauses alive. Seeks for the current in-flight segment are
+coalesced, while seeks arriving after its acknowledgement are honored because
+the RAM cache may have evicted it. Busy responses retry the same buffer, even
+when that segment was acknowledged during an earlier upload.
+
+Debug `WS_CACHE` rows report cumulative byte counters, sampled at most once per
+second and flushed at close: `duplicate_bytes` counts accepted uploads already
+resident; `reloaded_bytes` counts accepted uploads previously stored but evicted;
+`unread_evicted_bytes` counts evicted segments with no bytes read during that
+residency. A partially read segment is not counted as unread. These distinguish
+cache churn from physical receive throughput without per-segment log spam.
+
 `src/ws_upload.c` is transport only; `src/ws_stream.c` owns the bytes
 (1 MB pinned header + 64 MB ring, `ws_live_*` symbols, no load-time side
 effects, abort/timeout on every wait). The only touch points in existing

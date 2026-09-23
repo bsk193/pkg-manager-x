@@ -63,6 +63,11 @@ void stream_debug_log_ws_accept(uint64_t segment, uint64_t bytes);
 /* Record one segment write attempt rejected because the RAM ring is busy. */
 void stream_debug_log_ws_busy(uint64_t segment, uint64_t bytes);
 
+/* Cumulative cache diagnostics: resident duplicate uploads, reuploads after
+ * eviction, and evictions with no bytes read during that residency. */
+void stream_debug_log_ws_cache(uint64_t duplicate_bytes, uint64_t reload_bytes,
+                               uint64_t unread_evicted_bytes);
+
 /* Record a connection close. */
 void stream_debug_log_conn_close(int conn_id, const char *peer, int reqs_served);
 

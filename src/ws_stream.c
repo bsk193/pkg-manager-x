@@ -4,6 +4,7 @@
  */
 
 #include "ws_stream.h"
+#include "stream_debug_log.h"
 #include "installer.h" /* install_log only */
 
 #include <stdio.h>
@@ -36,6 +37,7 @@ typedef struct {
     uint8_t *slots;     /* slots * SEG bytes */
     int nslots;
     uint64_t *last_use; /* per-slot LRU stamp */
+    uint8_t *slot_read; /* any bytes read during this residency */
     int *slot_seg;      /* per-slot file segment, -1 = free */
     int *waiters;       /* per-segment waiter count (eviction shield) */
     uint8_t *acked_ever;/* per-segment stored-at-least-once (finish gate) */
@@ -138,6 +140,7 @@ static void free_locked(void) {
     free(g_lv.slots);
     free(g_lv.last_use);
     free(g_lv.slot_seg);
+    free(g_lv.slot_read);
     free(g_lv.waiters);
     free(g_lv.acked_ever);
     free(g_lv.seek_sent);
@@ -146,6 +149,7 @@ static void free_locked(void) {
     g_lv.slots = NULL;
     g_lv.last_use = NULL;
     g_lv.slot_seg = NULL;
+    g_lv.slot_read = NULL;
     g_lv.waiters = NULL;
     g_lv.acked_ever = NULL;
     g_lv.seek_sent = NULL;
@@ -192,14 +196,15 @@ int ws_live_create(const char *filename, uint64_t total_size, int ring_mb,
     int *slot_of = malloc((nsegs ? (size_t)nsegs : 1) * sizeof(int));
     uint8_t *slots = malloc((size_t)nslots * SEG);
     uint64_t *last_use = calloc((size_t)nslots, sizeof(uint64_t));
+    uint8_t *slot_read = calloc((size_t)nslots, 1);
     int *slot_seg = malloc((size_t)nslots * sizeof(int));
     int *waiters = calloc(nsegs ? (size_t)nsegs : 1, sizeof(int));
     uint8_t *acked_ever = calloc(nsegs ? (size_t)nsegs : 1, 1);
     uint64_t *seek_sent = calloc(nsegs ? (size_t)nsegs : 1, sizeof(uint64_t));
     if (!present || !slot_of || !slots || !last_use || !slot_seg ||
-        !waiters || !acked_ever || !seek_sent) {
+        !waiters || !acked_ever || !seek_sent || !slot_read) {
         free(present); free(slot_of); free(slots); free(last_use);
-        free(slot_seg); free(waiters); free(acked_ever);
+        free(slot_seg); free(slot_read); free(waiters); free(acked_ever);
         free(seek_sent);
         pthread_mutex_unlock(&g_lv.mu);
         return -1;
@@ -222,6 +227,7 @@ int ws_live_create(const char *filename, uint64_t total_size, int ring_mb,
     g_lv.nslots = nslots;
     g_lv.last_use = last_use;
     g_lv.slot_seg = slot_seg;
+    g_lv.slot_read = slot_read;
     g_lv.waiters = waiters;
     g_lv.acked_ever = acked_ever;
     g_lv.seek_sent = seek_sent;
@@ -323,6 +329,8 @@ static int alloc_slot_locked(uint64_t seg) {
         }
         if (oldest_seg < 0) return -1;
         free_slot = g_lv.slot_of[oldest_seg];
+        stream_debug_log_ws_cache(0, 0, g_lv.slot_read[free_slot] ? 0 : seg_len_locked((uint64_t)oldest_seg));
+        g_lv.slot_read[free_slot] = 0;
         g_lv.present[oldest_seg] = 0;
         g_lv.slot_of[oldest_seg] = -1;
     }
@@ -352,8 +360,12 @@ static int store_seg_locked(uint64_t seg, const void *data,
          * arrive piecemeal; anything else is a protocol error. */
         return -1;
     }
+    int resident = g_lv.present[seg];
+    int repeated = g_lv.acked_ever[seg];
     int slot = alloc_slot_locked(seg);
     if (slot < 0) return -2;
+    stream_debug_log_ws_cache(resident ? s_len : 0, repeated && !resident ? s_len : 0, 0);
+    if (!resident) g_lv.slot_read[slot] = 0;
     memcpy(g_lv.slots + (size_t)slot * SEG,
            (const uint8_t *)data + (w_start - offset), (size_t)s_len);
     if (!g_lv.present[seg]) {
@@ -464,6 +476,16 @@ int ws_live_try_write(uint64_t offset, const void *data, size_t len) {
     pthread_cond_broadcast(&g_lv.changed);
     pthread_mutex_unlock(&g_lv.mu);
     return 0;
+}
+
+int ws_live_demand_window(void) {
+    live_lock_init();
+    pthread_mutex_lock(&g_lv.mu);
+    int window = g_lv.nslots / 4;
+    if (window < 1) window = 1;
+    if (window > 8) window = 8;
+    pthread_mutex_unlock(&g_lv.mu);
+    return window;
 }
 
 /* Total parked-reader count across all segments (0 when no session).
@@ -669,6 +691,7 @@ long ws_live_read(uint64_t off, void *buf, size_t count) {
                 if (m == 0) break;
                 memcpy(dst + got, g_lv.slots + (size_t)slot * SEG + so, m);
                 g_lv.last_use[slot] = ++g_lv.tick;
+                g_lv.slot_read[slot] = 1;
                 g_lv.served += m;
                 off += m;
                 got += m;

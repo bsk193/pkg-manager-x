@@ -38,6 +38,10 @@ static uint64_t g_dbglog_busy_pending_bytes = 0;
 static uint64_t g_dbglog_busy_last_ms = 0;
 static uint64_t g_dbglog_busy_last_segment = 0;
 
+static uint64_t g_cache_duplicate, g_cache_reload, g_cache_unread;
+static uint64_t g_cache_last_ms;
+static int g_cache_dirty;
+
 static uint64_t dbglog_now_ms(void) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -115,6 +119,34 @@ static void dbglog_write_busy_sample(uint64_t now) {
     g_dbglog_busy_last_ms = now;
 }
 
+static void dbglog_write_cache_sample(uint64_t now) {
+    if (!g_dbglog_fp || !g_cache_dirty) return;
+    char line[384];
+    snprintf(line, sizeof(line),
+             "%llu\tWS_CACHE\t-\t-\t-\tduplicate_bytes=%llu\treloaded_bytes=%llu\tunread_evicted_bytes=%llu\n",
+             (unsigned long long)now,
+             (unsigned long long)g_cache_duplicate,
+             (unsigned long long)g_cache_reload,
+             (unsigned long long)g_cache_unread);
+    dbglog_write(line);
+    g_cache_last_ms = now;
+    g_cache_dirty = 0;
+}
+
+void stream_debug_log_ws_cache(uint64_t duplicate_bytes, uint64_t reload_bytes,
+                               uint64_t unread_evicted_bytes) {
+    pthread_mutex_lock(&g_dbglog_mutex);
+    if (g_dbglog_fp) {
+        g_cache_duplicate += duplicate_bytes;
+        g_cache_reload += reload_bytes;
+        g_cache_unread += unread_evicted_bytes;
+        g_cache_dirty = 1;
+        uint64_t now = dbglog_elapsed_ms();
+        if (now - g_cache_last_ms >= 1000) dbglog_write_cache_sample(now);
+    }
+    pthread_mutex_unlock(&g_dbglog_mutex);
+}
+
 static const char *dbglog_get_dir(void) {
     const char *env = getenv("PKG_DEBUG_DIR");
     if (env && env[0] != '\0') return env;
@@ -160,6 +192,9 @@ int stream_debug_log_open(const char *title_id, const char *content_id,
     }
 
     g_dbglog_session_start_ms = dbglog_now_ms();
+    g_cache_duplicate = g_cache_reload = g_cache_unread = 0;
+    g_cache_last_ms = 0;
+    g_cache_dirty = 0;
     g_dbglog_ws_bytes = 0;
     g_dbglog_ws_pending_bytes = 0;
     g_dbglog_ws_last_ms = 0;
@@ -203,6 +238,7 @@ int stream_debug_log_open(const char *title_id, const char *content_id,
              "#   WS_RX       - WebSocket payload receive rate while bytes are arriving\n"
              "#   WS_ACCEPT   - Aggregated bytes accepted into the live RAM stream\n"
              "#   WS_BACKPRESSURE - Aggregated busy writes caused by the full RAM ring\n"
+             "#   WS_CACHE    - Cumulative duplicate_bytes (already resident), reloaded_bytes (previously evicted), unread_evicted_bytes (no read during residency)\n"
              "#   CONN_CLOSE   - TCP connection closed\n"
              "#\n\n",
              date_str, PKGMGR_VERSION, PKGMGR_BUILD_COMMIT, PKGMGR_BUILD_DATE,
@@ -357,6 +393,7 @@ void stream_debug_log_close(void) {
         dbglog_write_rx_sample(now);
         dbglog_write_ws_sample(now);
         dbglog_write_busy_sample(now);
+        dbglog_write_cache_sample(now);
         char line[256];
         snprintf(line, sizeof(line), "\n# Session ended at elapsed_ms=%llu\n",
                  (unsigned long long)dbglog_elapsed_ms());
