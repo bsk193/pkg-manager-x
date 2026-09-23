@@ -371,6 +371,7 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
                 code = MHD_HTTP_BAD_REQUEST;
             } else {
                 char sid[64] = {0};
+                int resuming = ws_direct_session_active();
                 int rc = ws_direct_init_owned(fn, total, owner, resume_sid,
                                               sid, sizeof(sid));
                 if (rc == -2) {
@@ -386,8 +387,8 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
                     /* The spool session exists but chunk bytes travel over
                      * the :18842 listener: refuse loudly if it is down instead
                      * of letting the browser time out against a dead port. */
-                    if (!ws_direct_listener_running()) {
-                        ws_direct_cancel_session();
+                    if (ws_direct_ensure_listener() != 0) {
+                        if (!resuming) ws_direct_cancel_session();
                         snprintf(resp_json, sizeof(resp_json),
                                  "{\"success\":false,\"error\":\"Upload socket unavailable\"}");
                         code = MHD_HTTP_INTERNAL_SERVER_ERROR;

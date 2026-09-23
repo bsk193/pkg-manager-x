@@ -55,6 +55,7 @@ static uint64_t ws_now_us(void) {
 #include "ws_stream.h"
 
 static pthread_mutex_t g_ws_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_session_lifecycle_mu = PTHREAD_MUTEX_INITIALIZER;
 static int g_live[WS_MAX_TRACKED];
 
 static int g_listen_fd = -1;
@@ -125,10 +126,11 @@ int ws_direct_init_session(const char *filename, uint64_t total_size,
                            char *out_session_id, size_t sid_max) {
     if (!filename || !filename[0] || total_size == 0 || total_size > WS_DIRECT_MAX_TOTAL)
         return -1;
+    pthread_mutex_lock(&g_session_lifecycle_mu);
     int rc = ws_live_create(filename, total_size, 0, out_session_id, sid_max);
-    if (rc != 0) return rc;
-    ws_direct_ensure_listener();
-    return 0;
+    if (rc == 0) ws_direct_ensure_listener();
+    pthread_mutex_unlock(&g_session_lifecycle_mu);
+    return rc;
 }
 
 int ws_direct_owner_matches(const char *owner, const char *sid) {
@@ -1156,6 +1158,28 @@ void ws_direct_listener_stop(void) {
     if (lfd >= 0) { shutdown(lfd, SHUT_RDWR); close(lfd); }
     if (join) pthread_join(g_listen_thread, NULL);
     g_listen_port = 0;
+}
+
+int ws_direct_listener_stop_if_idle(void) {
+    pthread_mutex_lock(&g_session_lifecycle_mu);
+    if (ws_live_session_active()) {
+        pthread_mutex_unlock(&g_session_lifecycle_mu);
+        return 0;
+    }
+    live_init();
+    pthread_mutex_lock(&g_ws_mu);
+    int clients = 0;
+    for (int i = 0; i < WS_MAX_TRACKED; i++) {
+        if (g_live[i] >= 0) { clients = 1; break; }
+    }
+    pthread_mutex_unlock(&g_ws_mu);
+    if (clients || !g_listen_running) {
+        pthread_mutex_unlock(&g_session_lifecycle_mu);
+        return 0;
+    }
+    ws_direct_listener_stop();
+    pthread_mutex_unlock(&g_session_lifecycle_mu);
+    return 1;
 }
 
 int ws_direct_listener_running(void) {
