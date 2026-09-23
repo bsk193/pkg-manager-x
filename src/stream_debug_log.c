@@ -8,6 +8,7 @@
  */
 
 #include "stream_debug_log.h"
+#include "debug_log_retention.h"
 #include "installer.h"
 #include "version.h"
 
@@ -226,6 +227,8 @@ int stream_debug_log_open(const char *title_id, const char *content_id,
         install_log("[STREAM_DEBUG] Failed to create debug log: %s", filepath);
         return -1;
     }
+
+    debug_log_retain_latest(dir, "stream_debug_", filepath, 20);
 
     g_dbglog_session_start_ms = dbglog_now_ms();
     g_cache_duplicate = g_cache_reload = g_cache_unread = 0;
