@@ -11,6 +11,7 @@
 
 typedef struct {
     int enabled;
+    int browse_only;         /* Skip catalog scans; browse and install on demand */
     char id[32];             /* e.g. "smb0", "smb1" */
     char label[64];          /* User label: "NAS Packages" */
     char server[128];        /* Server IP or hostname */
@@ -72,6 +73,12 @@ int smb_client_list_shares(const smb_share_config_t *cfg,
 int smb_client_list_dir(const smb_share_config_t *cfg, const char *subpath,
                         smb_dir_entry_t *out, int max_out,
                         char *out_err, size_t err_sz);
+
+/* Sorted cursor page, directories first. Cursor is "D:name" or "F:name".
+ * Only max_out entries are retained; has_more reports additional matches. */
+int smb_client_list_dir_page(const smb_share_config_t *cfg, const char *subpath,
+                             const char *after, smb_dir_entry_t *out, int max_out,
+                             int *has_more, char *out_err, size_t err_sz);
 
 /* Scan an SMB share for .pkg files.
  * pkg_cb is called for each found .pkg file.

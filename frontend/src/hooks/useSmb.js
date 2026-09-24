@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { testSmb } from '../api/smb';
+import { quickScan } from '../api/packages';
 
 export function useSmb(props) {
   const settings = props.settings;
@@ -93,10 +94,15 @@ export function useSmb(props) {
       currentShares.push(formCopy);
     }
     const newSettings = { ...settings, smb_shares: currentShares };
-    await handleSaveSettings(newSettings);
+    if (await handleSaveSettings(newSettings) === false) return;
     setShowSmbModal(false);
     setSmbTestResult(null);
-    if (refreshAll) refreshAll();
+    if (formCopy.browse_only) {
+      try {
+        await quickScan(formCopy.id);
+        if (props.fetchDrives) await props.fetchDrives();
+      } catch (error) { showToast(error.message, 'error'); }
+    } else if (refreshAll) refreshAll();
   };
 
   const handleRemoveSmbShare = async (idx) => {

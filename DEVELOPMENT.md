@@ -63,6 +63,30 @@ This compiles and runs tests for:
 - In-memory package parsing (`test_parse_mem`)
 - Legacy CSS syntax transformer (`test_fix_legacy_css.py`)
 
+### Large SMB share regressions
+
+`make test TESTS=test_smb_scan` generates 3,000 small synthetic PKGs in separate
+games, updates and DLC folders, using the real scanner/parser over the local SMB
+transport mock. It checks:
+
+- overlapping full scans perform one traversal (the original implementation
+  reproduced two traversals: 16 directory opens instead of 8);
+- background admission, progress and catalog access during directory I/O;
+- directory enumeration closes before metadata reads;
+- cursor paging reaches every file in a 1,000-entry folder without opening PKGs;
+- a nested directory failure preserves the quick-scan catalog and reports a full
+  scan error;
+- browse-only settings persist, perform no scan I/O, remove previously indexed
+  entries, and still allow parsing an individually selected file.
+
+`cd frontend && npm test` covers scan polling through a transient connection
+failure, reconnecting without another scan request, manual browse/inspect requests,
+and rendering 60 cards from 3,000 titles, including the last page.
+
+These tests validate application behavior with a mocked SMB transport. A live
+PS5/NAS run is still needed to confirm console memory limits, server timeouts,
+controller interaction and installation from the reporter's share.
+
 ### PS5 Installer Stream Simulator
 
 `test_stream_sim` reproduces the exact HTTP request pattern the PS5 background

@@ -116,8 +116,35 @@ static int g_scanner_initialized = 0;
 
 static pthread_mutex_t g_scanner_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_scan_active_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int g_scan_active = 0;
 static pkg_scan_status_t g_scan_status = {0};
 static pthread_mutex_t g_scan_status_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Admission is separate from catalog access. Retries never queue another pass. */
+static int scan_claim(int full) {
+    pthread_mutex_lock(&g_scan_active_mutex);
+    if (g_scan_active) {
+        pthread_mutex_unlock(&g_scan_active_mutex);
+        return 0;
+    }
+    g_scan_active = 1;
+    pthread_mutex_lock(&g_scan_status_mutex);
+    memset(&g_scan_status, 0, sizeof(g_scan_status));
+    g_scan_status.is_scanning = 1;
+    strcpy(g_scan_status.current_drive, full ? "Counting packages..." : "Checking for changed packages...");
+    pthread_mutex_unlock(&g_scan_status_mutex);
+    pthread_mutex_unlock(&g_scan_active_mutex);
+    return 1;
+}
+
+static void scan_release(void) {
+    pthread_mutex_lock(&g_scan_active_mutex);
+    pthread_mutex_lock(&g_scan_status_mutex);
+    g_scan_status.is_scanning = 0;
+    pthread_mutex_unlock(&g_scan_status_mutex);
+    g_scan_active = 0;
+    pthread_mutex_unlock(&g_scan_active_mutex);
+}
 
 typedef struct {
     char path[512];
@@ -599,30 +626,18 @@ char *pkg_scanner_status_to_json(void) {
     char esc_file[512] = {0};
     char esc_drive[128] = {0};
 
-    size_t eidx = 0;
-    for (size_t i = 0; st.current_file[i] && eidx + 2 < sizeof(esc_file); i++) {
-        if (st.current_file[i] == '"' || st.current_file[i] == '\\') {
-            esc_file[eidx++] = '\\';
-        }
-        esc_file[eidx++] = st.current_file[i];
-    }
-    eidx = 0;
-    for (size_t i = 0; st.current_drive[i] && eidx + 2 < sizeof(esc_drive); i++) {
-        if (st.current_drive[i] == '"' || st.current_drive[i] == '\\') {
-            esc_drive[eidx++] = '\\';
-        }
-        esc_drive[eidx++] = st.current_drive[i];
-    }
+    escape_json_str(st.current_file, esc_file, sizeof(esc_file));
+    escape_json_str(st.current_drive, esc_drive, sizeof(esc_drive));
 
     snprintf(buf, sizeof(buf),
              "{\"is_scanning\":%s,\"total_files\":%zu,\"processed_files\":%zu,"
-             "\"current_drive\":\"%s\",\"current_file\":\"%s\",\"progress\":%.1f}",
+             "\"current_drive\":\"%s\",\"current_file\":\"%s\",\"progress\":%.1f,\"failed_sources\":%d}",
              st.is_scanning ? "true" : "false",
              st.total_files,
              st.processed_files,
              esc_drive,
              esc_file,
-             progress);
+             progress, st.failed_sources);
     return strdup(buf);
 }
 
@@ -859,23 +874,74 @@ static int parse_pkg_entry(const char *full_path, const char *filename,
 
 static void process_pkg_file(const char *full_path, const char *filename,
                              const struct stat *st, const char *drive_label) {
+    pthread_mutex_lock(&g_scanner_mutex);
     add_scanned_file_locked(full_path, (uint64_t)st->st_size, (uint64_t)st->st_mtime);
+    pthread_mutex_unlock(&g_scanner_mutex);
 
     pthread_mutex_lock(&g_scan_status_mutex);
-    g_scan_status.processed_files++;
     strncpy(g_scan_status.current_file, filename, sizeof(g_scan_status.current_file) - 1);
     if (drive_label && drive_label[0] != '\0') {
         strncpy(g_scan_status.current_drive, drive_label, sizeof(g_scan_status.current_drive) - 1);
     }
     pthread_mutex_unlock(&g_scan_status_mutex);
 
-    if (g_package_count >= MAX_PACKAGES) return;
+    if (g_package_count >= MAX_PACKAGES) {
+        pthread_mutex_lock(&g_scan_status_mutex);
+        g_scan_status.processed_files++;
+        pthread_mutex_unlock(&g_scan_status_mutex);
+        return;
+    }
 
     pkg_detail_t detail;
     int rc = parse_pkg_entry(full_path, filename, (uint64_t)st->st_size, (uint64_t)st->st_mtime, &detail);
     if (rc == 0) {
+        pthread_mutex_lock(&g_scanner_mutex);
         memcpy(&g_packages[g_package_count++], &detail, sizeof(pkg_detail_t));
+        pthread_mutex_unlock(&g_scanner_mutex);
     }
+    pthread_mutex_lock(&g_scan_status_mutex);
+    g_scan_status.processed_files++;
+    pthread_mutex_unlock(&g_scan_status_mutex);
+}
+
+typedef struct {
+    char path[512];
+    char filename[256];
+    uint64_t file_size;
+    uint64_t mtime;
+} quick_file_entry_t;
+
+typedef struct {
+    quick_file_entry_t *entries;
+    size_t count;
+    size_t capacity;
+    int failed;
+} quick_file_list_t;
+
+static void quick_smb_pkg_cb(const char *smb_url, const char *filename,
+                             uint64_t file_size, uint32_t mtime,
+                             void *user_data) {
+    if (!is_package_file(filename)) return;
+    quick_file_list_t *list = (quick_file_list_t *)user_data;
+    if (list->failed) return;
+    if (strlen(smb_url) >= sizeof(list->entries[0].path)) {
+        list->failed = 1;
+        return;
+    }
+    if (list->count >= list->capacity) {
+        size_t new_cap = list->capacity == 0 ? 32 : list->capacity * 2;
+        quick_file_entry_t *new_arr = (quick_file_entry_t *)realloc(list->entries, new_cap * sizeof(quick_file_entry_t));
+        if (!new_arr) { list->failed = 1; return; }
+        list->entries = new_arr;
+        list->capacity = new_cap;
+    }
+    quick_file_entry_t *e = &list->entries[list->count++];
+    strncpy(e->path, smb_url, sizeof(e->path) - 1);
+    e->path[sizeof(e->path) - 1] = '\0';
+    strncpy(e->filename, filename, sizeof(e->filename) - 1);
+    e->filename[sizeof(e->filename) - 1] = '\0';
+    e->file_size = file_size;
+    e->mtime = (uint64_t)mtime;
 }
 
 typedef struct {
@@ -971,15 +1037,22 @@ static void add_drive_entry(const char *id, const char *label, const char *path,
     strncpy(d->type, type, sizeof(d->type) - 1);
     d->mounted = mounted;
     d->pkg_count = pkg_count;
-    d->clickable = (pkg_count > 0);
+    d->clickable = (pkg_count > 0 || strcmp(type, "smb") == 0);
 }
 
-int pkg_scanner_scan(void) {
-    pthread_mutex_lock(&g_scan_active_mutex);
+static void add_full_scan_drive(const char *id, const char *label, const char *path,
+                                const char *type, int mounted, size_t count) {
+    pthread_mutex_lock(&g_scanner_mutex);
+    add_drive_entry(id, label, path, type, mounted, count);
+    pthread_mutex_unlock(&g_scanner_mutex);
+}
+
+static int scan_full_owned(void) {
     pthread_mutex_lock(&g_scanner_mutex);
     g_package_count = 0;
     g_drive_count = 0;
     g_scanned_file_count = 0;
+    pthread_mutex_unlock(&g_scanner_mutex);
 
     const char *env_dir = getenv("PKG_SCAN_DIR");
     const char *env_disc = getenv("PKG_DISC_DIR");
@@ -1024,7 +1097,7 @@ int pkg_scanner_scan(void) {
         pkg_cache_get_settings(&smb_settings);
         for (int i = 0; i < smb_settings.smb_share_count; i++) {
             const smb_share_config_t *scfg = &smb_settings.smb_shares[i];
-            if (!scfg->enabled || scfg->server[0] == '\0' || scfg->share[0] == '\0') continue;
+            if (!scfg->enabled || scfg->browse_only || scfg->server[0] == '\0' || scfg->share[0] == '\0') continue;
             int smb_pkgs = smb_client_count_pkg_files(scfg);
             if (smb_pkgs > 0) {
                 total_expected += (size_t)smb_pkgs;
@@ -1044,13 +1117,13 @@ int pkg_scanner_scan(void) {
         size_t prev_pkg = g_package_count;
         scan_dir_recursive(env_dir, 0, env_dir);
         size_t count = g_package_count - prev_pkg;
-        add_drive_entry("usb0", "USB Drive 0", env_dir, "usb", 1, count);
+        add_full_scan_drive("usb0", "USB Drive 0", env_dir, "usb", 1, count);
 
         if (env_disc && env_disc[0] != '\0' && is_drive_mounted(env_disc)) {
             prev_pkg = g_package_count;
             scan_dir_recursive(env_disc, 0, env_disc);
             count = g_package_count - prev_pkg;
-            add_drive_entry("disc", "Blu-ray Disc", env_disc, "disc", 1, count);
+            add_full_scan_drive("disc", "Blu-ray Disc", env_disc, "disc", 1, count);
         }
     } else {
         const char *usb_prefix = getenv("PKG_USB_PREFIX");
@@ -1076,7 +1149,7 @@ int pkg_scanner_scan(void) {
                 scan_dir_recursive(usb_pkg_dir, 0, label);
                 size_t count = g_package_count - prev_pkg;
 
-                add_drive_entry(id, label, usb_path, "usb", 1, count);
+                add_full_scan_drive(id, label, usb_path, "usb", 1, count);
             }
         }
 
@@ -1093,7 +1166,7 @@ int pkg_scanner_scan(void) {
             snprintf(disc_pkg_dir, sizeof(disc_pkg_dir), "%s/pkg", disc_dir);
             scan_dir_recursive(disc_pkg_dir, 0, "Blu-ray Disc");
             size_t count = g_package_count - prev_pkg;
-            add_drive_entry("disc", "Blu-ray Disc", disc_dir, "disc", 1, count);
+            add_full_scan_drive("disc", "Blu-ray Disc", disc_dir, "disc", 1, count);
         }
 
         /* 3. Check /data/pkg (Internal Storage) if packages are present */
@@ -1102,7 +1175,7 @@ int pkg_scanner_scan(void) {
             scan_dir_recursive(PKG_DEFAULT_DIR, 0, "Internal Storage");
             size_t count = g_package_count - prev_pkg;
             if (count > 0) {
-                add_drive_entry("internal", "Internal Storage", PKG_DEFAULT_DIR, "internal", 1, count);
+                add_full_scan_drive("internal", "Internal Storage", PKG_DEFAULT_DIR, "internal", 1, count);
             }
         }
     }
@@ -1137,20 +1210,41 @@ int pkg_scanner_scan(void) {
             snprintf(share_root, sizeof(share_root), "smb://%s/%s", scfg->server, scfg->share);
         }
 
+        if (scfg->browse_only) {
+            add_full_scan_drive(s_id, s_label, share_root, "smb", 1, 0);
+            continue;
+        }
+
         smb_scan_ctx_t sctx;
         sctx.drive_label = s_label;
 
         size_t prev_pkg = g_package_count;
-        int sres = smb_client_scan_share(scfg, smb_pkg_scan_cb, &sctx);
+        /* Finish enumeration before slow metadata reads so the directory
+         * session cannot time out while thousands of packages are parsed. */
+        quick_file_list_t files = {0};
+        int sres = smb_client_scan_share(scfg, quick_smb_pkg_cb, &files);
+        if (files.failed) sres = -1;
+        if (sres >= 0) {
+            for (size_t f = 0; f < files.count; f++) {
+                quick_file_entry_t *file = &files.entries[f];
+                smb_pkg_scan_cb(file->path, file->filename, file->file_size,
+                                (uint32_t)file->mtime, &sctx);
+            }
+        }
+        free(files.entries);
         size_t count = g_package_count - prev_pkg;
 
         if (sres >= 0) {
-            add_drive_entry(s_id, s_label, share_root, "smb", 1, count);
+            add_full_scan_drive(s_id, s_label, share_root, "smb", 1, count);
         } else {
-            add_drive_entry(s_id, s_label, share_root, "smb", 0, 0);
+            pthread_mutex_lock(&g_scan_status_mutex);
+            g_scan_status.failed_sources++;
+            pthread_mutex_unlock(&g_scan_status_mutex);
+            add_full_scan_drive(s_id, s_label, share_root, "smb", 0, 0);
         }
     }
 
+    pthread_mutex_lock(&g_scanner_mutex);
     if (g_package_count > 1) {
         qsort(g_packages, g_package_count, sizeof(pkg_detail_t), compare_pkg_by_title_name);
     }
@@ -1159,48 +1253,36 @@ int pkg_scanner_scan(void) {
 
     int total_packages = (int)g_package_count;
 
-    pthread_mutex_lock(&g_scan_status_mutex);
-    g_scan_status.is_scanning = 0;
-    g_scan_status.processed_files = g_scan_status.total_files;
-    pthread_mutex_unlock(&g_scan_status_mutex);
-
     pthread_mutex_unlock(&g_scanner_mutex);
-    pthread_mutex_unlock(&g_scan_active_mutex);
+    scan_release();
     return total_packages;
 }
 
-typedef struct {
-    char path[512];
-    char filename[256];
-    uint64_t file_size;
-    uint64_t mtime;
-} quick_file_entry_t;
+int pkg_scanner_scan(void) {
+    if (!scan_claim(1)) return (int)pkg_scanner_get_count();
+    return scan_full_owned();
+}
 
-typedef struct {
-    quick_file_entry_t *entries;
-    size_t count;
-    size_t capacity;
-} quick_file_list_t;
+static void *scan_worker(void *unused) {
+    (void)unused;
+    scan_full_owned();
+    return NULL;
+}
 
-static void quick_smb_pkg_cb(const char *smb_url, const char *filename,
-                             uint64_t file_size, uint32_t mtime,
-                             void *user_data) {
-    if (!is_package_file(filename)) return;
-    quick_file_list_t *list = (quick_file_list_t *)user_data;
-    if (list->count >= list->capacity) {
-        size_t new_cap = list->capacity == 0 ? 32 : list->capacity * 2;
-        quick_file_entry_t *new_arr = (quick_file_entry_t *)realloc(list->entries, new_cap * sizeof(quick_file_entry_t));
-        if (!new_arr) return;
-        list->entries = new_arr;
-        list->capacity = new_cap;
+int pkg_scanner_start_scan(void) {
+    if (!scan_claim(1)) return 0;
+    pthread_t worker;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_attr_setstacksize(&attr, 1024 * 1024);
+    int rc = pthread_create(&worker, &attr, scan_worker, NULL);
+    pthread_attr_destroy(&attr);
+    if (rc != 0) {
+        scan_release();
+        return -1;
     }
-    quick_file_entry_t *e = &list->entries[list->count++];
-    strncpy(e->path, smb_url, sizeof(e->path) - 1);
-    e->path[sizeof(e->path) - 1] = '\0';
-    strncpy(e->filename, filename, sizeof(e->filename) - 1);
-    e->filename[sizeof(e->filename) - 1] = '\0';
-    e->file_size = file_size;
-    e->mtime = (uint64_t)mtime;
+    return 1;
 }
 
 static void collect_local_files_quick(const char *dir_path, int recursive, int depth, quick_file_list_t *list) {
@@ -1225,6 +1307,7 @@ static void collect_local_files_quick(const char *dir_path, int recursive, int d
                 size_t new_cap = list->capacity == 0 ? 32 : list->capacity * 2;
                 quick_file_entry_t *new_arr = (quick_file_entry_t *)realloc(list->entries, new_cap * sizeof(quick_file_entry_t));
                 if (!new_arr) {
+                    list->failed = 1;
                     closedir(d);
                     return;
                 }
@@ -1275,7 +1358,7 @@ static int scan_quick_single_source(const char *drive_id, const char *drive_labe
             return 0;
         }
         int res = smb_client_scan_share(smb_cfg, quick_smb_pkg_cb, &cur_files);
-        if (res < 0) {
+        if (res < 0 || cur_files.failed) {
             /* Share offline / network unreachable: retain existing cached entries without purging */
             free(cur_files.entries);
             return 0;
@@ -1326,6 +1409,11 @@ static int scan_quick_single_source(const char *drive_id, const char *drive_labe
             snprintf(pkg_subdir, sizeof(pkg_subdir), "%s/pkg", drive_path);
             collect_local_files_quick(pkg_subdir, 1, 0, &cur_files);
         }
+    }
+
+    if (cur_files.failed) {
+        free(cur_files.entries);
+        return 0;
     }
 
     /* STEP 1: Check if file list matches recorded scanned files */
@@ -1417,6 +1505,12 @@ static int scan_quick_single_source(const char *drive_id, const char *drive_labe
     int *needs_parsing = NULL;
     if (cur_files.count > 0) {
         needs_parsing = (int *)calloc(cur_files.count, sizeof(int));
+        if (!needs_parsing) {
+            pthread_mutex_unlock(&g_scanner_mutex);
+            free(updated_pkgs);
+            free(cur_files.entries);
+            return 0;
+        }
     }
 
     for (size_t f = 0; f < cur_files.count; f++) {
@@ -1538,7 +1632,7 @@ static int scan_quick_single_source(const char *drive_id, const char *drive_labe
 int pkg_scanner_scan_quick(const char *drive_id_or_path, int *out_changed) {
     if (out_changed) *out_changed = 0;
 
-    if (pthread_mutex_trylock(&g_scan_active_mutex) != 0) {
+    if (!scan_claim(0)) {
         /* Another scan is active; do not collide */
         return (int)pkg_scanner_get_count();
     }
@@ -1621,7 +1715,40 @@ int pkg_scanner_scan_quick(const char *drive_id_or_path, int *out_changed) {
         if (!drive_id_or_path || drive_id_or_path[0] == '\0' || strcmp(drive_id_or_path, "__all__") == 0 ||
             strcmp(drive_id_or_path, s_id) == 0 || strcmp(drive_id_or_path, share_root) == 0 ||
             pkg_matches_drive_path(drive_id_or_path, share_root)) {
-            total_changed += scan_quick_single_source(s_id, s_label, share_root, "smb", 1, scfg);
+            if (scfg->browse_only) {
+                pthread_mutex_lock(&g_scanner_mutex);
+                char source_path[1024];
+                snprintf(source_path, sizeof(source_path), "%s%s%s", share_root,
+                         scfg->path[0] ? "/" : "", scfg->path);
+                size_t kept = 0;
+                for (size_t p = 0; p < g_package_count; p++) {
+                    if (pkg_matches_drive_path(g_packages[p].path, source_path)) {
+                        total_changed++;
+                    } else {
+                        if (kept != p) g_packages[kept] = g_packages[p];
+                        kept++;
+                    }
+                }
+                g_package_count = kept;
+                remove_scanned_files_for_drive_locked(source_path);
+                int found = 0;
+                for (size_t d = 0; d < g_drive_count; d++) {
+                    if (strcmp(g_drives[d].id, s_id) == 0) {
+                        if (!g_drives[d].clickable || !g_drives[d].mounted || g_drives[d].pkg_count)
+                            total_changed++;
+                        g_drives[d].mounted = g_drives[d].clickable = 1;
+                        g_drives[d].pkg_count = 0;
+                        found = 1;
+                    }
+                }
+                if (!found) {
+                    add_drive_entry(s_id, s_label, share_root, "smb", 1, 0);
+                    total_changed++;
+                }
+                pthread_mutex_unlock(&g_scanner_mutex);
+            } else {
+                total_changed += scan_quick_single_source(s_id, s_label, share_root, "smb", 1, scfg);
+            }
         }
     }
 
@@ -1635,7 +1762,7 @@ int pkg_scanner_scan_quick(const char *drive_id_or_path, int *out_changed) {
         if (out_changed) *out_changed = 1;
     }
 
-    pthread_mutex_unlock(&g_scan_active_mutex);
+    scan_release();
     return (int)pkg_scanner_get_count();
 }
 

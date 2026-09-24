@@ -317,7 +317,7 @@ int main(void) {
 
     int test_res = smb_client_test_connection(&mock_cfg, err_buf, sizeof(err_buf));
     assert(test_res == 0);
-    assert(strstr(err_buf, "Connected successfully (Read/Write)") != NULL);
+    assert(strstr(err_buf, "Connected successfully (Read-Only)") != NULL);
 
     /* Test read-only flag */
     mock_cfg.is_read_only = 1;

@@ -624,8 +624,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && pathname === '/api/packages/refresh') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', count: examplePkgs.length }));
+    res.writeHead(202, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'accepted', started: true }));
     return;
   }
 
@@ -821,7 +821,7 @@ const server = http.createServer(async (req, res) => {
   // 9. Scan Status API
   if (req.method === 'GET' && pathname === '/api/scan/status') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ scanning: false, processed_files: examplePkgs.length, total_files: examplePkgs.length, progress: 100 }));
+    res.end(JSON.stringify({ is_scanning: false, failed_sources: 0, processed_files: examplePkgs.length, total_files: examplePkgs.length, progress: 100 }));
     return;
   }
 
@@ -906,6 +906,17 @@ const server = http.createServer(async (req, res) => {
     });
     return;
   }
+  if (req.method === 'GET' && pathname === '/api/smb/inspect') {
+    const selectedPath = parsedUrl.searchParams.get('path') || '';
+    const pkg = examplePkgs.find((item) => item.path === selectedPath);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(pkg ? { success: true, can_install: true, ...pkg } : {
+      success: true, can_install: true, title_name: selectedPath.split('/').pop(),
+      title_id: 'CUSA90001', pkg_type: 'base', app_version: '01.00', file_size: 1024
+    }));
+    return;
+  }
+
   if (req.method === 'POST' && pathname === '/api/smb/browse') {
     let body = '';
     req.on('data', chunk => body += chunk);
@@ -932,7 +943,14 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: true, share, path: relPath, entries }));
+      const compare = (a, b) => Number(b.is_dir) - Number(a.is_dir) ||
+        a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || a.name.localeCompare(b.name);
+      const after = parsed.after ? { is_dir: parsed.after.startsWith('D:'), name: parsed.after.slice(2) } : null;
+      const remaining = entries.slice().sort(compare).filter((entry) => !after || compare(entry, after) > 0);
+      const page = remaining.slice(0, 64);
+      const last = page[page.length - 1];
+      const next_cursor = remaining.length > 64 ? `${last.is_dir ? 'D' : 'F'}:${last.name}` : '';
+      res.end(JSON.stringify({ success: true, share, path: relPath, entries: page, next_cursor }));
     });
     return;
   }

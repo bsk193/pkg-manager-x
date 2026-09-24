@@ -45,7 +45,7 @@ export default function SmbShareModal({
         return;
       }
 
-      setFolderPreflight({ path: cleanPath, entries: data.entries });
+      setFolderPreflight({ path: cleanPath, entries: data.entries, next: data.next_cursor });
       setFolderPickerOpen(true);
     } catch (e) {
       setFolderPreflight(null);
@@ -58,6 +58,11 @@ export default function SmbShareModal({
   return (
     <div data-modal-dialog="true" role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4">
       <div className="bg-[#181a27] border border-white/15 rounded-[2px] max-w-lg w-full p-6 space-y-5 overflow-y-auto max-h-[90vh]">
+        <label className="flex items-center space-x-3 text-sm text-zinc-200">
+          <input type="checkbox" className="ps5-focus-item" checked={!!form.browse_only}
+            onChange={(event) => setForm({ ...form, browse_only: event.target.checked })} />
+          <span>Browse only — skip full and background scans. Select individual PKGs to install.</span>
+        </label>
         <div className="flex items-center justify-between pb-3 border-b border-white/10">
           <div className="flex items-center space-x-3">
             <div className="w-10 h-10 rounded-[2px] bg-cyan-600/20 border border-cyan-500/30 flex items-center justify-center text-cyan-400 shrink-0">
@@ -283,6 +288,7 @@ export default function SmbShareModal({
         initialPath={form.path || ''}
         initialEntries={folderPreflight && folderPreflight.entries}
         initialEntriesPath={folderPreflight && folderPreflight.path}
+        initialNextCursor={folderPreflight && folderPreflight.next}
         onSelect={(path) => setForm({ ...form, path })}
       />
     </div>

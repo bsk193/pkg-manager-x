@@ -65,8 +65,10 @@ export function useSettings(props) {
     try {
       await saveSettings(newSettings);
       showToast('Settings saved', 'success');
+      return true;
     } catch (e) {
       showToast('Failed to save settings: ' + e.message, 'error');
+      return false;
     }
   };
 

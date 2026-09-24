@@ -108,7 +108,7 @@ The primary web server handles all interactive user requests:
 - **Package Icons**: `/api/icon` (extracts or serves cached `icon0.png`), `/api/icon-error`.
 - **Installation Control**: `/api/install` (starts installation), `/api/cancel` (aborts current installation), `/api/poll` / `/api/status` (live progress), `/api/shortcut/install`.
 - **Direct Install Control**: `/api/upload/init`, `/api/upload/status`, `/api/upload/icon`, `/api/upload/finish`, and `/api/upload/cancel`.
-- **SMB & Metadata Cache**: `/api/smb/test`, `/api/smb/shares` (enumerate shares on a server), `/api/smb/browse` (list folders + PKGs inside a share), `/api/cache/stats`, `/api/cache/clear`.
+- **SMB & Metadata Cache**: `/api/smb/test`, `/api/smb/shares` (enumerate shares on a server), `/api/smb/browse` (64 folders/PKGs per page, with an `after` cursor and `next_cursor` response), `/api/smb/inspect` (metadata and install eligibility for one file), `/api/cache/stats`, `/api/cache/clear`.
 - **Leftovers Cleanup**: `/api/leftovers` (scans unlinked patches/DLCs), `/api/leftovers/delete` (purges selected orphans).
 
 ### Range Streaming Server (Port 18841)
@@ -392,8 +392,9 @@ To eliminate slow cold scans upon daemon restart and drive navigation:
      - If identical: skips re-parsing entirely.
      - If modified or added: re-parses only the affected packages.
      - If removed: purges the missing entries from the in-memory catalog and manifest.
-4. **Background Rescan Polling**: The frontend and resume handler trigger quick rescans to track drive insertion/ejection automatically.
-5. **Cache Invalidation**: The frontend compares the backend version from `/api/version` with the last version it saw. After an update, it clears the local cache through `/api/cache/clear` and runs a full rescan. A manual cache clear also refreshes the package catalog.
+4. **Background Rescan Polling**: The frontend periodically checks individual local drives. SMB and all-sources views are excluded from the 15-second timer. Startup, navigation and resume can still trigger a quick scan; `browse_only` shares are skipped in all scan paths.
+5. **Full Scan Jobs**: `POST /api/packages/refresh` returns HTTP 202 with `{status:"accepted", started:true|false}`. Admission is shared with quick scans; an active job is never queued again. Poll `/api/scan/status` until `is_scanning` is false and check `failed_sources`. Status becomes active before counting. SMB enumeration finishes before metadata parsing; the catalog mutex is held only for catalog access, not network reads. Browser reloads attach to status polling.
+6. **Cache Invalidation**: The frontend compares the backend version from `/api/version` with the last version it saw. After an update, it clears the local cache through `/api/cache/clear` and runs a full rescan. A manual cache clear also refreshes the package catalog.
 
 ---
 

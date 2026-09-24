@@ -1,7 +1,10 @@
-import React from 'react';
+import React, { useState } from 'react';
+import SmbFileBrowser from './SmbFileBrowser';
 
 
-export default function SmbManagementView({ settings, onBack, onAdd, onEdit, onToggle, onRemove, onTest, testing }) {
+export default function SmbManagementView({ settings, onBack, onAdd, onEdit, onToggle, onRemove, onTest, testing, onInstall }) {
+  const [browsing, setBrowsing] = useState(null);
+  if (browsing) return <SmbFileBrowser share={browsing} onBack={() => setBrowsing(null)} onInstall={onInstall} />;
   const safeSettings = settings || {};
   const sharesList = Array.isArray(safeSettings.smb_shares) ? safeSettings.smb_shares : [];
   const totalShares = sharesList.length;
@@ -123,6 +126,7 @@ export default function SmbManagementView({ settings, onBack, onAdd, onEdit, onT
                                 Disabled
                               </span>
                             )}
+                            {sh.browse_only && <span className="text-xs text-cyan-300">Browse only</span>}
                             {sh.username && (
                               <span className="text-[10px] px-2 py-0.5 rounded-[2px] font-mono bg-white/5 text-zinc-400 border border-white/10 shrink-0">
                                 user: {sh.username}
@@ -134,6 +138,10 @@ export default function SmbManagementView({ settings, onBack, onAdd, onEdit, onT
 
                         {/* Actions */}
                         <div className="flex items-center space-x-2 shrink-0">
+                          <button type="button" disabled={!sh.enabled} onClick={() => setBrowsing(sh)}
+                            className="ps5-focus-item px-3 py-2 bg-cyan-700 rounded-[2px] text-white disabled:opacity-40">
+                            Browse files
+                          </button>
                           <button
                             type="button"
                             onClick={() => onTest(sh)}

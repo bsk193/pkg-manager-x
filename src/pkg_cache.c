@@ -183,11 +183,13 @@ static void save_settings_to_disk(void) {
                    "      \"password\": \"%s\",\n"
                    "      \"workgroup\": \"%s\",\n"
                    "      \"is_read_only\": %s,\n"
+                   "      \"browse_only\": %s,\n"
                    "      \"enabled\": %s\n"
                    "    }%s\n",
                 esc_id, esc_label, esc_server, s->port, esc_share, esc_path,
                 esc_user, esc_pass, esc_workgroup,
                 s->is_read_only ? "true" : "false",
+                s->browse_only ? "true" : "false",
                 s->enabled ? "true" : "false",
                 (i + 1 < g_settings.smb_share_count) ? "," : "");
     }
@@ -373,6 +375,9 @@ void pkg_cache_parse_smb_shares(const char *buf, smb_share_config_t *shares, int
 
             extract_json_field(item, "is_read_only", val, sizeof(val));
             s->is_read_only = (strcmp(val, "true") == 0 || strcmp(val, "1") == 0);
+
+            extract_json_field(item, "browse_only", val, sizeof(val));
+            s->browse_only = (strcmp(val, "true") == 0 || strcmp(val, "1") == 0);
 
             extract_json_field(item, "enabled", val, sizeof(val));
             if (val[0] != '\0') {

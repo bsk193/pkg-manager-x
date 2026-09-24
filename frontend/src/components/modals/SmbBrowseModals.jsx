@@ -137,20 +137,24 @@ export function SmbSharePickerModal({ show, onClose, connection, selectedShare, 
   return pickerShell(body, onClose, 'Select Share', (connection && connection.server) || '');
 }
 
-export function SmbFolderPickerModal({ show, onClose, connection, share, initialPath, initialEntries, initialEntriesPath, onSelect }) {
+export function SmbFolderPickerModal({ show, onClose, connection, share, initialPath, initialEntries, initialEntriesPath, initialNextCursor, onSelect }) {
   const [segs, setSegs] = useState([]);
   const [entries, setEntries] = useState([]);
+  const [cursors, setCursors] = useState(['']);
+  const [next, setNext] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const load = useCallback(async (pathSegs) => {
+  const load = useCallback(async (pathSegs, after = '') => {
     const path = (pathSegs || []).join('/');
     setLoading(true);
+    setNext('');
     setError('');
     try {
-      const data = await browseSmb({ ...(connection || {}), share, path });
+      const data = await browseSmb({ ...(connection || {}), share, path, after });
       if (data && data.success && Array.isArray(data.entries)) {
         setEntries(data.entries);
+        setNext(data.next_cursor || '');
       } else {
         setEntries([]);
         setError((data && (data.error || data.message)) || 'Could not list this folder.');
@@ -167,6 +171,8 @@ export function SmbFolderPickerModal({ show, onClose, connection, share, initial
     if (show) {
       const start = splitPath(initialPath || '');
       setSegs(start);
+      setCursors(['']);
+      setNext(initialNextCursor || '');
       const startPath = start.join('/');
       if (Array.isArray(initialEntries) && initialEntriesPath === startPath) {
         setEntries(initialEntries);
@@ -188,7 +194,9 @@ export function SmbFolderPickerModal({ show, onClose, connection, share, initial
   const pkgs = entries.filter((e) => !e.is_dir);
 
   const go = (nextSegs) => {
+    if (loading) return;
     setSegs(nextSegs);
+    setCursors(['']);
     load(nextSegs);
   };
 
@@ -226,7 +234,7 @@ export function SmbFolderPickerModal({ show, onClose, connection, share, initial
           <p className="text-xs text-rose-300">{error}</p>
           <button
             type="button"
-            onClick={() => load(segs)}
+            onClick={() => load(segs, cursors[cursors.length - 1])}
             className="px-3 py-1.5 rounded-[2px] bg-white/10 hover:bg-white/15 text-zinc-200 text-xs font-semibold cursor-pointer transition-colors"
           >
             Try again
@@ -272,6 +280,14 @@ export function SmbFolderPickerModal({ show, onClose, connection, share, initial
           )}
         </div>
       )}
+
+      <div className="flex items-center justify-between text-xs">
+        <button className="ps5-focus-item px-3 py-2 bg-white/10 disabled:opacity-40" disabled={loading || cursors.length === 1}
+          onClick={() => { const prev = cursors.slice(0, -1); setCursors(prev); load(segs, prev[prev.length - 1]); }}>Previous</button>
+        <span>Page {cursors.length}</span>
+        <button className="ps5-focus-item px-3 py-2 bg-white/10 disabled:opacity-40" disabled={loading || !next}
+          onClick={() => { setCursors([...cursors, next]); load(segs, next); }}>Next</button>
+      </div>
 
       <div className="flex items-center justify-between pt-2 border-t border-white/10">
         <button

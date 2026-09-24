@@ -44,6 +44,17 @@ When using a USB drive or optical disc, packages are detected in:
 ### Network Shares (Samba / SMB)
 You can configure SMB network shares in the app's **Settings** tab to browse and install packages stored on your PC or NAS.
 
+For large shares, enable **Browse only** when adding or editing a share to skip
+full and background catalog scans. Open the share from the storage screen or
+choose **Browse files** in Samba settings, navigate folders, select a PKG, and
+choose **Install selected PKG**. Folder listings have 64 entries per page;
+metadata is read only for the selected file. The scanned catalog shows 60 titles
+per page.
+
+Full rescans run in the background. Retrying or reopening the interface attaches
+to an active scan without queuing another pass. Network shares are not rescanned
+by the frontend's 15-second polling timer; use **Rescan** to refresh their catalog.
+
 ### Direct Install
 From another device on the same network, open the PKG Manager interface and choose **Direct Install**. Select or drop a local `.pkg` file to install it directly on the console.
 
