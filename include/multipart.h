@@ -65,6 +65,8 @@ typedef struct {
     int is_live;           /* NEW: RAM live session (ws_stream.c), no file */
     void *live;            /* ws_stream session handle (global singleton) */
     void *smb_session;
+    int is_http;           /* http(s):// source (http_source.c), pooled range reads */
+    void *http_session;
     uint32_t current_part;
     uint32_t total_parts;
     uint64_t total_pkg_size;

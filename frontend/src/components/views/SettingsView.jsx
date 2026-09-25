@@ -3,7 +3,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import { DONATE_URL, isPlayStation } from '../../constants/config';
 import { formatBytes, formatVersion } from '../../utils/formatters';
 
-export default function SettingsView({ settings, onSaveSettings, onClose, onOpenSmb, onInstallShortcut, installingShortcut, cacheStats, loadingStats, onClearCache, leftoversData, scanningLeftovers, onScanLeftovers, onDeleteLeftover, showDonateQr, setShowDonateQr }) {
+export default function SettingsView({ settings, onSaveSettings, onClose, onOpenSmb, onInstallShortcut, installingShortcut, cacheStats, loadingStats, onClearCache, leftoversData, scanningLeftovers, onScanLeftovers, onDeleteLeftover, showDonateQr, setShowDonateQr, httpSourcesCount = 0, shortcutSupported = true }) {
   const safeSettings = settings || {};
   const smbSharesCount = Array.isArray(safeSettings.smb_shares)
     ? safeSettings.smb_shares.length
@@ -171,16 +171,16 @@ export default function SettingsView({ settings, onSaveSettings, onClose, onOpen
                         </svg>
                       </div>
                       <div>
-                        <h3 className="text-lg font-bold text-white">Samba (SMB) Shares</h3>
+                        <h3 className="text-lg font-bold text-white">Network Sources</h3>
                         <p className="text-xs text-zinc-400">
-                          {smbSharesCount} share{smbSharesCount === 1 ? '' : 's'} configured
+                          {smbSharesCount} SMB share{smbSharesCount === 1 ? '' : 's'}, {httpSourcesCount} HTTP server{httpSourcesCount === 1 ? '' : 's'}
                         </p>
                       </div>
                     </div>
                   </div>
 
                   <p className="text-xs text-zinc-300 leading-relaxed">
-                    Connect to local network shares (PC or NAS) to browse and install packages remotely.
+                    Install packages from Samba shares (PC or NAS) or HTTP/HTTPS servers without copying them to the console first.
                   </p>
 
                   <button
@@ -188,12 +188,13 @@ export default function SettingsView({ settings, onSaveSettings, onClose, onOpen
                     onClick={onOpenSmb}
                     className="w-full py-3 px-4 rounded-[2px] ps5-focus-item bg-cyan-600/20 hover:bg-cyan-600/30 border border-cyan-500/30 text-cyan-200 text-sm font-bold transition-colors flex items-center justify-between cursor-pointer"
                   >
-                    <span>Manage Samba Shares</span>
+                    <span>Manage Network Sources</span>
                     <span>&rarr;</span>
                   </button>
                 </div>
 
-                {/* Home Screen Shortcut Card */}
+                {/* Home Screen Shortcut Card (PS5 only) */}
+                {shortcutSupported && (
                 <div className="rounded-[2px] bg-[#141520] border border-white/10 p-6 space-y-4">
                   <div className="flex items-center justify-between pb-3 border-b border-white/10">
                     <div className="flex items-center space-x-3">
@@ -230,6 +231,7 @@ export default function SettingsView({ settings, onSaveSettings, onClose, onOpen
                     Adds a shortcut to the PS5 Media tab to launch PKG Manager directly from the home screen.
                   </p>
                 </div>
+                )}
 
                 {/* Support & Donations Card */}
                 <div className="rounded-[2px] bg-[#141520] border border-white/10 p-6 space-y-4">

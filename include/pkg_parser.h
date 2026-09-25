@@ -41,6 +41,7 @@ typedef struct {
     char category[16];       /* e.g. "gd", "gp", "ac", etc. */
     uint64_t mtime;          /* File modification timestamp */
     char blurhash[64];       /* BlurHash placeholder for icon0.png ("" if none) */
+    char platform[8];        /* "ps4", "ps5" or "" (see pkg_platform.h) */
 } pkg_detail_t;
 
 /**
@@ -102,5 +103,8 @@ int pkg_parser_parse_mem(const uint8_t *data, size_t data_len,
  */
 int pkg_parser_get_icon(const char *file_path, uint64_t offset, uint32_t size,
                         uint8_t **out_data, size_t *out_size);
+
+/* 1 for http:// and https:// package locations (HTTP sources). */
+int pkg_parser_is_http_path(const char *path);
 
 #endif /* PKG_PARSER_H */

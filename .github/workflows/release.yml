@@ -50,13 +50,15 @@ jobs:
           fi
           echo "Release $TAG does not exist. Proceeding."
 
-      - name: Build PKG Manager
+      - name: Build PKG Manager X (PS5 + PS4)
         run: |
           chmod +x build_release.sh
-          ./build_release.sh
+          ./build_release.sh ps5 ps4
           SHORT_HASH=$(git rev-parse --short HEAD)
-          mv "pkg-manager_v${{ steps.version.outputs.version }}-dev-${SHORT_HASH}.elf" \
-             "pkg-manager_v${{ steps.version.outputs.version }}.elf"
+          for P in ps5 ps4; do
+            mv "pkg-manager-x_v${{ steps.version.outputs.version }}-dev-${SHORT_HASH}_${P}.elf" \
+               "pkg-manager-x_v${{ steps.version.outputs.version }}_${P}.elf"
+          done
 
       - name: Create Release
         env:
@@ -75,4 +77,5 @@ jobs:
           gh release create "$TAG" \
             --title "$TAG" \
             --notes "$NOTES" \
-            "pkg-manager_v${VERSION}.elf"
+            "pkg-manager-x_v${VERSION}_ps5.elf" \
+            "pkg-manager-x_v${VERSION}_ps4.elf"

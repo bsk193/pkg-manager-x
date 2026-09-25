@@ -9,6 +9,7 @@
 *.dSYM/
 build/
 deps/libsmb2/build/
+deps/libsmb2/build-ps4/
 
 # PS5 PKG packages & multi-part slices
 *.pkg
@@ -24,6 +25,14 @@ tests/test_multipart
 tests/test_pkg_parser
 tests/test_pkg_scanner
 tests/test_pkg_cache
+tests/test_stream_sim
+tests/test_ws_upload
+tests/test_direct_install_e2e
+tests/test_ws_stream
+tests/test_ws_stream_far
+tests/test_parse_mem
+tests/test_pkg_platform
+tests/test_http_source
 
 # Generated asset headers
 include/assets_*.h

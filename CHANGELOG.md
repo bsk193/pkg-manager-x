@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased (PKG Manager X)
+
+### HTTP / HTTPS Sources
+- Install packages from web servers with byte-range streaming (no temporary copy)
+- Discovery through `index.json` (`tools/make_http_index.py`) or HTML directory listings, including sub-folders
+- Basic auth, redirects, keep-alive connection pool for the installer's parallel requests
+- HTTPS via mbedTLS with CA verification, certificate pinning ("Trust this certificate") or no check
+
+### PS4 / PS5 Tags
+- Every package reports its console, detected from the package itself (FIH / param.json / param.sfo), with Title ID and folder fallbacks
+- PS4 / PS5 filter in the package browser and badges in the detail view
+- Warning when a package is stored in the other console's `PS4/` / `PS5/` folder
+- `PS4/` and `PS5/` folders on USB drives and discs are scanned like `pkg/`
+
+### PS4 Payload (experimental)
+- New `PLATFORM=ps4` build (ps4-payload-sdk, GoldHEN) sharing the UI and all sources
+- Installs through BGFT; PS5 packages are listed but refused on PS4
+- See docs/PS4.md for the on-console test checklist
+
+---
+
 ## v1.2.4
 
 ### Direct Install

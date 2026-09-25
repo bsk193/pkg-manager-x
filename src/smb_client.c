@@ -9,6 +9,7 @@
 #include "smb_debug_log.h"
 #include "pkg_cache.h"
 #include "pkg_parser.h"
+#include "pkg_platform.h"
 #include "icon_blurhash.h"
 #include "multipart.h"
 #include "miniz.h"
@@ -1326,6 +1327,7 @@ int smb_client_parse_pkg(const char *smb_url, pkg_detail_t *out) {
 
     uint64_t cnt_offset = 0;
     int cnt_found = 0;
+    pkg_platform_note_header(out, hdr, (size_t)hdr_read);
 
     if (memcmp(hdr, "\x7f" "CNT", 4) == 0) {
         cnt_offset = 0;
@@ -1452,6 +1454,7 @@ int smb_client_parse_pkg(const char *smb_url, pkg_detail_t *out) {
             if (json_buf) {
                 if (smb_file_session_read(sess, json_buf, data_sz, cnt_offset + data_off) == (ssize_t)data_sz) {
                     json_buf[data_sz] = '\0';
+                    pkg_platform_note_param_json(out);
                     if (strstr(json_buf, "\"applicationDrmType\"") ||
                         strstr(json_buf, "\"applicationCategoryType\"") ||
                         strstr(json_buf, "\"contentBadgeType\"")) {
@@ -1474,6 +1477,7 @@ int smb_client_parse_pkg(const char *smb_url, pkg_detail_t *out) {
             uint8_t *sfo_buf = (uint8_t *)malloc(data_sz);
             if (sfo_buf) {
                 if (smb_file_session_read(sess, sfo_buf, data_sz, cnt_offset + data_off) == (ssize_t)data_sz) {
+                    pkg_platform_note_param_sfo(out);
                     char stitle[PKG_TITLE_NAME_LEN] = {0};
                     char stid[PKG_TITLE_ID_LEN] = {0};
                     char sver[32] = {0};

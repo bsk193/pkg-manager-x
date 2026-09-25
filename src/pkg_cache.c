@@ -8,6 +8,7 @@
 #include "pkg_cache.h"
 #include "pkg_parser.h"
 #include "smb_client.h"
+#include "http_source.h"
 #include "icon_blurhash.h"
 #include "miniz.h"
 #include <stdio.h>
@@ -238,6 +239,9 @@ int pkg_cache_calc_checksum(const char *pkg_path, char *out_checksum, size_t out
     if (strncmp(pkg_path, "smb://", 6) == 0) {
         return smb_client_calc_checksum(pkg_path, out_checksum, out_max);
     }
+    if (pkg_parser_is_http_path(pkg_path)) {
+        return http_source_calc_checksum(pkg_path, out_checksum, out_max);
+    }
 
     struct stat st;
     if (stat(pkg_path, &st) != 0) return -1;
@@ -456,6 +460,7 @@ int pkg_cache_lookup(const char *checksum, pkg_detail_t *out_detail) {
     if (val[0]) out_detail->mtime = (uint64_t)strtoull(val, NULL, 10);
 
     extract_json_field(buf, "blurhash", out_detail->blurhash, sizeof(out_detail->blurhash));
+    extract_json_field(buf, "platform", out_detail->platform, sizeof(out_detail->platform));
 
     /* Verify if cached icon file exists */
     char icon_path[1024];
@@ -513,7 +518,8 @@ static int write_meta_json(const char *dir_path, const pkg_detail_t *detail, con
                "  \"pkg_type_str\": \"%s\",\n"
                "  \"category\": \"%s\",\n"
                "  \"mtime\": %llu,\n"
-               "  \"blurhash\": \"%s\"\n"
+               "  \"blurhash\": \"%s\",\n"
+               "  \"platform\": \"%s\"\n"
                "}\n",
             esc_title_id, esc_title_name, esc_loc, esc_def_lang, esc_content_id, esc_app_ver,
             (unsigned long long)detail->file_size,
@@ -524,7 +530,8 @@ static int write_meta_json(const char *dir_path, const pkg_detail_t *detail, con
             detail->part_index, detail->total_parts,
             (int)detail->pkg_type, esc_type_str, esc_cat,
             (unsigned long long)detail->mtime,
-            blurhash ? blurhash : "");
+            blurhash ? blurhash : "",
+            detail->platform);
     if (fflush(f) != 0) {
         fclose(f);
         unlink(tmp_path);

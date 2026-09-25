@@ -8,6 +8,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = 8844;
+// PKG Manager X: emulate a PS4 payload with MOCK_CONSOLE=ps4 node mock-server.js
+const MOCK_CONSOLE = process.env.MOCK_CONSOLE === 'ps4' ? 'ps4' : 'ps5';
+let mockHttpSources = [
+  { id: 'http_nas', label: 'NAS Web', url: 'http://192.168.1.50:8080/pkgs/', username: '', password: '', tls_mode: 'verify', tls_pin: '', enabled: true }
+];
 
 // 14 fictional, original packages spanning USB, Disc, and two Samba shares
 const examplePkgs = [
@@ -605,11 +610,21 @@ const server = http.createServer(async (req, res) => {
     }
 
     const acceptLang = req.headers['accept-language'] || '';
-    const outputPkgs = pkgs.map(p => ({
-      localized_titles: {},
-      default_language: '',
-      ...p
-    }));
+    const outputPkgs = pkgs.map(p => {
+      const tid = (p.title_id || '').toUpperCase();
+      const platform = p.platform || (tid.startsWith('PPSA') ? 'ps5' : tid.startsWith('CUSA') ? 'ps4' : '');
+      const folder = /\/ps5[^/]*\//i.test(p.path) ? 'ps5' : /\/ps4[^/]*\//i.test(p.path) ? 'ps4' : '';
+      const blocked = MOCK_CONSOLE === 'ps4' && platform === 'ps5';
+      return {
+        localized_titles: {},
+        default_language: '',
+        ...p,
+        platform,
+        folder_platform: folder,
+        platform_mismatch: Boolean(folder && platform && folder !== platform),
+        ...(blocked ? { can_install: false, install_disabled_reason: 'PS5 package cannot be installed on PS4' } : {})
+      };
+    });
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(outputPkgs));
@@ -822,6 +837,71 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && pathname === '/api/scan/status') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ scanning: false, processed_files: examplePkgs.length, total_files: examplePkgs.length, progress: 100 }));
+    return;
+  }
+
+  // PKG Manager X: console info and HTTP sources
+  if (req.method === 'GET' && pathname === '/api/platform') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      console: MOCK_CONSOLE,
+      can_install: MOCK_CONSOLE === 'ps4' ? ['ps4'] : ['ps4', 'ps5'],
+      https_supported: true,
+      shortcut_supported: MOCK_CONSOLE !== 'ps4'
+    }));
+    return;
+  }
+
+  if (req.method === 'GET' && pathname === '/api/http/sources') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(mockHttpSources.map(s => ({ ...s, password: '', has_password: Boolean(s.password) }))));
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/http/sources') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const incoming = (JSON.parse(body || '{}').sources) || [];
+        mockHttpSources = incoming.map((s, i) => {
+          const old = mockHttpSources.find(o => o.id && o.id === s.id);
+          return {
+            ...s,
+            id: s.id || `http_mock${Date.now().toString(36)}${i}`,
+            password: s.password || (old ? old.password : '')
+          };
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, count: mockHttpSources.length }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Invalid JSON' }));
+      }
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/http/test') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      let cfg = {};
+      try { cfg = JSON.parse(body || '{}'); } catch (e) {}
+      const https = /^https:/i.test(cfg.url || '');
+      const selfSigned = https && cfg.tls_mode === 'verify';
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(selfSigned ? {
+        success: false,
+        message: 'Certificate not trusted: The certificate is not correctly signed by the trusted CA',
+        pkg_count: 0, range_supported: null, listing: '',
+        fingerprint: '3f2a9c0d4b1e8f7a6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b'
+      } : {
+        success: true, message: 'Connected. Found 12 package(s) via directory listing',
+        pkg_count: 12, range_supported: true, listing: 'html',
+        fingerprint: https ? '3f2a9c0d4b1e8f7a6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b' : ''
+      }));
+    });
     return;
   }
 

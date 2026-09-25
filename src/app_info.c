@@ -7,6 +7,7 @@
 
 #include "app_info.h"
 #include "sqlite3.h"
+#include "platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,7 +21,9 @@
 
 pthread_mutex_t g_appinfo_db_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-#if defined(__Prospero__) || defined(PS5_BUILD)
+/* Native DLC status query exists on PS5 only; PS4 uses the app.db /
+ * addcont.db and filesystem checks below. */
+#if PKGMGR_CONSOLE_PS5
 extern int sceAppInstUtilInitialize(void);
 extern int sceAppInstUtilAppExists(const char *title_id);
 extern int sceAppInstUtilGetAddcontInstalledStatus(const char *content_id, int *status);
@@ -740,7 +743,7 @@ int app_info_check_dlc_installed(const char *title_id, const char *content_id) {
     }
 
     /* 1. Official PS5 Native API check */
-#if defined(__Prospero__) || defined(PS5_BUILD)
+#if PKGMGR_CONSOLE_PS5
     ensure_appinstutil_init();
     int dlc_status = 0;
     if (sceAppInstUtilGetAddcontInstalledStatus(content_id, &dlc_status) == 0 && dlc_status == 1) {

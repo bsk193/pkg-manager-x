@@ -7,3 +7,5 @@ export { getSettings, saveSettings, installShortcut } from './settings';
 export { getCacheStats, clearCache } from './cache';
 export { scanLeftovers, deleteLeftover } from './leftovers';
 export { testSmb } from './smb';
+export { getHttpSources, saveHttpSources, testHttpSource } from './httpSources';
+export { getPlatformInfo, DEFAULT_PLATFORM_INFO } from './platform';

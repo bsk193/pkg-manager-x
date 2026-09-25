@@ -14,10 +14,13 @@
 
 #include "app_installer.h"
 #include "notification.h"
+#include "platform.h"
 #include "assets_param_json.h"
 #include "assets_icon0_png.h"
 
-#if defined(__Prospero__) || defined(PS5_BUILD)
+/* The launcher tile is a PS5 param.json app; PS4 has no equivalent here
+ * (see docs/PS4.md), so the PS4 build skips it. */
+#if PKGMGR_CONSOLE_PS5
 #include <ps5/kernel.h>
 
 int sceAppInstUtilInitialize(void);
@@ -39,7 +42,7 @@ static int install_file(const char *path, const uint8_t *data, size_t size) {
 }
 
 static int install_app(const char *title_id, const char *dir) {
-#if defined(__Prospero__) || defined(PS5_BUILD)
+#if PKGMGR_CONSOLE_PS5
     int (*dyn_install_title_dir)(const char *, const char *, void *) = 0;
     const char *nid = "Wudg3Xe3heE";
     uint32_t handle;
@@ -156,6 +159,10 @@ static int do_install(int is_update) {
 }
 
 int app_installer_install_if_needed(void) {
+#if PKGMGR_CONSOLE_PS4
+    printf("[APP_INSTALLER] Home screen shortcut is PS5-only; skipped.\n");
+    return 0;
+#endif
     const char *title_id = PKGMGR_TITLE_ID;
     char base_dir[256];
     char param_path[256];
@@ -189,6 +196,9 @@ int app_installer_install_if_needed(void) {
 }
 
 int app_installer_force_install(void) {
+#if PKGMGR_CONSOLE_PS4
+    return -1;
+#endif
     const char *title_id = PKGMGR_TITLE_ID;
     char base_dir[256];
     snprintf(base_dir, sizeof(base_dir), "/user/app/%s", title_id);

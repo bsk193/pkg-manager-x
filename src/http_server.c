@@ -21,6 +21,8 @@
 #include "app_installer.h"
 #include "ws_upload.h"
 #include "ws_stream.h"
+#include "http_sources_api.h"
+#include "pkg_platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -323,6 +325,10 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
             } else {
                 pkg.pkg_type = strcmp(pkg.pkg_type_str, "update") == 0 ? PKG_TYPE_UPDATE :
                                strcmp(pkg.pkg_type_str, "dlc") == 0 ? PKG_TYPE_DLC : PKG_TYPE_BASE;
+                /* Optional browser-parsed platform, else derived from Title ID. */
+                extract_json_string_value(ps->data, "platform", pkg.platform, sizeof(pkg.platform));
+                if (strcmp(pkg.platform, "ps4") != 0 && strcmp(pkg.platform, "ps5") != 0) pkg.platform[0] = '\0';
+                pkg_platform_finalize(&pkg);
                 pkg_install_eligibility_t eligibility;
                 pkg_scanner_check_install_eligibility(&pkg, &eligibility);
                 char reason[256], installed_version[96];
@@ -534,6 +540,15 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
         return ret;
     }
 
+    /* ── Fork routes: /api/platform and /api/http/... (http_sources_api.c) ── */
+    if (strcmp(url, "/api/platform") == 0 || strncmp(url, "/api/http/", 10) == 0) {
+        post_state_t *ps = strcmp(method, "POST") == 0 ? (post_state_t *)*con_cls : NULL;
+        enum MHD_Result fork_ret;
+        if (http_sources_api_handle(conn, url, method, (ps && ps->data) ? ps->data : NULL, &fork_ret)) {
+            return fork_ret;
+        }
+    }
+
     /* ── GET /api/drives ───────────────────────────────────────── */
     if (strcmp(method, "GET") == 0 && strcmp(url, "/api/drives") == 0) {
         char *json = pkg_scanner_drives_to_json();
@@ -664,7 +679,8 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
             }
         }
         if (pkg_path && pkg_path[0] != '\0' && strncmp(pkg_path, "live:", 5) != 0) {
-            int is_smb = (strncmp(pkg_path, "smb://", 6) == 0);
+            /* Remote sources (SMB and HTTP) share the known-offset fast path. */
+            int is_smb = (strncmp(pkg_path, "smb://", 6) == 0) || pkg_parser_is_http_path(pkg_path);
             uint8_t *icon_data = NULL;
             size_t icon_size = 0;
 
@@ -1305,6 +1321,10 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
                 snprintf(response_buf, sizeof(response_buf),
                          "{\"success\":false,\"error\":\"Live header timed out, re-upload the package\"}");
                 status_code = MHD_HTTP_BAD_REQUEST;
+            } else if (res == -15) {
+                snprintf(response_buf, sizeof(response_buf),
+                         "{\"success\":false,\"error\":\"%s\"}", PKG_PLATFORM_REASON_PS5_ON_PS4);
+                status_code = MHD_HTTP_BAD_REQUEST;
             } else {
                 snprintf(response_buf, sizeof(response_buf),
                          "{\"success\":false,\"error\":\"Failed to start live install (code %d)\"}", res);
@@ -1335,6 +1355,14 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
                 snprintf(response_buf, sizeof(response_buf),
                          "{\"success\":false,\"error\":\"Failed to launch installation worker thread\"}");
                 status_code = MHD_HTTP_INTERNAL_SERVER_ERROR;
+            } else if (res == -13) {
+                snprintf(response_buf, sizeof(response_buf),
+                         "{\"success\":false,\"error\":\"Multi-part packages are only supported on USB/Disc\"}");
+                status_code = MHD_HTTP_BAD_REQUEST;
+            } else if (res == -15) {
+                snprintf(response_buf, sizeof(response_buf),
+                         "{\"success\":false,\"error\":\"%s\"}", PKG_PLATFORM_REASON_PS5_ON_PS4);
+                status_code = MHD_HTTP_BAD_REQUEST;
             } else {
                 snprintf(response_buf, sizeof(response_buf),
                          "{\"success\":false,\"error\":\"Failed to install package (code %d)\"}", res);

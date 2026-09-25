@@ -1,0 +1,45 @@
+# Dockerfile to build the ps4-payload-dev/sdk environment (PKG Manager X, PS4)
+# Mirrors Dockerfile.sdk. The SDK is unpinned upstream: set SDK_REF to a
+# tested commit SHA to pin. Payloads built here are ELF files loaded through
+# GoldHEN's payload loader (port 9090) or John Törnblom's elfldr (port 9021).
+ARG UBUNTU_TAG=24.04
+FROM ubuntu:${UBUNTU_TAG}
+
+RUN apt-get update && apt-get install -y \
+    git \
+    cmake \
+    meson \
+    ninja-build \
+    clang-18 \
+    lld-18 \
+    llvm-18 \
+    llvm-18-dev \
+    make \
+    python3 \
+    python3-pyelftools \
+    wget \
+    bzip2 \
+    xz-utils \
+    pkg-config \
+    sudo \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN ln -s /usr/bin/clang-18 /usr/bin/clang && \
+    ln -s /usr/bin/clang++-18 /usr/bin/clang++ && \
+    ln -s /usr/bin/ld.lld-18 /usr/bin/ld.lld
+
+WORKDIR /opt
+ARG SDK_REF=master
+RUN git clone https://github.com/ps4-payload-dev/sdk.git ps4-payload-sdk-source && \
+    cd ps4-payload-sdk-source && git checkout ${SDK_REF}
+
+WORKDIR /opt/ps4-payload-sdk-source
+RUN make DESTDIR=/opt/ps4-payload-sdk install
+
+WORKDIR /opt
+COPY build_deps.sh /opt/build_deps.sh
+RUN PLATFORM=ps4 bash /opt/build_deps.sh
+
+ENV PS4_PAYLOAD_SDK=/opt/ps4-payload-sdk
+WORKDIR /src

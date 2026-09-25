@@ -35,10 +35,37 @@ docker run --rm -v $(pwd):/src -w /src ps5-payload-sdk-pkgmgr make clean all
 The resulting `pkgmgr.elf` will be created in the root directory.
 
 ### 4. Build a Versioned Development Binary
-To build a versioned development binary (`pkg-manager_v<VERSION>-dev-<SHORT_HASH>.elf`):
+To build versioned development binaries (`pkg-manager-x_v<VERSION>-dev-<SHORT_HASH>_<ps5|ps4>.elf`):
 ```bash
-./build_release.sh
+./build_release.sh          # PS5 + PS4
+./build_release.sh ps5      # one console only
 ```
+
+### PS4 Build (PKG Manager X)
+The PS4 payload uses the ps4-payload-sdk in its own image:
+```bash
+docker build -t ps4-payload-sdk-pkgmgr -f Dockerfile.sdk-ps4 .
+docker run --rm -v $(pwd):/src -w /src ps4-payload-sdk-pkgmgr make clean all PLATFORM=ps4
+```
+The result is `pkgmgr-ps4.elf`. Console-specific code is selected with
+`include/platform.h` (`PKGMGR_CONSOLE_PS5` / `PKGMGR_CONSOLE_PS4`); install
+backends live in `src/platform_install_ps5.c` and `src/platform_install_ps4.c`.
+See [docs/PS4.md](docs/PS4.md).
+
+### HTTPS
+`build_deps.sh` builds mbedTLS 3.6.2 with a payload configuration (TLS 1.2, no
+net/timing modules, entropy and zeroize hooks provided by `src/http_source.c`).
+Use `make HTTPS=0` for a plain-HTTP build without mbedTLS.
+
+### Keeping Up With Upstream
+```bash
+git remote add upstream https://github.com/itsPLK/ps5-pkg-manager.git   # once
+git fetch upstream
+git merge upstream/main
+```
+Fork additions live mostly in new files (`http_source*`, `pkg_platform*`,
+`pkg_parse_reader*`, `platform*`, `tests/test_http_source.c`,
+`tests/test_pkg_platform.c`) to keep merge conflicts small.
 
 ## Running Unit Tests
 
@@ -61,6 +88,11 @@ This compiles and runs tests for:
 - Direct Install WebSocket transport and live-stream tests (`test_ws_upload`,
   `test_ws_stream`, `test_ws_stream_far`, `test_direct_install_e2e`)
 - In-memory package parsing (`test_parse_mem`)
+- PS4/PS5 platform detection, folder scanning and PS4 install gating
+  (`test_pkg_platform`, also run with `PKGMGR_CONSOLE=ps4`)
+- HTTP sources against a local test server: listings, `index.json`, parsing,
+  pooled range streaming, auth, redirects, no-Range servers, scanner
+  integration (`test_http_source`)
 - Legacy CSS syntax transformer (`test_fix_legacy_css.py`)
 
 ### PS5 Installer Stream Simulator

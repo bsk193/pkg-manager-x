@@ -101,6 +101,7 @@ export default function DrivesView({ drives, storage, onSelectDrive, onDirectIns
                   const isUsb = d.type === 'usb';
                   const isDisc = d.type === 'disc';
                   const isSmb = d.type === 'smb';
+                  const isHttp = d.type === 'http';
                   const isClickable = d.clickable;
 
                   return (
@@ -122,6 +123,8 @@ export default function DrivesView({ drives, storage, onSelectDrive, onDirectIns
                               ? 'bg-purple-950/40 border-purple-500/40 text-purple-300'
                               : isSmb
                               ? 'bg-cyan-950/40 border-cyan-500/40 text-cyan-300'
+                              : isHttp
+                              ? 'bg-violet-950/40 border-violet-500/40 text-violet-300'
                               : 'bg-blue-950/40 border-blue-500/40 text-blue-300'
                             : 'bg-white/5 border-white/5 text-zinc-600'
                         }`}
@@ -142,6 +145,13 @@ export default function DrivesView({ drives, storage, onSelectDrive, onDirectIns
                             <line x1="6" y1="6" x2="6.01" y2="6" />
                             <line x1="6" y1="18" x2="6.01" y2="18" />
                             <path d="M12 10v4" />
+                          </svg>
+                        ) : isHttp ? (
+                          /* HTTP / HTTPS Server Icon */
+                          <svg className="w-8 h-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                            <circle cx="12" cy="12" r="10" />
+                            <line x1="2" y1="12" x2="22" y2="12" />
+                            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
                           </svg>
                         ) : (
                           /* USB Drive Icon */
@@ -165,6 +175,8 @@ export default function DrivesView({ drives, storage, onSelectDrive, onDirectIns
                               isClickable
                                 ? isSmb
                                   ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30'
+                                  : isHttp
+                                  ? 'bg-violet-500/20 text-violet-300 border-violet-500/30'
                                   : isDisc
                                   ? 'bg-purple-500/20 text-purple-300 border-purple-500/30'
                                   : 'bg-blue-500/20 text-blue-300 border-blue-500/30'

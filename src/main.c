@@ -18,6 +18,8 @@
 #include "ws_upload.h"
 #include "notification.h"
 #include "app_installer.h"
+#include "http_source.h"
+#include "platform.h"
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -26,7 +28,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 
-#if defined(__Prospero__) || defined(PS5_BUILD)
+#if PKGMGR_ON_CONSOLE
 #include <sys/sysctl.h>
 #include <sys/syscall.h>
 
@@ -139,7 +141,7 @@ int main(int argc, char **argv) {
     static const char entered_main[] = "[PKG Manager] entered main\n";
     (void)write(STDOUT_FILENO, entered_main, sizeof(entered_main) - 1);
 
-#if defined(__Prospero__) || defined(PS5_BUILD)
+#if PKGMGR_ON_CONSOLE
     syscall(SYS_thr_set_name, -1, "pkgmgr.elf");
 
     pid_t old_pid;
@@ -155,8 +157,8 @@ int main(int argc, char **argv) {
     (void)write(STDOUT_FILENO, process_check_done, sizeof(process_check_done) - 1);
 #endif
 
-    printf("[PKG Manager] Starting PKG Manager v%s (%s, %s)...\n",
-           PKGMGR_VERSION, PKGMGR_BUILD_COMMIT, PKGMGR_BUILD_DATE);
+    printf("[PKG Manager] Starting PKG Manager X v%s for %s (%s, %s)...\n",
+           PKGMGR_VERSION, PKGMGR_CONSOLE_NAME, PKGMGR_BUILD_COMMIT, PKGMGR_BUILD_DATE);
 
     signal(SIGINT, handle_signal);
     signal(SIGTERM, SIG_IGN);
@@ -164,8 +166,8 @@ int main(int argc, char **argv) {
     signal(SIGHUP, SIG_IGN);
     signal(SIGCONT, handle_sigcont);
 
-#if defined(__Prospero__) || defined(PS5_BUILD)
-    printf("[PKG Manager] Initializing PS5 system services...\n");
+#if PKGMGR_ON_CONSOLE
+    printf("[PKG Manager] Initializing %s system services...\n", PKGMGR_CONSOLE_NAME);
     int net_result = sceNetCtlInit();
     if (net_result == 0) {
         printf("[PKG Manager] Network controller initialized.\n");
@@ -201,6 +203,7 @@ int main(int argc, char **argv) {
 
     printf("[PKG Manager] Initializing package scanner (%s & %s)...\n", PKG_DEFAULT_DIR, PKG_DISC_DIR);
     pkg_scanner_init();
+    http_sources_init();
 
     printf("[PKG Manager] Starting HTTP server on port %d...\n", port);
     if (http_server_start(port) != 0) {
@@ -210,7 +213,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    printf("[PKG Manager] Verifying PS5 home screen shortcut...\n");
+    printf("[PKG Manager] Verifying home screen shortcut...\n");
     if (app_installer_install_if_needed() != 0) {
         fprintf(stderr, "[PKG Manager] Failed to install home screen shortcut!\n");
     }

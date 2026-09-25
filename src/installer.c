@@ -16,6 +16,10 @@
 #include "pkg_cache.h"
 #include "ws_stream.h" /* NEW: live RAM sessions (additive; worker below unchanged) */
 #include "ws_upload.h"
+#include "platform.h"
+#include "platform_install.h"
+#include "pkg_platform.h"
+#include "http_source.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,56 +36,9 @@
 #include <ctype.h>
 #include <strings.h>
 
-#if defined(__Prospero__) || defined(PS5_BUILD)
-typedef struct pkg_metadata {
-    const char *uri;
-    const char *ex_uri;
-    const char *playgo_scenario_id;
-    const char *content_id;
-    const char *content_name;
-    const char *icon_url;
-} pkg_metadata_t;
-
-typedef struct pkg_info {
-    char content_id[48];
-    int type;
-    int platform;
-} pkg_info_t;
-
-typedef struct playgo_info {
-    char languages[30][8];
-    char playgo_scenario_ids[64][3];
-    char content_ids[64][48];
-    unsigned char unknown[6480];
-} playgo_info_t;
-
-typedef struct {
-    int32_t error_code;
-    int32_t version;
-    char description[512];
-    char type[9];
-} SceAppInstallErrorInfo;
-
-typedef struct {
-    char status[16];
-    char src_type[8];
-    uint32_t remain_time;
-    uint64_t downloaded_size;
-    uint64_t initial_chunk_size;
-    uint64_t total_size;
-    uint32_t promote_progress;
-    SceAppInstallErrorInfo error_info;
-    int32_t local_copy_percent;
-    bool is_copy_only;
-} SceAppInstallStatusInstalled;
-
-extern int sceAppInstUtilInitialize(void);
-extern int sceAppInstUtilTerminate(void);
-extern int sceAppInstUtilInstallByPackage(const pkg_metadata_t *meta, pkg_info_t *info, playgo_info_t *playgo);
-extern int sceAppInstUtilGetInstallStatus(const char* content_id, SceAppInstallStatusInstalled* status);
-#endif
-
 static installer_status_t g_status;
+/* Parser category of the active package (BGFT package type on PS4). */
+static char g_pkg_category[16];
 static pthread_mutex_t g_installer_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t g_monitor_thread;
 static volatile int g_monitor_running = 0;
@@ -165,7 +122,9 @@ static int title_id_has_prefix(const char *title_id, const char *prefix) {
 }
 
 static int package_is_ps4(const pkg_detail_t *detail) {
-    return detail && title_id_has_prefix(detail->title_id, "CUSA");
+    if (!detail) return 0;
+    if (detail->platform[0] != '\0') return strcmp(detail->platform, "ps4") == 0;
+    return title_id_has_prefix(detail->title_id, "CUSA");
 }
 
 /* Validate the destinations the console can use for this package. PS4 titles
@@ -706,38 +665,6 @@ void installer_notify_bytes_streamed(uint64_t bytes_read) {
     pthread_mutex_unlock(&g_installer_mutex);
 }
 
-#if defined(__Prospero__) || defined(PS5_BUILD)
-/* Human-readable names for installer/playgo error codes (verified against
-   etaHEN error_translator and on-console results). Unknown codes -> NULL. */
-static const char *installer_strerror(int code) {
-    if (code == 0) {
-        return "OK";
-    }
-    switch ((uint32_t)code) {
-    case 0x80A30001u: return "APP_INSTALLER_ERROR_UNKNOWN";
-    case 0x80A30002u: return "APP_INSTALLER_ERROR_NOSPACE";
-    case 0x80A30003u: return "APP_INSTALLER_ERROR_PARAM";
-    case 0x80B21164u: return "PLAYGO_ERROR_CORE_INVALID_CONTENT_ID";
-    case 0x80B21167u: return "PLAYGO_ERROR_CORE_CONTENT_ID_MISMATCH";
-    case 0x80B2116Au: return "PLAYGO_ERROR_CORE_REQUIRE_FULLY_INSTALLED_APPLICATION";
-    case 0x80B2116Eu: return "PLAYGO_ERROR_CORE_INVALID_VERSION";
-    case 0x80B21170u: return "PLAYGO_ERROR_CORE_PATCH_INVALID_RANGE";
-    case 0x80B2116Fu: return "PLAYGO_ERROR_CORE_INVALID_SLOT";
-    case 0x80B2100Du: return "PLAYGO_ERROR_CORE_NOT_READY";
-    case 0x80B2100Eu: return "PLAYGO_ERROR_CORE_TIMEOUT";
-    default: return NULL;
-    }
-}
-
-/* Slot-family errors are transient (e.g. patch installed while the system
-   still finalizes the base): safe to retry with a fresh session. Anything
-   else, including PARAM, fails immediately. */
-static int is_transient_slot_error(int code) {
-    uint32_t c = (uint32_t)code;
-    return c == 0x80B2116Fu || c == 0x80B2100Du || c == 0x80B2100Eu;
-}
-#endif
-
 static void *stream_installer_worker(void *arg) {
     (void)arg;
 
@@ -909,18 +836,33 @@ static void *stream_installer_worker(void *arg) {
     install_log("[INSTALLER] Initiating multi-part stream install: URI='%s', name='%s', total_bytes=%llu, parts=%u",
                 stream_uri, disp_name, (unsigned long long)hdr1.total_pkg_size, total_parts);
 
-#if defined(__Prospero__) || defined(PS5_BUILD)
-    pkg_metadata_t meta;
-    memset(&meta, 0, sizeof(meta));
-    meta.uri = stream_uri;
-    meta.ex_uri = "";
-    meta.playgo_scenario_id = "";
-    meta.content_id = "";
-    meta.content_name = disp_name;
-    meta.icon_url = "";
+#if PKGMGR_ON_CONSOLE
+    /* Snapshot identity for the console install backend. */
+    static char req_title[256], req_tid[32], req_cid[64], req_kind[16], req_cat[16];
+    uint64_t req_size = 0;
+    pthread_mutex_lock(&g_installer_mutex);
+    snprintf(req_title, sizeof(req_title), "%s", g_status.title_name);
+    snprintf(req_tid, sizeof(req_tid), "%s", g_status.title_id);
+    snprintf(req_cid, sizeof(req_cid), "%s", g_status.content_id);
+    snprintf(req_kind, sizeof(req_kind), "%s", worker_is_multipart ? hdr1.pkg_type : g_status.pkg_kind);
+    snprintf(req_cat, sizeof(req_cat), "%s", g_pkg_category);
+    req_size = g_status.total_bytes;
+    pthread_mutex_unlock(&g_installer_mutex);
 
-    pkg_info_t info;
-    playgo_info_t playgo;
+    platform_install_request_t req;
+    memset(&req, 0, sizeof(req));
+    req.uri = stream_uri;
+    req.display_name = disp_name;
+    req.title_name = req_title;
+    req.title_id = req_tid;
+    req.content_id = req_cid;
+    req.pkg_kind = req_kind;
+    req.category = req_cat;
+    req.package_size = req_size;
+
+    /* Content ID the system tracks this install under. */
+    struct { char content_id[64]; } info;
+    memset(&info, 0, sizeof(info));
 
     /* Slot-family errors are transient: retry with a fresh session + URI
        (initial try, then after 2s, then after 5s). Anything else, including
@@ -954,20 +896,19 @@ static void *stream_installer_worker(void *arg) {
                 const char *slash = strrchr(stream_uri, '/');
                 stream_server_set_session_name(slash ? slash + 1 : stream_uri);
             }
-            meta.uri = stream_uri;
+            req.uri = stream_uri;
             memset(&info, 0, sizeof(info));
-            memset(&playgo, 0, sizeof(playgo));
             install_log("[INSTALLER] Retry stream install: URI='%s'", stream_uri);
         }
-        ret = sceAppInstUtilInstallByPackage(&meta, &info, &playgo);
-        rname = installer_strerror(ret);
-        install_log("[INSTALLER] sceAppInstUtilInstallByPackage returned 0x%08X (%s), content_id='%s'",
-                    ret, rname ? rname : "unknown", info.content_id);
-        if (ret == 0 || !is_transient_slot_error(ret)) {
+        ret = platform_install_start(&req, info.content_id, sizeof(info.content_id));
+        rname = platform_install_strerror(ret);
+        install_log("[INSTALLER] %s install returned 0x%08X (%s), content_id='%s'",
+                    PKGMGR_CONSOLE_NAME, ret, rname ? rname : "unknown", info.content_id);
+        if (ret == 0 || !platform_install_is_transient(ret)) {
             break;
         }
     }
-    rname = installer_strerror(ret);
+    rname = platform_install_strerror(ret);
 
     if (g_cancel_stream || !g_monitor_running) {
         /* Canceled or shutting down during retry waits: cancel/shutdown owns
@@ -1026,17 +967,17 @@ static void *stream_installer_worker(void *arg) {
 
         /* Check system installer status if content_id is available */
         if (info.content_id[0] != '\0') {
-            SceAppInstallStatusInstalled sys_status;
+            platform_install_progress_t sys_status;
             memset(&sys_status, 0, sizeof(sys_status));
-            if (sceAppInstUtilGetInstallStatus(info.content_id, &sys_status) == 0) {
-                if (sys_status.error_info.error_code != 0 || strcmp(sys_status.status, "error") == 0 || strcmp(sys_status.status, "none") == 0) {
-                    const char *sname = installer_strerror(sys_status.error_info.error_code);
+            if (platform_install_poll(info.content_id, &sys_status) == 0) {
+                if (sys_status.error_code != 0 || strcmp(sys_status.status, "error") == 0 || strcmp(sys_status.status, "none") == 0) {
+                    const char *sname = platform_install_strerror(sys_status.error_code);
                     install_log("[INSTALLER] System installer reported error 0x%08X (%s) (status='%s')",
-                                sys_status.error_info.error_code, sname ? sname : "unknown", sys_status.status);
+                                sys_status.error_code, sname ? sname : "unknown", sys_status.status);
                     pthread_mutex_lock(&g_installer_mutex);
                     g_status.is_installing = 0;
                     g_status.failed = 1;
-                    g_status.error_code = sys_status.error_info.error_code ? sys_status.error_info.error_code : -1;
+                    g_status.error_code = sys_status.error_code ? sys_status.error_code : -1;
                     strncpy(g_status.status_str, "error", sizeof(g_status.status_str) - 1);
                     snprintf(g_status.prompt_message, sizeof(g_status.prompt_message),
                              "System install error: 0x%08X", g_status.error_code);
@@ -1293,12 +1234,8 @@ int installer_init(const char *server_url) {
     cleanup_tmp_dir(tmp_dir);
     pthread_mutex_unlock(&g_installer_mutex);
 
-#if defined(__Prospero__) || defined(PS5_BUILD)
-    int ret = sceAppInstUtilInitialize();
-    if (ret != 0) {
-        printf("[PKG Manager] sceAppInstUtilInitialize returned 0x%08X\n", ret);
-        ps5_notify("PKG Manager: app install service returned 0x%08X", ret);
-    }
+#if PKGMGR_ON_CONSOLE
+    platform_install_init();
 #endif
 
     g_monitor_running = 1;
@@ -1377,17 +1314,29 @@ static int installer_start_internal(const char *pkg_path, const char *pending_pk
         strncpy(detail.title_id, "UNKNOWN", sizeof(detail.title_id) - 1);
         strncpy(detail.title_name, "Package", sizeof(detail.title_name) - 1);
         /* smb:// paths have no local stat; leave sizes 0 (worker streams). */
-        if (strncmp(pkg_path_copy, "smb://", 6) != 0) {
+        if (pkg_parser_is_http_path(pkg_path_copy)) {
+            http_source_stat(pkg_path_copy, &detail.file_size, NULL);
+        } else if (strncmp(pkg_path_copy, "smb://", 6) != 0) {
             struct stat st;
             if (stat(pkg_path_copy, &st) == 0) {
                 detail.file_size = (uint64_t)st.st_size;
             }
         }
     }
+    pkg_platform_finalize(&detail);
+
+    /* PS4 cannot install PS5 packages: refuse before streaming anything,
+     * even when the request bypasses the UI's disabled button. */
+    const char *platform_reason = "";
+    if (!pkg_platform_can_install(&detail, &platform_reason)) {
+        install_log("[INSTALLER] Refusing %s: %s", pkg_path_copy, platform_reason);
+        ps5_notify("%s", platform_reason);
+        return -15;
+    }
 
     /* Multi-part packages are only supported on local drives (USB / optical discs) */
     if ((detail.is_multipart || strstr(pkg_path_copy, ".part") != NULL || strstr(pkg_path_copy, ".pkg.part") != NULL) &&
-        strncmp(pkg_path_copy, "smb://", 6) == 0) {
+        (strncmp(pkg_path_copy, "smb://", 6) == 0 || pkg_parser_is_http_path(pkg_path_copy))) {
         ps5_notify("Multi-part packages are only supported on USB/Disc!");
         return -13;
     }
@@ -1441,6 +1390,7 @@ static int installer_start_internal(const char *pkg_path, const char *pending_pk
     g_status.pkg_kind[sizeof(g_status.pkg_kind) - 1] = '\0';
     strncpy(g_status.pkg_version, detail.app_version, sizeof(g_status.pkg_version) - 1);
     g_status.pkg_version[sizeof(g_status.pkg_version) - 1] = '\0';
+    snprintf(g_pkg_category, sizeof(g_pkg_category), "%s", detail.category);
     strncpy(g_status.status_str, "transferring", sizeof(g_status.status_str) - 1);
     g_status.status_str[sizeof(g_status.status_str) - 1] = '\0';
     int is_disc_start = (strstr(pkg_path_copy, "/mnt/disc") != NULL ||
@@ -1600,6 +1550,14 @@ int installer_start_live(const char *live_uri) {
             snprintf(detail.pkg_type_str, sizeof(detail.pkg_type_str), "%s", browser_kind);
     }
 
+    pkg_platform_finalize(&detail);
+    const char *platform_reason = "";
+    if (!pkg_platform_can_install(&detail, &platform_reason)) {
+        install_log("[INSTALLER] Refusing live package: %s", platform_reason);
+        ps5_notify("%s", platform_reason);
+        return -15;
+    }
+
     if (detail.is_multipart) {
         ps5_notify("Live install supports single packages only");
         return -13;
@@ -1636,6 +1594,7 @@ int installer_start_live(const char *live_uri) {
     g_status.pkg_kind[sizeof(g_status.pkg_kind) - 1] = '\0';
     strncpy(g_status.pkg_version, detail.app_version, sizeof(g_status.pkg_version) - 1);
     g_status.pkg_version[sizeof(g_status.pkg_version) - 1] = '\0';
+    snprintf(g_pkg_category, sizeof(g_pkg_category), "%s", detail.category);
     strncpy(g_status.status_str, "transferring", sizeof(g_status.status_str) - 1);
     g_status.status_str[sizeof(g_status.status_str) - 1] = '\0';
     snprintf(g_status.prompt_message, sizeof(g_status.prompt_message),
@@ -1820,8 +1779,8 @@ void installer_shutdown(void) {
         g_monitor_thread_created = 0;
     }
     stream_server_session_stop();
-#if defined(__Prospero__) || defined(PS5_BUILD)
-    sceAppInstUtilTerminate();
+#if PKGMGR_ON_CONSOLE
+    platform_install_shutdown();
 #endif
 }
 

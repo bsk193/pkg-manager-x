@@ -8,6 +8,8 @@
 #include "pkg_parser.h"
 #include "multipart.h"
 #include "smb_client.h"
+#include "http_source.h"
+#include "pkg_platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -744,6 +746,9 @@ int pkg_parser_parse(const char *file_path, pkg_detail_t *out) {
     if (strncmp(file_path, "smb://", 6) == 0) {
         return smb_client_parse_pkg(file_path, out);
     }
+    if (pkg_parser_is_http_path(file_path)) {
+        return http_source_parse_pkg(file_path, out);
+    }
 
     memset(out, 0, sizeof(*out));
     strncpy(out->path, file_path, sizeof(out->path) - 1);
@@ -852,6 +857,7 @@ int pkg_parser_parse(const char *file_path, pkg_detail_t *out) {
 
     uint64_t cnt_offset = 0;
     int cnt_found = 0;
+    pkg_platform_note_header(out, hdr, (size_t)hdr_read);
 
     if (memcmp(hdr, "\x7f" "CNT", 4) == 0) {
         /* Standard PS4 / PS5 CNT at root */
@@ -999,6 +1005,7 @@ int pkg_parser_parse(const char *file_path, pkg_detail_t *out) {
             if (json_buf) {
                 if (pread(fd, json_buf, data_sz, cnt_offset + data_off) == (ssize_t)data_sz) {
                     json_buf[data_sz] = '\0';
+                    pkg_platform_note_param_json(out);
                     if (json_has_key(json_buf, data_sz, "applicationDrmType") ||
                         json_has_key(json_buf, data_sz, "applicationCategoryType") ||
                         json_has_key(json_buf, data_sz, "contentBadgeType")) {
@@ -1021,6 +1028,7 @@ int pkg_parser_parse(const char *file_path, pkg_detail_t *out) {
             uint8_t *sfo_buf = (uint8_t *)malloc(data_sz);
             if (sfo_buf) {
                 if (pread(fd, sfo_buf, data_sz, cnt_offset + data_off) == (ssize_t)data_sz) {
+                    pkg_platform_note_param_sfo(out);
                     char stitle[PKG_TITLE_NAME_LEN] = {0};
                     char stid[PKG_TITLE_ID_LEN] = {0};
                     char sver[32] = {0};
@@ -1229,6 +1237,7 @@ int pkg_parser_parse_mem(const uint8_t *data, size_t data_len,
 
     uint64_t cnt_offset = 0;
     int cnt_found = 0;
+    pkg_platform_note_header(out, hdr, 0x80);
     if (memcmp(hdr, "\x7f" "CNT", 4) == 0) {
         cnt_offset = 0;
         cnt_found = 1;
@@ -1356,6 +1365,7 @@ int pkg_parser_parse_mem(const uint8_t *data, size_t data_len,
         if ((type == 0x2000 || strcmp(name, "param.json") == 0) && data_sz > 0 && data_sz < 262144) {
             const uint8_t *jb = mem_slice(data, data_len, cnt_offset + data_off, data_sz);
             if (jb) {
+                pkg_platform_note_param_json(out);
                 if (json_has_key((const char *)jb, data_sz, "applicationDrmType") ||
                     json_has_key((const char *)jb, data_sz, "applicationCategoryType") ||
                     json_has_key((const char *)jb, data_sz, "contentBadgeType")) {
@@ -1401,6 +1411,7 @@ int pkg_parser_parse_mem(const uint8_t *data, size_t data_len,
         if ((type == 0x1000 || strcmp(name, "param.sfo") == 0) && data_sz > 0 && data_sz < 262144) {
             const uint8_t *sb = mem_slice(data, data_len, cnt_offset + data_off, data_sz);
             if (sb) {
+                pkg_platform_note_param_sfo(out);
                 char stitle[PKG_TITLE_NAME_LEN] = {0};
                 char stid[PKG_TITLE_ID_LEN] = {0};
                 char sver[32] = {0};
@@ -1522,6 +1533,10 @@ int pkg_parser_get_icon(const char *file_path, uint64_t offset, uint32_t size,
         return smb_client_get_icon(file_path, out_data, out_size);
     }
 
+    if (pkg_parser_is_http_path(file_path)) {
+        return http_source_get_icon(file_path, offset, size, out_data, out_size);
+    }
+
     if (offset == 0 || size == 0 || size >= 10 * 1024 * 1024) {
         return -1;
     }
@@ -1557,4 +1572,8 @@ int pkg_parser_get_icon(const char *file_path, uint64_t offset, uint32_t size,
     *out_data = data;
     *out_size = size;
     return 0;
+}
+
+int pkg_parser_is_http_path(const char *path) {
+    return path && (strncmp(path, "http://", 7) == 0 || strncmp(path, "https://", 8) == 0);
 }

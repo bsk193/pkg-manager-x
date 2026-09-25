@@ -2,8 +2,11 @@ import React from 'react';
 import BlurIcon from '../../BlurIcon';
 import { formatBytes, formatVersion } from '../../utils/formatters';
 import { getInstallStorageOptions } from '../../utils/installStorage';
+import { platformLabel } from '../../utils/platform';
 
-export default function TitleDetailView({ title: selectedTitle, onBack, onInstall, onInstallBaseAndUpdate, onOpenLeftoverCleanup, installerStatus, storage, settings, drives, selectedDrive }) {
+export default function TitleDetailView({ title: selectedTitle, onBack, onInstall, onInstallBaseAndUpdate, onOpenLeftoverCleanup, installerStatus, storage, settings, drives, selectedDrive, consoleName = 'ps5' }) {
+  const platform = platformLabel(selectedTitle.platform);
+  const otherFolder = platform === 'PS5' ? 'PS4' : 'PS5';
   const handleBackToPackages = onBack;
   const handleInstall = onInstall;
   const handleInstallBaseAndUpdate = onInstallBaseAndUpdate;
@@ -72,10 +75,20 @@ export default function TitleDetailView({ title: selectedTitle, onBack, onInstal
                         </span>
                       ) : null}
 
+                      {platform && (
+                        <span className={`px-3 py-1 my-0.5 rounded-[2px] font-bold border shrink-0 ${
+                          platform === 'PS5' ? 'bg-white text-black border-white' : 'bg-zinc-900 text-zinc-200 border-zinc-600'
+                        }`}>
+                          {platform}
+                        </span>
+                      )}
+
                       {selectedDrive.id === '__all__' && selectedTitle.sourceName && (
                         <span className={`px-3 py-1 my-0.5 rounded-[2px] font-bold border shrink-0 text-xs sm:text-sm ${
                           selectedTitle.sourceType === 'smb'
                             ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30'
+                            : selectedTitle.sourceType === 'http'
+                            ? 'bg-violet-500/20 text-violet-300 border-violet-500/30'
                             : selectedTitle.sourceType === 'disc'
                             ? 'bg-purple-500/20 text-purple-300 border-purple-500/30'
                             : 'bg-blue-500/20 text-blue-300 border-blue-500/30'
@@ -114,6 +127,17 @@ export default function TitleDetailView({ title: selectedTitle, onBack, onInstal
                         </span>
                       ) : null}
                     </div>
+
+                    {selectedTitle.installableHere === false && (
+                      <p className="text-xs text-rose-300 mt-3 font-medium">
+                        This is a {platform} package. A {consoleName === 'ps4' ? 'PS4' : 'PS5'} cannot install it.
+                      </p>
+                    )}
+                    {selectedTitle.platformMismatch && (
+                      <p className="text-xs text-amber-300 mt-3 font-medium">
+                        This {platform} package is stored in a {otherFolder} folder. Move it to keep your library organized.
+                      </p>
+                    )}
 
                     {(!selectedTitle.isBaseInstalled && !selectedTitle.base) ? (
                       <p className="text-xs text-amber-300 mt-3 font-medium">

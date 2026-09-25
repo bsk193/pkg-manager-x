@@ -1,9 +1,21 @@
 <p align="center">
   <img src="./assets/icon0.png" width="128" />
 </p>
-<h1 align="center">PKG Manager</h1>
+<h1 align="center">PKG Manager X</h1>
 
-<p align="center">A clean and intuitive package manager for PlayStation 5. Browse and install your packages directly from USB drives or over your local network (Samba/SMB), with support for multi-part packages.</p>
+<p align="center">A clean and intuitive package manager for PlayStation 5 and PlayStation 4. Browse and install your packages directly from USB drives or over your network (Samba/SMB or HTTP/HTTPS), with support for multi-part packages.</p>
+
+> **PKG Manager X** is a fork of [itsPLK/ps5-pkg-manager](https://github.com/itsPLK/ps5-pkg-manager).
+> It tracks upstream (`git fetch upstream && git merge upstream/main`) and adds:
+>
+> - **HTTP / HTTPS sources**: install straight from a web server (nginx, Apache, Caddy,
+>   `python -m http.server`, NAS web shares) using byte-range streaming, with Basic auth and
+>   certificate verification or pinning. See [docs/HTTP_SOURCES.md](docs/HTTP_SOURCES.md).
+> - **PS4 / PS5 tags**: every package shows which console it is for (read from the package
+>   itself), a PS4/PS5 filter, and a warning when a package sits in the other console's folder.
+>   `PS4/` and `PS5/` folders on USB drives and discs are scanned like `pkg/`.
+> - **PS4 payload** (`pkg-manager-x_*_ps4.elf`, GoldHEN): same UI and sources; PS5 packages
+>   are shown but cannot be installed. **Experimental, see [docs/PS4.md](docs/PS4.md) before use.**
 
 | | |
 |:---:|:---:|
@@ -40,9 +52,15 @@ Once running, open the interface in either of the following ways:
 When using a USB drive or optical disc, packages are detected in:
 - The **root** directory of the drive (nested folders in root are not scanned).
 - The **/pkg/** directory, where nested subdirectories are also scanned (e.g. `/pkg/homebrew/`).
+- **/PS4/** and **/PS5/** folders (any letter case, also `PS4 Games`, `ps5_pkgs`, ...), scanned the same way as `/pkg/`.
 
 ### Network Shares (Samba / SMB)
 You can configure SMB network shares in the app's **Settings** tab to browse and install packages stored on your PC or NAS.
+
+### HTTP / HTTPS Servers
+Add a server under **Settings → Network Sources**. Packages are found through the server's directory listing
+(sub-folders included) or an `index.json` made with `tools/make_http_index.py`. The server must support
+HTTP byte ranges. Details, server examples and HTTPS options: [docs/HTTP_SOURCES.md](docs/HTTP_SOURCES.md).
 
 ### Direct Install
 From another device on the same network, open the PKG Manager interface and choose **Direct Install**. Select or drop a local `.pkg` file to install it directly on the console.
@@ -60,8 +78,12 @@ Multi-part packages can be burned across multiple discs or loaded directly from 
 For in-depth technical details regarding the system architecture, range streaming, and installation pipeline, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Credits
+PKG Manager X is based on [PKG Manager](https://github.com/itsPLK/ps5-pkg-manager) by PLK.
+
 The following projects were used as foundations or reference for different parts of this project:
-- [John Törnblom](https://github.com/john-tornblom) - [PS5 Payload SDK](https://github.com/ps5-payload-dev/sdk)
+- [John Törnblom](https://github.com/john-tornblom) - [PS5 Payload SDK](https://github.com/ps5-payload-dev/sdk), [PS4 Payload SDK](https://github.com/ps4-payload-dev/sdk)
+- [flatz](https://github.com/flatz) - Remote Package Installer (PS4 BGFT install flow)
+- [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) - HTTPS support
 - [LightningMods](https://github.com/LightningMods) - [etaHEN](https://github.com/etaHEN/etaHEN)
 - [earthonion](https://github.com/earthonion) - [garlic-savemgr](https://github.com/earthonion/garlic-savemgr)
 - [sahlberg](https://github.com/sahlberg) - [libsmb2](https://github.com/sahlberg/libsmb2)

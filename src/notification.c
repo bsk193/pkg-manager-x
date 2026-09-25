@@ -3,11 +3,13 @@
  */
 
 #include "notification.h"
+#include "platform.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
 
-#if defined(__Prospero__) || defined(PS5_BUILD)
+/* Same request layout on PS4 and PS5 (message at offset 45, 3120 bytes). */
+#if PKGMGR_ON_CONSOLE
 int sceKernelSendNotificationRequest(int device, notify_request_t *request,
                                      size_t size, int unused);
 #endif
@@ -21,7 +23,7 @@ void ps5_notify(const char *fmt, ...) {
     vsnprintf(req.message, sizeof(req.message), fmt, args);
     va_end(args);
 
-#if defined(__Prospero__) || defined(PS5_BUILD)
+#if PKGMGR_ON_CONSOLE
     int result = sceKernelSendNotificationRequest(0, &req, sizeof(req), 0);
     if (result != 0) {
         fprintf(stderr, "[PKG Manager] Notification failed (0x%08X): %s\n",

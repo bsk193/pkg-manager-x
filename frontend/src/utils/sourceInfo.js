@@ -66,6 +66,31 @@ export function getSourceInfo(pkgPath, drivesList = []) {
     };
   }
 
+  // Check HTTP / HTTPS sources: http(s)://host/...
+  if (/^https?:\/\//i.test(pkgPath)) {
+    let matchedDrive = null;
+    if (Array.isArray(drivesList)) {
+      matchedDrive = drivesList
+        .filter((d) => d.type === 'http' && d.path && pkgPath.startsWith(d.path))
+        .sort((a, b) => b.path.length - a.path.length)[0] || null;
+    }
+    let rawName = matchedDrive && matchedDrive.label ? matchedDrive.label : '';
+    if (!rawName) {
+      try {
+        rawName = new URL(pkgPath).host;
+      } catch (e) {
+        rawName = 'HTTP';
+      }
+    }
+    const MAX_HTTP_LEN = 11;
+    const displayName = rawName.length > MAX_HTTP_LEN ? rawName.slice(0, MAX_HTTP_LEN - 3).trim() + '...' : rawName;
+    return {
+      id: matchedDrive && matchedDrive.id ? matchedDrive.id : `http_${rawName.toLowerCase()}`,
+      name: displayName,
+      type: 'http'
+    };
+  }
+
   const mntMatch = pkgPath.match(/^\/mnt\/([^\/]+)/i);
   if (mntMatch) {
     let name = mntMatch[1].toUpperCase();

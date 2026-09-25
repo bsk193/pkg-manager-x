@@ -8,6 +8,7 @@
 #include "leftovers.h"
 #include "app_info.h"
 #include "pkg_parser.h"
+#include "platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -659,7 +660,7 @@ char *leftovers_delete_json(const char *title_id) {
         freed_bytes += rmdir_recursive(paths_to_delete[p]);
     }
 
-#if defined(__Prospero__) || defined(PS5_BUILD)
+#if PKGMGR_ON_CONSOLE
     /* Unregister leftover patches/addcont only. Never call AppUnInstall
      * here: TOCTOU between the installed-guard above and this point could
      * delete the user's base package. Base deletion is explicitly refused.

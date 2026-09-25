@@ -8,6 +8,7 @@
 #include "multipart.h"
 #include "miniz.h"
 #include "smb_client.h"
+#include "http_source.h"
 #include "installer.h"
 #include "ws_stream.h" /* NEW: live: scheme backend (additive; no SMB/file paths touched) */
 
@@ -96,7 +97,7 @@ int multipart_read_header(const char *file_path, multipart_header_t *out_hdr) {
         return -1;
     }
 
-    if (strncmp(file_path, "smb://", 6) == 0) {
+    if (strncmp(file_path, "smb://", 6) == 0 || pkg_parser_is_http_path(file_path)) {
         return -1; /* Multi-part format is only supported on local drives (USB / optical discs) */
     }
 
@@ -451,6 +452,26 @@ int virtual_stream_open(const char *initial_path, virtual_stream_t *stream) {
         return 0;
     }
 
+    if (pkg_parser_is_http_path(initial_path)) {
+        http_file_session_t *hs = http_file_session_open(initial_path);
+        if (!hs) {
+            virtual_stream_close(stream);
+            return -1;
+        }
+        uint64_t fsz = http_file_session_get_size(hs);
+        stream->is_http = 1;
+        stream->http_session = (void *)hs;
+        stream->current_part = 1;
+        stream->total_parts = 1;
+        stream->total_pkg_size = fsz;
+        strncpy(stream->parts[0].path, initial_path, sizeof(stream->parts[0].path) - 1);
+        stream->parts[0].part_data_size = fsz;
+        stream->parts[0].fd = -1;
+        const char *slash = strrchr(initial_path, '/');
+        strncpy(stream->pkg_filename, slash ? slash + 1 : initial_path, sizeof(stream->pkg_filename) - 1);
+        return 0;
+    }
+
     const char *local_path = (strncmp(initial_path, "file://", 7) == 0) ? initial_path + 7 : initial_path;
     struct stat st;
     if (stat(local_path, &st) != 0) {
@@ -633,6 +654,16 @@ ssize_t virtual_stream_read(virtual_stream_t *stream, uint64_t pkg_offset, void 
         return smb_file_session_read((smb_file_session_t *)stream->smb_session, buf, to_read, pkg_offset);
     }
 
+    if (stream->is_http && stream->http_session) {
+        /* The HTTP session is thread-safe (one pooled connection per
+         * concurrent reader), so no stream lock is taken here either. */
+        size_t to_read = count;
+        if (pkg_offset + to_read > stream->total_pkg_size) {
+            to_read = (size_t)(stream->total_pkg_size - pkg_offset);
+        }
+        return http_file_session_read((http_file_session_t *)stream->http_session, buf, to_read, pkg_offset);
+    }
+
     /* Local path: resolve the backing fd + file range under the stream
      * lock, then transfer outside it so parallel range connections and
      * the (potentially hour-long) disc wait never block each other. */
@@ -796,6 +827,10 @@ void virtual_stream_close(virtual_stream_t *stream) {
     if (stream->is_smb && stream->smb_session) {
         smb_file_session_close((smb_file_session_t *)stream->smb_session);
         stream->smb_session = NULL;
+    }
+    if (stream->is_http && stream->http_session) {
+        http_file_session_close((http_file_session_t *)stream->http_session);
+        stream->http_session = NULL;
     }
     for (uint32_t i = 0; i < stream->total_parts && i < MAX_MULTIPART_PARTS; i++) {
         if (stream->parts[i].fd >= 0) {

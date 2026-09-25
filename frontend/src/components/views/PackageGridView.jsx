@@ -1,15 +1,23 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import BlurIcon from '../../BlurIcon';
 import { formatBytes, formatVersion } from '../../utils/formatters';
+import { pkgPlatform, platformLabel } from '../../utils/platform';
 
-function getPlatform(titleId) {
-  const normalizedTitleId = (titleId || '').trim().toUpperCase();
-  if (normalizedTitleId.startsWith('PPSA')) return 'PS5';
-  if (normalizedTitleId.startsWith('CUSA')) return 'PS4';
-  return null;
-}
+const PLATFORM_FILTERS = [
+  { id: 'all', label: 'All' },
+  { id: 'ps4', label: 'PS4' },
+  { id: 'ps5', label: 'PS5' }
+];
 
-export default function PackageGridView({ groupedTitles, searchQuery, onSearch, sortBy, onSort, onOpenTitle, selectedDrive, onBack, settings, installerStatus, loadingPackages, packages = [] }) {
+export default function PackageGridView({ groupedTitles, searchQuery, onSearch, sortBy, onSort, onOpenTitle, selectedDrive, onBack, settings, installerStatus, loadingPackages, packages = [], platformFilter = 'all', onPlatformFilter }) {
+  const platformCounts = useMemo(() => {
+    const counts = { all: packages.length, ps4: 0, ps5: 0 };
+    for (const p of packages) {
+      const plat = pkgPlatform(p);
+      if (plat) counts[plat]++;
+    }
+    return counts;
+  }, [packages]);
   const setSearchQuery = onSearch;
   const setSortBy = onSort;
   const handleOpenTitle = onOpenTitle;
@@ -43,8 +51,28 @@ export default function PackageGridView({ groupedTitles, searchQuery, onSearch, 
                 </div>
               </div>
 
-              {/* Search Bar & Sort Controls */}
-              <div className="flex items-center space-x-3 shrink-0">
+              {/* Platform Filter, Search Bar & Sort Controls */}
+              <div className="flex items-center space-x-3 shrink-0 flex-wrap gap-y-2">
+                {onPlatformFilter && (
+                  <div className="flex items-center bg-[#161722] border border-white/10 rounded-[2px] p-0.5 shrink-0" role="group" aria-label="Filter by console">
+                    {PLATFORM_FILTERS.map((f) => (
+                      <button
+                        key={f.id}
+                        type="button"
+                        onClick={() => onPlatformFilter(f.id)}
+                        aria-pressed={platformFilter === f.id}
+                        className={`px-3 py-1.5 rounded-[2px] ps5-focus-item text-xs font-bold transition-colors cursor-pointer ${
+                          platformFilter === f.id ? 'bg-white text-black' : 'text-zinc-300 hover:text-white hover:bg-white/10'
+                        }`}
+                      >
+                        {f.label}
+                        <span className={`ml-1.5 font-mono font-normal ${platformFilter === f.id ? 'text-zinc-600' : 'text-zinc-500'}`}>
+                          {platformCounts[f.id]}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <div className="flex items-center bg-[#161722] border border-white/10 rounded-[2px] ps5-focus-item px-3.5 py-2 w-64 focus-within:border-white/30">
                   <svg
                     className="w-4 h-4 text-zinc-500 mr-2.5 shrink-0"
@@ -97,7 +125,9 @@ export default function PackageGridView({ groupedTitles, searchQuery, onSearch, 
               <div className="py-16 text-center rounded-[2px] border border-white/10 bg-[#12131a]/40 p-8">
                 <h3 className="text-lg font-bold text-white">No Matching Packages</h3>
                 <p className="text-sm text-zinc-400 max-w-md mx-auto mt-2">
-                  No packages matched your search query on {selectedDrive.label}.
+                  {platformFilter !== 'all'
+                    ? `No ${platformLabel(platformFilter)} packages matched on ${selectedDrive.label}.`
+                    : `No packages matched your search query on ${selectedDrive.label}.`}
                 </p>
               </div>
             ) : (
@@ -111,7 +141,8 @@ export default function PackageGridView({ groupedTitles, searchQuery, onSearch, 
                   const areAllDlcsInstalled = group.areAllDlcsInstalled;
                   const hasNewDlc = group.hasNewDlc;
                   const isEverythingInstalled = group.isEverythingInstalled;
-                  const platform = getPlatform(group.title_id);
+                  const platform = platformLabel(group.platform || pkgPlatform(group.primaryPkg));
+                  const blockedHere = group.installableHere === false;
 
                   return (
                     <div
@@ -126,7 +157,7 @@ export default function PackageGridView({ groupedTitles, searchQuery, onSearch, 
                         }
                       }}
                       className={`w-full group block text-left rounded-[2px] ps5-focus-item p-2.5 border transition-all cursor-pointer ${
-                        (settings.fade_installed_packages && isEverythingInstalled)
+                        (settings.fade_installed_packages && isEverythingInstalled) || blockedHere
                           ? 'card-darked-out'
                           : 'bg-[#141520] hover:bg-[#171824] border-white/10 hover:border-white/20'
                       }`}
@@ -160,14 +191,18 @@ export default function PackageGridView({ groupedTitles, searchQuery, onSearch, 
                             </span>
                           )}
 
-                          {/* Platform badge from the title ID */}
+                          {/* Platform badge (detected from the package itself) */}
                           {platform && (
-                            <span className={`absolute top-2 right-2 z-20 px-2 py-0.5 rounded-[2px] text-[10px] font-bold border pointer-events-none ${
-                              platform === 'PS5'
-                                ? 'bg-white text-black border-white'
-                                : 'bg-zinc-900 text-zinc-200 border-zinc-600'
-                            }`}>
-                              {platform}
+                            <span
+                              className={`absolute top-2 right-2 z-20 px-2 py-0.5 rounded-[2px] text-[10px] font-bold border pointer-events-none flex items-center space-x-1 ${
+                                platform === 'PS5'
+                                  ? 'bg-white text-black border-white'
+                                  : 'bg-zinc-900 text-zinc-200 border-zinc-600'
+                              }`}
+                              title={group.platformMismatch ? `${platform} package stored in a ${platform === 'PS5' ? 'PS4' : 'PS5'} folder` : undefined}
+                            >
+                              <span>{blockedHere ? `${platform} only` : platform}</span>
+                              {group.platformMismatch && <span className="text-amber-500" aria-label="Stored in the other console's folder">!</span>}
                             </span>
                           )}
 
@@ -203,6 +238,8 @@ export default function PackageGridView({ groupedTitles, searchQuery, onSearch, 
                               <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-[2px] border truncate block ${
                                 group.sourceType === 'smb'
                                   ? 'bg-cyan-950/85 text-cyan-300 border-cyan-500/50'
+                                  : group.sourceType === 'http'
+                                  ? 'bg-violet-950/85 text-violet-300 border-violet-500/50'
                                   : group.sourceType === 'disc'
                                   ? 'bg-purple-950/85 text-purple-300 border-purple-500/50'
                                   : 'bg-zinc-800 text-zinc-300 border-white/20'

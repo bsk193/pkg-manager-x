@@ -15,12 +15,15 @@ import { installShortcut as apiInstallShortcut } from './api/settings';
 import { getCacheStats, clearCache } from './api/cache';
 import { scanLeftovers as apiScanLeftovers, deleteLeftover } from './api/leftovers';
 import { testSmb } from './api/smb';
+import { getPlatformInfo, DEFAULT_PLATFORM_INFO } from './api/platform';
+import { pkgPlatform, groupPlatform, canInstallOnConsole, PLATFORM_FILTER_STORAGE_KEY } from './utils/platform';
 
 import { useToast } from './hooks/useToast';
 import { useCache } from './hooks/useCache';
 import { useLeftovers } from './hooks/useLeftovers';
 import { useSettings } from './hooks/useSettings';
 import { useSmb } from './hooks/useSmb';
+import { useHttpSources } from './hooks/useHttpSources';
 import { useInstaller } from './hooks/useInstaller';
 import { useDonation } from './hooks/useDonation';
 import { useHistoryNavigation } from './hooks/useHistoryNavigation';
@@ -39,6 +42,7 @@ import Header from './components/layout/Header';
 import Footer from './components/layout/Footer';
 
 import SmbManagementView from './components/views/SmbManagementView';
+import HttpSourcesSection from './components/views/HttpSourcesSection';
 import SettingsView from './components/views/SettingsView';
 import TitleDetailView from './components/views/TitleDetailView';
 import PackageGridView from './components/views/PackageGridView';
@@ -48,6 +52,7 @@ import DirectInstallView from './components/views/DirectInstallView';
 import DonateModal from './components/modals/DonateModal';
 import ClearCacheModal from './components/modals/ClearCacheModal';
 import SmbShareModal from './components/modals/SmbShareModal';
+import HttpSourceModal from './components/modals/HttpSourceModal';
 import DeleteLeftoverModal from './components/modals/DeleteLeftoverModal';
 
 const CACHE_VERSION_STORAGE_KEY = 'pkgmgr_cache_version';
@@ -76,6 +81,18 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState('date-desc');
+  const [platformInfo, setPlatformInfo] = useState(DEFAULT_PLATFORM_INFO);
+  const [platformFilter, setPlatformFilterState] = useState(() => {
+    try {
+      const saved = localStorage.getItem(PLATFORM_FILTER_STORAGE_KEY);
+      if (saved === 'ps4' || saved === 'ps5') return saved;
+    } catch (e) {}
+    return 'all';
+  });
+  const setPlatformFilter = useCallback((value) => {
+    setPlatformFilterState(value);
+    try { localStorage.setItem(PLATFORM_FILTER_STORAGE_KEY, value); } catch (e) {}
+  }, []);
   const [selectedTitleId, setSelectedTitleId] = useState(null);
   const [showDirectInstall, setShowDirectInstall] = useState(false);
   const directTabId = useRef(Math.random().toString(36).slice(2) + Date.now());
@@ -249,10 +266,25 @@ export default function App() {
     smbTesting, smbTestResult, setSmbTestResult, handleSaveSmbShare, handleRemoveSmbShare, handleToggleSmbShare, handleTestSmbConnection
   } = useSmb({ settings, showToast, handleSaveSettings, refreshAll });
 
+  const {
+    httpSources, fetchHttpSources, showHttpModal, setShowHttpModal, httpEditIndex, httpForm, setHttpForm,
+    httpTesting, httpTestResult, openAddHttpSource, openEditHttpSource, handleSaveHttpSource,
+    handleRemoveHttpSource, handleToggleHttpSource, handleTestHttpSource, trustHttpFingerprint
+  } = useHttpSources({ showToast, refreshAll });
+
+  // Back/Circle closes whichever network-source dialog is open; the history
+  // hook only knows the SMB modal, so it gets one combined flag.
+  const anyNetworkModal = showSmbModal || showHttpModal;
+  const closeNetworkModals = useCallback((value) => {
+    setShowSmbModal(value);
+    if (!value) setShowHttpModal(false);
+  }, [setShowSmbModal, setShowHttpModal]);
+
   const groupedTitles = useMemo(() => {
     const isAllSources = selectedDrive && selectedDrive.id === '__all__';
     const filtered = packages.filter((p) => {
       if (p.filename && p.filename.startsWith('.')) return false;
+      if (platformFilter !== 'all' && pkgPlatform(p) !== platformFilter) return false;
       if (!searchQuery.trim()) return true;
       const q = searchQuery.toLowerCase();
       let matchLocalized = false;
@@ -377,10 +409,17 @@ export default function App() {
         (updates.length === 0 || isLatestUpdateInstalled) &&
         (dlcs.length === 0 || areAllDlcsInstalled);
 
+      const platform = groupPlatform(items, base);
+      const platformMismatch = items.some((p) => p.platform_mismatch);
+      const installableHere = canInstallOnConsole(platformInfo.console, platform);
+
       groups.push({
         id: key,
         title_id: titleId,
         title_name: titleName,
+        platform,
+        platformMismatch,
+        installableHere,
         sourceName: srcInfo.name,
         sourceType: srcInfo.type,
         sourceId: srcInfo.id,
@@ -457,7 +496,7 @@ export default function App() {
       }
       return 0;
     });
-  }, [packages, searchQuery, sortBy, settings.move_installed_to_end, selectedDrive, drives]);
+  }, [packages, searchQuery, sortBy, settings.move_installed_to_end, selectedDrive, drives, platformFilter, platformInfo.console]);
 
   const selectedTitle = useMemo(() => {
     if (!selectedTitleId) return null;
@@ -551,8 +590,8 @@ export default function App() {
     handleCloseDonateModal,
     showClearCacheModal,
     setShowClearCacheModal,
-    showSmbModal,
-    setShowSmbModal,
+    showSmbModal: anyNetworkModal,
+    setShowSmbModal: closeNetworkModals,
     selectedLeftoverToDelete,
     setSelectedLeftoverToDelete,
     showToast,
@@ -643,6 +682,7 @@ export default function App() {
     showDonateModal ||
     showClearCacheModal ||
     showSmbModal ||
+    showHttpModal ||
     selectedLeftoverToDelete
   );
   useModalInert(isAnyModalOpen);
@@ -704,6 +744,10 @@ export default function App() {
       fetchStorage();
       fetchStatus();
       fetchSettings();
+      fetchHttpSources();
+      getPlatformInfo().then((info) => {
+        if (!unmounted) setPlatformInfo(info);
+      });
 
       if (!versionRescanCompleted) {
         if (selectedDriveRef.current) {
@@ -880,6 +924,7 @@ export default function App() {
             debugEnabled={Boolean(settings.pkg_install_debug)}
           />
         ) : showSmbPage ? (
+          <>
           <SmbManagementView
             settings={settings}
             onBack={handleCloseSmb}
@@ -911,6 +956,17 @@ export default function App() {
             onTest={handleTestSmbConnection}
             testing={smbTesting}
           />
+          <HttpSourcesSection
+            sources={httpSources}
+            onAdd={openAddHttpSource}
+            onEdit={openEditHttpSource}
+            onToggle={handleToggleHttpSource}
+            onRemove={handleRemoveHttpSource}
+            onTest={handleTestHttpSource}
+            testing={httpTesting}
+            httpsSupported={Boolean(platformInfo.https_supported)}
+          />
+          </>
         ) : showSettings ? (
           <SettingsView
             settings={settings}
@@ -928,6 +984,8 @@ export default function App() {
             onDeleteLeftover={setSelectedLeftoverToDelete}
             showDonateQr={showDonateQr}
             setShowDonateQr={setShowDonateQr}
+            httpSourcesCount={httpSources.length}
+            shortcutSupported={platformInfo.shortcut_supported !== false}
           />
         ) : selectedTitle ? (
           <TitleDetailView
@@ -941,6 +999,7 @@ export default function App() {
             settings={settings}
             drives={drives}
             selectedDrive={selectedDrive}
+            consoleName={platformInfo.console}
           />
         ) : selectedDrive ? (
           <PackageGridView
@@ -956,6 +1015,8 @@ export default function App() {
             installerStatus={installerStatus}
             loadingPackages={loadingPackages}
             packages={packages}
+            platformFilter={platformFilter}
+            onPlatformFilter={setPlatformFilter}
           />
         ) : (
           <DrivesView
@@ -998,6 +1059,20 @@ export default function App() {
         testing={smbTesting}
         onTest={() => handleTestSmbConnection(smbForm)}
         onSave={handleSaveSmbShare}
+      />
+
+      <HttpSourceModal
+        show={showHttpModal}
+        onClose={() => setShowHttpModal(false)}
+        isEditing={httpEditIndex >= 0}
+        form={httpForm}
+        setForm={setHttpForm}
+        testResult={httpTestResult}
+        testing={httpTesting}
+        onTest={() => handleTestHttpSource(httpForm)}
+        onSave={handleSaveHttpSource}
+        onTrustFingerprint={trustHttpFingerprint}
+        httpsSupported={Boolean(platformInfo.https_supported)}
       />
 
       <DeleteLeftoverModal

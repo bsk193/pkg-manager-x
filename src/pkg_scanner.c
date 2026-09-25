@@ -11,6 +11,8 @@
 #include "multipart.h"
 #include "app_info.h"
 #include "smb_client.h"
+#include "http_source.h"
+#include "pkg_platform.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +21,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <time.h>
 
 static void evaluate_install_eligibility(const pkg_detail_t *pkg, int is_installed,
                                          const char *installed_version, int dlc_installed,
@@ -30,7 +33,12 @@ static void evaluate_install_eligibility(const pkg_detail_t *pkg, int is_install
     out->is_installed = is_installed;
     snprintf(out->installed_version, sizeof(out->installed_version), "%s", installed_version);
 
-    if (pkg->is_multipart && strncmp(pkg->path, "smb://", 6) == 0) {
+    const char *platform_reason = "";
+    if (!pkg_platform_can_install(pkg, &platform_reason)) {
+        out->can_install = 0;
+        out->disabled_reason = platform_reason;
+    } else if (pkg->is_multipart &&
+               (strncmp(pkg->path, "smb://", 6) == 0 || pkg_parser_is_http_path(pkg->path))) {
         out->can_install = 0;
         out->disabled_reason = "Multi-part packages are only supported on USB/Disc";
     } else if (has_leftover) {
@@ -98,7 +106,8 @@ static int compare_pkg_by_title_name(const void *a, const void *b) {
     return strcmp(pa->path, pb->path);
 }
 
-#if defined(__Prospero__) || defined(PS5_BUILD)
+#include "platform.h"
+#if PKGMGR_ON_CONSOLE
 #include <sys/mount.h>
 #endif
 
@@ -319,7 +328,8 @@ static int save_manifest_locked(void) {
                    "      \"pkg_type_str\": \"%s\",\n"
                    "      \"category\": \"%s\",\n"
                    "      \"mtime\": %llu,\n"
-                   "      \"blurhash\": \"%s\"\n"
+                   "      \"blurhash\": \"%s\",\n"
+                   "      \"platform\": \"%s\"\n"
                    "    }%s\n",
                 esc_path, esc_fn, esc_tid, esc_tname, esc_loc, esc_def_lang, esc_cid, esc_ver,
                 (unsigned long long)p->file_size,
@@ -333,6 +343,7 @@ static int save_manifest_locked(void) {
                 (int)p->pkg_type, esc_type, esc_cat,
                 (unsigned long long)p->mtime,
                 esc_bh,
+                p->platform,
                 (i + 1 < g_package_count) ? "," : "");
     }
     fprintf(f, "  ]\n}\n");
@@ -546,6 +557,11 @@ static int load_manifest_locked(void) {
                             extract_json_field(item, "mtime", val, sizeof(val));
                             if (val[0]) pkg->mtime = (uint64_t)strtoull(val, NULL, 10);
 
+                            /* Manifests written before the platform field
+                             * existed are completed from title ID / folder. */
+                            extract_json_field(item, "platform", pkg->platform, sizeof(pkg->platform));
+                            pkg_platform_finalize(pkg);
+
                             free(item);
                         }
                         p = obj_end + 1;
@@ -741,7 +757,7 @@ static int is_drive_mounted(const char *path) {
     if (stat(path, &st) != 0) return 0;
     if (!S_ISDIR(st.st_mode)) return 0;
 
-#if defined(__Prospero__) || defined(PS5_BUILD)
+#if PKGMGR_ON_CONSOLE
     /* In test/mock environment, directory existence is sufficient */
     if (getenv("PKG_USB_PREFIX") || getenv("PKG_DISC_DIR") || getenv("PKG_SCAN_DIR")) {
         return 1;
@@ -784,6 +800,38 @@ static size_t count_pkg_files(const char *dir_path, int recursive, int depth) {
     }
     closedir(d);
     return count;
+}
+
+/* Folders below a drive root that are scanned recursively: "pkg" plus
+ * platform folders ("PS4", "PS5", "PS4 Games", ...), any letter case. */
+static int is_scan_subdir(const char *name) {
+    if (!name || name[0] == '.') return 0;
+    return strcasecmp(name, "pkg") == 0 || pkg_platform_folder_name(name)[0] != '\0';
+}
+
+/* Calls fn(subdir_path, arg) for every scan sub-folder directly below root. */
+static void for_each_scan_subdir(const char *root, void (*fn)(const char *, void *), void *arg) {
+    DIR *d = opendir(root);
+    if (!d) return;
+    struct dirent *entry;
+    while ((entry = readdir(d)) != NULL) {
+        if (!is_scan_subdir(entry->d_name)) continue;
+        char sub[1024];
+        snprintf(sub, sizeof(sub), "%s/%s", root, entry->d_name);
+        struct stat st;
+        if (stat(sub, &st) == 0 && S_ISDIR(st.st_mode)) fn(sub, arg);
+    }
+    closedir(d);
+}
+
+static void count_subdir_cb(const char *sub, void *arg) {
+    *(size_t *)arg += count_pkg_files(sub, 1, 0);
+}
+
+static size_t count_scan_subdirs(const char *root) {
+    size_t total = 0;
+    for_each_scan_subdir(root, count_subdir_cb, &total);
+    return total;
 }
 
 static int parse_pkg_entry(const char *full_path, const char *filename,
@@ -853,6 +901,10 @@ static int parse_pkg_entry(const char *full_path, const char *filename,
         out_detail->mtime = mtime;
         out_detail->is_valid = 1;
     }
+
+    /* Parser evidence first; title ID / PS4-PS5 folder as fallback. Not
+     * persisted in the metadata cache (folder hints are path-specific). */
+    pkg_platform_finalize(out_detail);
 
     return (!out_detail->is_multipart || out_detail->part_index == 1) ? 0 : 1;
 }
@@ -960,6 +1012,14 @@ static void scan_dir_recursive(const char *dir_path, int depth, const char *driv
     closedir(d);
 }
 
+static void scan_subdir_cb(const char *sub, void *arg) {
+    scan_dir_recursive(sub, 0, (const char *)arg);
+}
+
+static void scan_scan_subdirs(const char *root, const char *drive_label) {
+    for_each_scan_subdir(root, scan_subdir_cb, (void *)drive_label);
+}
+
 static void add_drive_entry(const char *id, const char *label, const char *path,
                             const char *type, int mounted, size_t pkg_count) {
     if (g_drive_count >= MAX_DRIVES) return;
@@ -999,18 +1059,14 @@ int pkg_scanner_scan(void) {
             snprintf(usb_path, sizeof(usb_path), "%s%d", usb_prefix, i);
             if (is_drive_mounted(usb_path)) {
                 total_expected += count_pkg_files(usb_path, 0, 0);
-                char usb_pkg_dir[128];
-                snprintf(usb_pkg_dir, sizeof(usb_pkg_dir), "%s/pkg", usb_path);
-                total_expected += count_pkg_files(usb_pkg_dir, 1, 0);
+                total_expected += count_scan_subdirs(usb_path);
             }
         }
         const char *disc_dir = getenv("PKG_DISC_DIR");
         if (!disc_dir || disc_dir[0] == '\0') disc_dir = "/mnt/disc";
         if (is_drive_mounted(disc_dir)) {
             total_expected += count_pkg_files(disc_dir, 0, 0);
-            char disc_pkg_dir[256];
-            snprintf(disc_pkg_dir, sizeof(disc_pkg_dir), "%s/pkg", disc_dir);
-            total_expected += count_pkg_files(disc_pkg_dir, 1, 0);
+            total_expected += count_scan_subdirs(disc_dir);
         }
         if (is_drive_mounted(PKG_DEFAULT_DIR)) {
             total_expected += count_pkg_files(PKG_DEFAULT_DIR, 1, 0);
@@ -1028,6 +1084,15 @@ int pkg_scanner_scan(void) {
             int smb_pkgs = smb_client_count_pkg_files(scfg);
             if (smb_pkgs > 0) {
                 total_expected += (size_t)smb_pkgs;
+            }
+        }
+        http_source_config_t hlist[MAX_HTTP_SOURCES];
+        int hcount = http_sources_get(hlist, MAX_HTTP_SOURCES);
+        for (int i = 0; i < hcount; i++) {
+            if (!hlist[i].enabled) continue;
+            int http_pkgs = http_source_count_pkg_files(&hlist[i]);
+            if (http_pkgs > 0) {
+                total_expected += (size_t)http_pkgs;
             }
         }
     }
@@ -1063,8 +1128,6 @@ int pkg_scanner_scan(void) {
 
             if (is_drive_mounted(usb_path)) {
                 size_t prev_pkg = g_package_count;
-                char usb_pkg_dir[128];
-                snprintf(usb_pkg_dir, sizeof(usb_pkg_dir), "%s/pkg", usb_path);
 
                 char id[32], label[64];
                 snprintf(id, sizeof(id), "usb%d", i);
@@ -1072,8 +1135,8 @@ int pkg_scanner_scan(void) {
 
                 /* Scan root directory only */
                 scan_dir_root(usb_path, label);
-                /* Plus recursive scan inside pkg folder, if present */
-                scan_dir_recursive(usb_pkg_dir, 0, label);
+                /* Plus recursive scan inside pkg / PS4 / PS5 folders */
+                scan_scan_subdirs(usb_path, label);
                 size_t count = g_package_count - prev_pkg;
 
                 add_drive_entry(id, label, usb_path, "usb", 1, count);
@@ -1088,10 +1151,8 @@ int pkg_scanner_scan(void) {
             size_t prev_pkg = g_package_count;
             /* Disc root only (non-recursive) */
             scan_dir_root(disc_dir, "Blu-ray Disc");
-            /* Plus recursive scan inside pkg folder, if present */
-            char disc_pkg_dir[256];
-            snprintf(disc_pkg_dir, sizeof(disc_pkg_dir), "%s/pkg", disc_dir);
-            scan_dir_recursive(disc_pkg_dir, 0, "Blu-ray Disc");
+            /* Plus recursive scan inside pkg / PS4 / PS5 folders */
+            scan_scan_subdirs(disc_dir, "Blu-ray Disc");
             size_t count = g_package_count - prev_pkg;
             add_drive_entry("disc", "Blu-ray Disc", disc_dir, "disc", 1, count);
         }
@@ -1149,6 +1210,20 @@ int pkg_scanner_scan(void) {
         } else {
             add_drive_entry(s_id, s_label, share_root, "smb", 0, 0);
         }
+    }
+
+    /* 5. Check configured HTTP/HTTPS sources */
+    http_source_config_t http_list[MAX_HTTP_SOURCES];
+    int http_count = http_sources_get(http_list, MAX_HTTP_SOURCES);
+    for (int i = 0; i < http_count; i++) {
+        const http_source_config_t *hcfg = &http_list[i];
+        if (!hcfg->enabled) continue;
+        smb_scan_ctx_t hctx;
+        hctx.drive_label = hcfg->label;
+        size_t prev_pkg = g_package_count;
+        int hres = http_source_scan(hcfg, smb_pkg_scan_cb, &hctx);
+        size_t count = g_package_count - prev_pkg;
+        add_drive_entry(hcfg->id, hcfg->label, hcfg->url, "http", hres >= 0, hres >= 0 ? count : 0);
     }
 
     if (g_package_count > 1) {
@@ -1243,6 +1318,10 @@ static void collect_local_files_quick(const char *dir_path, int recursive, int d
     closedir(d);
 }
 
+static void collect_subdir_cb(const char *sub, void *arg) {
+    collect_local_files_quick(sub, 1, 0, (quick_file_list_t *)arg);
+}
+
 static int quick_file_list_has_path(const quick_file_list_t *list, const char *path) {
     if (!list || !path) return 0;
     for (size_t i = 0; i < list->count; i++) {
@@ -1264,13 +1343,52 @@ static int is_provisional_package(const pkg_detail_t *pkg) {
            strcmp(pkg->title_name, "Unknown Package") == 0;
 }
 
+/* HTTP quick scans may HEAD every package of an HTML listing, so they run
+ * at most once per HTTP_QUICK_SCAN_MIN_SEC per source (full rescans are not
+ * throttled). */
+#define HTTP_QUICK_SCAN_MIN_SEC 60
+
+static int http_quick_scan_due(const char *source_id) {
+    static struct { char id[32]; time_t last; } recent[MAX_HTTP_SOURCES];
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    time_t now = time(NULL);
+    int due = 1;
+    pthread_mutex_lock(&lock);
+    int slot = -1, oldest = 0;
+    for (int i = 0; i < MAX_HTTP_SOURCES; i++) {
+        if (strcmp(recent[i].id, source_id) == 0) { slot = i; break; }
+        if (recent[i].last < recent[oldest].last) oldest = i;
+    }
+    if (slot >= 0 && now - recent[slot].last < HTTP_QUICK_SCAN_MIN_SEC) {
+        due = 0;
+    } else {
+        if (slot < 0) {
+            slot = oldest;
+            snprintf(recent[slot].id, sizeof(recent[slot].id), "%s", source_id);
+        }
+        recent[slot].last = now;
+    }
+    pthread_mutex_unlock(&lock);
+    return due;
+}
+
 static int scan_quick_single_source(const char *drive_id, const char *drive_label,
                                     const char *drive_path, const char *drive_type,
-                                    int is_smb, const smb_share_config_t *smb_cfg) {
+                                    int is_smb, const smb_share_config_t *smb_cfg,
+                                    const http_source_config_t *http_cfg) {
     quick_file_list_t cur_files;
     memset(&cur_files, 0, sizeof(cur_files));
 
-    if (is_smb) {
+    if (http_cfg) {
+        if (!http_cfg->enabled || !http_quick_scan_due(http_cfg->id)) {
+            return 0;
+        }
+        if (http_source_scan(http_cfg, quick_smb_pkg_cb, &cur_files) < 0) {
+            /* Server offline: keep cached entries (same as SMB). */
+            free(cur_files.entries);
+            return 0;
+        }
+    } else if (is_smb) {
         if (!smb_cfg || !smb_cfg->enabled) {
             return 0;
         }
@@ -1321,10 +1439,8 @@ static int scan_quick_single_source(const char *drive_id, const char *drive_labe
         } else {
             /* Root non-recursive */
             collect_local_files_quick(drive_path, 0, 0, &cur_files);
-            /* /pkg subfolder recursive */
-            char pkg_subdir[512];
-            snprintf(pkg_subdir, sizeof(pkg_subdir), "%s/pkg", drive_path);
-            collect_local_files_quick(pkg_subdir, 1, 0, &cur_files);
+            /* pkg / PS4 / PS5 subfolders recursive */
+            for_each_scan_subdir(drive_path, collect_subdir_cb, &cur_files);
         }
     }
 
@@ -1553,12 +1669,12 @@ int pkg_scanner_scan_quick(const char *drive_id_or_path, int *out_changed) {
     if (env_dir && env_dir[0] != '\0') {
         if (!drive_id_or_path || drive_id_or_path[0] == '\0' || strcmp(drive_id_or_path, "__all__") == 0 ||
             strcmp(drive_id_or_path, "usb0") == 0 || strcmp(drive_id_or_path, env_dir) == 0) {
-            total_changed += scan_quick_single_source("usb0", "USB Drive 0", env_dir, "usb", 0, NULL);
+            total_changed += scan_quick_single_source("usb0", "USB Drive 0", env_dir, "usb", 0, NULL, NULL);
         }
         if (env_disc && env_disc[0] != '\0' && is_drive_mounted(env_disc)) {
             if (!drive_id_or_path || drive_id_or_path[0] == '\0' || strcmp(drive_id_or_path, "__all__") == 0 ||
                 strcmp(drive_id_or_path, "disc") == 0 || strcmp(drive_id_or_path, env_disc) == 0) {
-                total_changed += scan_quick_single_source("disc", "Blu-ray Disc", env_disc, "disc", 0, NULL);
+                total_changed += scan_quick_single_source("disc", "Blu-ray Disc", env_disc, "disc", 0, NULL, NULL);
             }
         }
     } else {
@@ -1573,7 +1689,7 @@ int pkg_scanner_scan_quick(const char *drive_id_or_path, int *out_changed) {
 
             if (!drive_id_or_path || drive_id_or_path[0] == '\0' || strcmp(drive_id_or_path, "__all__") == 0 ||
                 strcmp(drive_id_or_path, usb_id) == 0 || strcmp(drive_id_or_path, usb_path) == 0) {
-                total_changed += scan_quick_single_source(usb_id, usb_label, usb_path, "usb", 0, NULL);
+                total_changed += scan_quick_single_source(usb_id, usb_label, usb_path, "usb", 0, NULL, NULL);
             }
         }
 
@@ -1581,12 +1697,12 @@ int pkg_scanner_scan_quick(const char *drive_id_or_path, int *out_changed) {
         if (!disc_dir || disc_dir[0] == '\0') disc_dir = "/mnt/disc";
         if (!drive_id_or_path || drive_id_or_path[0] == '\0' || strcmp(drive_id_or_path, "__all__") == 0 ||
             strcmp(drive_id_or_path, "disc") == 0 || strcmp(drive_id_or_path, disc_dir) == 0) {
-            total_changed += scan_quick_single_source("disc", "Blu-ray Disc", disc_dir, "disc", 0, NULL);
+            total_changed += scan_quick_single_source("disc", "Blu-ray Disc", disc_dir, "disc", 0, NULL, NULL);
         }
 
         if (!drive_id_or_path || drive_id_or_path[0] == '\0' || strcmp(drive_id_or_path, "__all__") == 0 ||
             strcmp(drive_id_or_path, "internal") == 0 || strcmp(drive_id_or_path, PKG_DEFAULT_DIR) == 0) {
-            total_changed += scan_quick_single_source("internal", "Internal Storage", PKG_DEFAULT_DIR, "internal", 0, NULL);
+            total_changed += scan_quick_single_source("internal", "Internal Storage", PKG_DEFAULT_DIR, "internal", 0, NULL, NULL);
         }
     }
 
@@ -1621,7 +1737,20 @@ int pkg_scanner_scan_quick(const char *drive_id_or_path, int *out_changed) {
         if (!drive_id_or_path || drive_id_or_path[0] == '\0' || strcmp(drive_id_or_path, "__all__") == 0 ||
             strcmp(drive_id_or_path, s_id) == 0 || strcmp(drive_id_or_path, share_root) == 0 ||
             pkg_matches_drive_path(drive_id_or_path, share_root)) {
-            total_changed += scan_quick_single_source(s_id, s_label, share_root, "smb", 1, scfg);
+            total_changed += scan_quick_single_source(s_id, s_label, share_root, "smb", 1, scfg, NULL);
+        }
+    }
+
+    /* Check HTTP/HTTPS sources */
+    http_source_config_t http_list[MAX_HTTP_SOURCES];
+    int http_count = http_sources_get(http_list, MAX_HTTP_SOURCES);
+    for (int i = 0; i < http_count; i++) {
+        const http_source_config_t *hcfg = &http_list[i];
+        if (!hcfg->enabled) continue;
+        if (!drive_id_or_path || drive_id_or_path[0] == '\0' || strcmp(drive_id_or_path, "__all__") == 0 ||
+            strcmp(drive_id_or_path, hcfg->id) == 0 || strcmp(drive_id_or_path, hcfg->url) == 0 ||
+            pkg_matches_drive_path(drive_id_or_path, hcfg->url)) {
+            total_changed += scan_quick_single_source(hcfg->id, hcfg->label, hcfg->url, "http", 0, NULL, hcfg);
         }
     }
 
@@ -1715,8 +1844,8 @@ static int scan_find_part_recursive(const char *dir_path, int depth,
 }
 
 /* Search one drive location with catalog rules: regular files directly in
-   base_dir (non-recursive), plus a recursive descent into a pkg/ subfolder
-   only. Anything elsewhere on the drive is out of scope. */
+   base_dir (non-recursive), plus a recursive descent into pkg/ and PS4/PS5
+   subfolders only. Anything elsewhere on the drive is out of scope. */
 static int scan_find_part_in_location(const char *base_dir,
                                       const uint8_t *package_uuid, const char *pkg_filename,
                                       uint32_t part_index, char *out_path, size_t out_max,
@@ -1740,7 +1869,7 @@ static int scan_find_part_in_location(const char *base_dir,
                 closedir(d);
                 return 0;
             }
-        } else if (S_ISDIR(st.st_mode) && strcmp(entry->d_name, "pkg") == 0) {
+        } else if (S_ISDIR(st.st_mode) && is_scan_subdir(entry->d_name)) {
             if (scan_find_part_recursive(full_path, 0, package_uuid, pkg_filename,
                                         part_index, out_path, out_max, out_detected_part) == 0) {
                 closedir(d);
@@ -2034,7 +2163,10 @@ char *pkg_scanner_packages_for_drive_to_json_ex(const char *drive_id_or_path, co
             "\"partial_desc\":\"%s\","
             "\"can_install\":%s,"
             "\"install_disabled_reason\":\"%s\","
-            "\"blurhash\":\"%s\""
+            "\"blurhash\":\"%s\","
+            "\"platform\":\"%s\","
+            "\"folder_platform\":\"%s\","
+            "\"platform_mismatch\":%s"
             "}",
             (emitted > 0 ? "," : ""),
             esc_path,
@@ -2063,7 +2195,10 @@ char *pkg_scanner_packages_for_drive_to_json_ex(const char *drive_id_or_path, co
             esc_partial_desc,
             can_install ? "true" : "false",
             esc_disabled_reason,
-            esc_blurhash);
+            esc_blurhash,
+            pkg->platform,
+            pkg_platform_folder_hint(pkg->path),
+            pkg_platform_folder_mismatch(pkg) ? "true" : "false");
 
         if (w < 0 || (size_t)w >= buf_size - pos) {
             break;

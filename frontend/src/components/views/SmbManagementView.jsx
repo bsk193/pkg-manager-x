@@ -32,7 +32,7 @@ export default function SmbManagementView({ settings, onBack, onAdd, onEdit, onT
                     Settings
                   </button>
                   <span className="shrink-0 text-zinc-600">&rsaquo;</span>
-                  <span className="text-white font-semibold truncate">Samba Shares</span>
+                  <span className="text-white font-semibold truncate">Network Sources</span>
                 </div>
               </div>
 
