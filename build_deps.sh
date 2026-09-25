@@ -55,8 +55,11 @@ configure_or_log --host="$HOST" \
                  --disable-shared --enable-static \
                  --disable-curl --disable-examples --disable-doc \
                  --prefix="$PREFIX"
-make -j"$(nproc)"
-make install
+# Library + public header only: the bundled test tools (e.g. the CPU-affinity
+# helper) use APIs missing from the PS4's FreeBSD 9 headers.
+make -j"$(nproc)" -C src/microhttpd
+make -C src/microhttpd install
+make -C src/include install
 cd "$TEMPDIR"
 
 echo "=== Building libsmb2 for $PLATFORM ==="

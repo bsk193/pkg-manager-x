@@ -184,10 +184,11 @@ test: $(PARAM_JSON_HEADER) $(ICON0_PNG_HEADER)
 	done
 	@echo "=== RUN tests (emulating PS4 console) ==="
 	PKGMGR_CONSOLE=ps4 ./tests/test_pkg_platform --ps4 || exit 1
-	@for t in $(TESTS); do \
+	@FAILED=""; for t in $(TESTS); do \
 		echo "=== RUN tests/$$t ==="; \
-		./tests/$$t || exit 1; \
-	done
+		./tests/$$t || FAILED="$$FAILED $$t"; \
+	done; \
+	if [ -n "$$FAILED" ]; then echo "=== FAILED TESTS:$$FAILED ==="; exit 1; fi
 	@echo "=== RUN tests/test_fix_legacy_css.py ==="
 	$(PYTHON) tests/test_fix_legacy_css.py
 

@@ -93,6 +93,19 @@ independent from upstream's. Every build also records the upstream release it is
   (write `beta.1`, not `beta1`, so `beta.10` sorts after `beta.9`); anything else
   fails before building. Backup: *Actions → Release → Run workflow* with a version
   creates the tag on the selected branch.
+- Releases are only made from commits on `main` (the workflow refuses others).
+- **Release script (Windows)**: `tools/release.ps1` computes the next version from
+  the existing tags, checks the working tree / branch / tag, shows a summary and
+  pushes the tag after confirmation:
+
+  ```powershell
+  .\tools\release.ps1 -Bump patch              # 1.0.0 -> x-v1.0.1 (release)
+  .\tools\release.ps1 -Bump minor -Pre beta    # -> x-v1.1.0-beta.1 (pre-release)
+  .\tools\release.ps1 -Pre beta                # next beta: x-v1.1.0-beta.2
+  .\tools\release.ps1 -Pre rc                  # release candidate: x-v1.1.0-rc.1
+  .\tools\release.ps1 -Promote                 # x-v1.1.0-rc.1 -> x-v1.1.0 (release)
+  .\tools\release.ps1 -Version 2.0.0 -DryRun   # explicit version, preview only
+  ```
 - Each release publishes `pkg-manager-x_v<version>_ps5.elf` and `..._ps4.elf` with
   notes linking the upstream release it is based on.
 - Move the `## Unreleased` notes in `CHANGELOG.md` under the new version when releasing.
