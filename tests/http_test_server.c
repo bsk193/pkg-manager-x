@@ -2,7 +2,9 @@
  * Tiny threaded HTTP/1.1 file server for host tests (see http_test_server.h).
  */
 
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE /* strcasestr on glibc */
+#endif
 #include "http_test_server.h"
 
 #include <arpa/inet.h>

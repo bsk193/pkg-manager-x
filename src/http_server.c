@@ -14,7 +14,7 @@
 #include "assets_cache_appcache.h"
 #include "assets_favicon_svg.h"
 #include "assets_icon_png.h"
-#include "version.h"
+#include "version_x.h"
 #include "smb_client.h"
 #include "leftovers.h"
 #include "app_diag.h"
@@ -529,7 +529,7 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
     /* ── GET or HEAD /api/version (and /version) ────────────────── */
     if ((strcmp(method, "GET") == 0 || strcmp(method, "HEAD") == 0) &&
         (strcmp(url, "/api/version") == 0 || strcmp(url, "/version") == 0)) {
-        const char *ver = PKGMGR_VERSION;
+        const char *ver = PKGMGR_X_VERSION;
         struct MHD_Response *resp = MHD_create_response_from_buffer(
             strlen(ver), (void *)ver, MHD_RESPMEM_PERSISTENT);
         add_cors_headers(resp);

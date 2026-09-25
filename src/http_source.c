@@ -14,7 +14,7 @@
 #include "pkg_parse_reader.h"
 #include "pkg_cache.h"
 #include "installer.h"
-#include "version.h"
+#include "version_x.h"
 #include "miniz.h"
 
 #include <ctype.h>
@@ -1177,7 +1177,7 @@ static int http_send_request(http_conn_t *c, const http_url_t *u, const http_sou
                      "Accept-Encoding: identity\r\n"
                      "Connection: keep-alive\r\n"
                      "%s%s\r\n",
-                     method, u->path, host_hdr, PKGMGR_VERSION, range, auth);
+                     method, u->path, host_hdr, PKGMGR_X_VERSION, range, auth);
     if (n < 0 || (size_t)n >= sizeof(req)) return -1;
     return conn_write_all(c, req, (size_t)n);
 }

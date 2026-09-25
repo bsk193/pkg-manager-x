@@ -11,9 +11,9 @@ function getBuildInfo() {
     try {
       const vh = fs.readFileSync(path.resolve(__dirname, '../include/version.h'), 'utf8')
       const m = vh.match(/#define\s+PKGMGR_VERSION\s+"([^"]+)"/)
-      if (m) version = m[1]
+      if (m) version = `${m[1]}-x-dev` // PKG Manager X local build (see include/version_x.h)
     } catch (e) {}
-    if (!version) version = '0.0.0-dev'
+    if (!version) version = '0.0.0-x-dev'
   }
   let commit = process.env.VITE_APP_COMMIT || ''
   if (!commit) {
@@ -27,7 +27,7 @@ function getBuildInfo() {
     const pad = (n) => String(n).padStart(2, '0')
     return `${now.getUTCFullYear()}-${pad(now.getUTCMonth() + 1)}-${pad(now.getUTCDate())} ${pad(now.getUTCHours())}:${pad(now.getUTCMinutes())}:${pad(now.getUTCSeconds())} UTC`
   })()
-  const title = `PKG Manager v${version} (${commit}, ${date}) by PLK`
+  const title = `PKG Manager X v${version} (${commit}, ${date}) - based on PKG Manager by PLK`
   return { version, commit, date, title }
 }
 

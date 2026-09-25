@@ -10,7 +10,7 @@
 #include "stream_debug_log.h"
 #include "debug_log_retention.h"
 #include "installer.h"
-#include "version.h"
+#include "version_x.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -284,7 +284,7 @@ int stream_debug_log_open(const char *title_id, const char *content_id,
              "#   WS_SENDER   - Browser cumulative read wait and ACK latency; ACK timings overlap with window=2 and include transfer time\n"
              "#   CONN_CLOSE   - TCP connection closed\n"
              "#\n\n",
-             date_str, PKGMGR_VERSION, PKGMGR_BUILD_COMMIT, PKGMGR_BUILD_DATE,
+             date_str, PKGMGR_X_VERSION, PKGMGR_BUILD_COMMIT, PKGMGR_BUILD_DATE,
              tid, cid, kind,
              pkg_path ? pkg_path : "",
              (unsigned long long)total_size);

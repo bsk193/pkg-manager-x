@@ -69,6 +69,14 @@ GIT_DIRTY  := $(shell git diff --quiet 2>/dev/null || echo "-dirty")
 BUILD_COMMIT ?= $(GIT_COMMIT)$(GIT_DIRTY)
 BUILD_DATE   ?= $(shell date -u +"%Y-%m-%d_%H:%M:%S_UTC")
 
+# PKG Manager X version "<upstream>-x<N>" (see include/version_x.h and
+# tools/fork_version.sh). CI passes X_VERSION for releases; empty means the
+# "<upstream>-x-dev" default compiled into version_x.h.
+X_VERSION ?=
+ifneq ($(X_VERSION),)
+X_VERSION_CFLAGS := -DPKGMGR_X_VERSION=\"$(X_VERSION)\"
+endif
+
 FRONTEND_DIST := frontend/dist/index.html
 ASSET_HEADER  := include/assets_index_html.h
 MANIFEST_DIST := frontend/dist/cache.appcache
@@ -83,11 +91,11 @@ ICON0_PNG_DIST     := assets/icon0.png
 ICON0_PNG_HEADER   := include/assets_icon0_png.h
 ASSET_HEADERS      := $(ASSET_HEADER) $(MANIFEST_HEADER) $(FAVICON_SVG_HEADER) $(ICON_PNG_HEADER) $(PARAM_JSON_HEADER) $(ICON0_PNG_HEADER)
 
-CFLAGS := -Os -Wall -Wno-visibility $(PLATFORM_CFLAGS) $(TLS_CFLAGS) -D_BSD_SOURCE -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_WAL -DPKGMGR_BUILD_COMMIT=\"$(BUILD_COMMIT)\" -DPKGMGR_BUILD_DATE=\"$(BUILD_DATE)\" -ffunction-sections -fdata-sections $(INCLUDES)
+CFLAGS := -Os -Wall -Wno-visibility $(PLATFORM_CFLAGS) $(TLS_CFLAGS) $(X_VERSION_CFLAGS) -D_BSD_SOURCE -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_WAL -DPKGMGR_BUILD_COMMIT=\"$(BUILD_COMMIT)\" -DPKGMGR_BUILD_DATE=\"$(BUILD_DATE)\" -ffunction-sections -fdata-sections $(INCLUDES)
 LDFLAGS := -Wl,--gc-sections
 
 # Host test build (uses tests/mock_smb.c instead of real libsmb2; MHD not needed)
-TEST_CFLAGS := -g -O0 -Wall -Wextra -Iinclude -Ideps/libsmb2/include -Ideps/libsmb2/include/smb2 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_WAL -DPKGMGR_BUILD_COMMIT=\"$(BUILD_COMMIT)\" -DPKGMGR_BUILD_DATE=\"$(BUILD_DATE)\"
+TEST_CFLAGS := -g -O0 -Wall -Wextra -D_GNU_SOURCE -Iinclude -Ideps/libsmb2/include -Ideps/libsmb2/include/smb2 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_WAL -DPKGMGR_BUILD_COMMIT=\"$(BUILD_COMMIT)\" -DPKGMGR_BUILD_DATE=\"$(BUILD_DATE)\"
 TEST_SRCS := src/multipart.c src/pkg_parser.c src/pkg_scanner.c src/pkg_cache.c src/miniz.c src/smb_client.c src/smb_debug_log.c src/debug_log_retention.c src/installer.c src/stream_server.c src/stream_debug_log.c src/notification.c src/app_info.c src/icon_blurhash.c src/leftovers.c src/app_diag.c src/app_installer.c src/sqlite3.c tests/mock_smb.c tests/ps5_sim.c src/ws_upload.c src/ws_stream.c tests/ws_test_client.c \
              src/pkg_platform.c src/pkg_parse_reader.c src/http_source.c tests/http_test_server.c
 TESTS := test_pkg_parser test_pkg_scanner test_pkg_cache test_installer test_leftovers test_edge_cases test_multipart test_stream_sim test_ws_upload test_direct_install_e2e test_ws_stream test_ws_stream_far test_parse_mem \
@@ -98,7 +106,7 @@ all: $(ELF)
 .PHONY: frontend-build
 frontend-build:
 	@echo "Building frontend..."
-	@VERSION=$$(grep '#define PKGMGR_VERSION' include/version.h | awk '{print $$3}' | tr -d '"'); \
+	@VERSION="$(X_VERSION)"; [ -n "$$VERSION" ] || VERSION=$$(bash tools/fork_version.sh dev); \
 	COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo "unknown"); \
 	DATE=$$(date -u +"%Y-%m-%d %H:%M:%S UTC"); \
 	TITLE="PKG Manager X v$$VERSION ($$COMMIT, $$DATE) - based on PKG Manager by PLK"; \
