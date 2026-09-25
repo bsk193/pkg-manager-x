@@ -397,7 +397,8 @@ char *app_diag_generate_report(void) {
     diag_append(&b, "=================================================================\n");
     diag_append(&b, "            PKG MANAGER & SYSTEM APP INFO DIAGNOSTIC             \n");
     diag_append(&b, "=================================================================\n");
-    diag_append(&b, "Version: %s (%s, %s)\n", PKGMGR_X_VERSION, PKGMGR_BUILD_COMMIT, PKGMGR_BUILD_DATE);
+    diag_append(&b, "Version: %s (%s, %s)\n", PKGMGR_VERSION, PKGMGR_BUILD_COMMIT, PKGMGR_BUILD_DATE);
+    diag_append(&b, "PKG Manager X: %s (based on PKG Manager %s)\n", PKGMGR_X_VERSION, PKGMGR_UPSTREAM_VERSION);
     diag_append(&b, "Timestamp: %s\n", time_str);
     diag_append(&b, "Process: PID=%d, UID=%d, EUID=%d, GID=%d, EGID=%d\n",
                 getpid(), getuid(), geteuid(), getgid(), getegid());

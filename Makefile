@@ -69,10 +69,11 @@ GIT_DIRTY  := $(shell git diff --quiet 2>/dev/null || echo "-dirty")
 BUILD_COMMIT ?= $(GIT_COMMIT)$(GIT_DIRTY)
 BUILD_DATE   ?= $(shell date -u +"%Y-%m-%d_%H:%M:%S_UTC")
 
-# PKG Manager X version "<upstream>-x<N>" (see include/version_x.h and
-# tools/fork_version.sh). CI passes X_VERSION for releases; empty means the
-# "<upstream>-x-dev" default compiled into version_x.h.
-X_VERSION ?=
+# PKG Manager X version, our own semver (include/version_x.h). Releases pass
+# X_VERSION from the x-v<version> tag; otherwise `git describe` (e.g.
+# 1.1.0-3-gabc1234) or 0.0.0-dev. The "based on" version is upstream's
+# PKGMGR_VERSION from include/version.h.
+X_VERSION ?= $(shell bash tools/fork_version.sh dev 2>/dev/null)
 ifneq ($(X_VERSION),)
 X_VERSION_CFLAGS := -DPKGMGR_X_VERSION=\"$(X_VERSION)\"
 endif
@@ -106,12 +107,13 @@ all: $(ELF)
 .PHONY: frontend-build
 frontend-build:
 	@echo "Building frontend..."
-	@VERSION="$(X_VERSION)"; [ -n "$$VERSION" ] || VERSION=$$(bash tools/fork_version.sh dev); \
+	@VERSION="$(X_VERSION)"; [ -n "$$VERSION" ] || VERSION=0.0.0-dev; \
+	UPSTREAM=$$(bash tools/fork_version.sh upstream); \
 	COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo "unknown"); \
 	DATE=$$(date -u +"%Y-%m-%d %H:%M:%S UTC"); \
-	TITLE="PKG Manager X v$$VERSION ($$COMMIT, $$DATE) - based on PKG Manager by PLK"; \
+	TITLE="PKG Manager X v$$VERSION ($$COMMIT, $$DATE) - based on PKG Manager v$$UPSTREAM by PLK"; \
 	echo "Updating title in index.html to: $$TITLE"; \
-	(cd frontend && npm ci && VITE_APP_VERSION="$$VERSION" VITE_APP_COMMIT="$$COMMIT" VITE_APP_BUILD_DATE="$$DATE" npm run build); \
+	(cd frontend && npm ci && VITE_APP_VERSION="$$VERSION" VITE_APP_UPSTREAM_VERSION="$$UPSTREAM" VITE_APP_COMMIT="$$COMMIT" VITE_APP_BUILD_DATE="$$DATE" npm run build); \
 	TMP=$$(mktemp "$${TMPDIR:-/tmp}/pkgmgr.XXXXXX"); \
 	sed -e "s|\[\[TITLE_PLACEHOLDER\]\]|$$TITLE|g" -e "s|<title>.*</title>|<title>$$TITLE</title>|g" frontend/dist/index.html > $$TMP; \
 	mv $$TMP frontend/dist/index.html; \

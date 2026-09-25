@@ -6,14 +6,21 @@ import path from 'path'
 import { execSync } from 'child_process'
 
 function getBuildInfo() {
-  let version = process.env.VITE_APP_VERSION || ''
-  if (!version) {
+  // PKG Manager X: own version (x-v<version> tags) + upstream "based on" version.
+  let upstream = process.env.VITE_APP_UPSTREAM_VERSION || ''
+  if (!upstream) {
     try {
       const vh = fs.readFileSync(path.resolve(__dirname, '../include/version.h'), 'utf8')
       const m = vh.match(/#define\s+PKGMGR_VERSION\s+"([^"]+)"/)
-      if (m) version = `${m[1]}-x-dev` // PKG Manager X local build (see include/version_x.h)
+      if (m) upstream = m[1]
     } catch (e) {}
-    if (!version) version = '0.0.0-x-dev'
+  }
+  let version = process.env.VITE_APP_VERSION || ''
+  if (!version) {
+    try {
+      version = execSync('git describe --tags --match "x-v*"', { encoding: 'utf8' }).trim().replace(/^x-v/, '')
+    } catch (e) {}
+    if (!version) version = '0.0.0-dev'
   }
   let commit = process.env.VITE_APP_COMMIT || ''
   if (!commit) {
@@ -27,8 +34,8 @@ function getBuildInfo() {
     const pad = (n) => String(n).padStart(2, '0')
     return `${now.getUTCFullYear()}-${pad(now.getUTCMonth() + 1)}-${pad(now.getUTCDate())} ${pad(now.getUTCHours())}:${pad(now.getUTCMinutes())}:${pad(now.getUTCSeconds())} UTC`
   })()
-  const title = `PKG Manager X v${version} (${commit}, ${date}) - based on PKG Manager by PLK`
-  return { version, commit, date, title }
+  const title = `PKG Manager X v${version} (${commit}, ${date}) - based on PKG Manager v${upstream} by PLK`
+  return { version, upstream, commit, date, title }
 }
 
 const buildInfo = getBuildInfo()
@@ -50,6 +57,7 @@ export default defineConfig({
   plugins: [react(), viteSingleFile(), titlePlugin(buildInfo.title)],
   define: {
     __APP_VERSION__: JSON.stringify(buildInfo.version),
+    __APP_UPSTREAM_VERSION__: JSON.stringify(buildInfo.upstream),
     __APP_COMMIT__: JSON.stringify(buildInfo.commit),
     __APP_BUILD_DATE__: JSON.stringify(buildInfo.date),
   },

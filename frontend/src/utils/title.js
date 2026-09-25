@@ -1,36 +1,45 @@
-import { BUILD_VERSION, BUILD_COMMIT, BUILD_DATE } from '../constants/config';
+import { BUILD_VERSION, BUILD_COMMIT, BUILD_DATE, UPSTREAM_VERSION } from '../constants/config';
+
+// "PKG Manager X v1.1.0 (abc1234, date) - based on PKG Manager v1.2.4 by PLK".
+// The (commit, date) group must stay the first parenthesized "a, b" pair: it
+// is parsed back from document.title below.
+const BASED_ON = UPSTREAM_VERSION ? ` - based on PKG Manager v${UPSTREAM_VERSION} by PLK` : ' - based on PKG Manager by PLK';
 
 export function getBrowserTitle(ver) {
   const raw = ver || BUILD_VERSION;
   const v = String(raw).trim().replace(/^v+/i, '') || BUILD_VERSION;
   if (BUILD_COMMIT && BUILD_DATE) {
-    return `PKG Manager v${v} (${BUILD_COMMIT}, ${BUILD_DATE}) by PLK`;
+    return `PKG Manager X v${v} (${BUILD_COMMIT}, ${BUILD_DATE})${BASED_ON}`;
   }
   if (typeof document !== 'undefined' && document.title) {
-    const match = document.title.match(/\(([^,]+),\s*([^)]+)\)/);
+    const match = document.title.match(/\(([^,()]+),\s*([^)]+)\)/);
     if (match) {
-      return `PKG Manager v${v} (${match[1]}, ${match[2]}) by PLK`;
+      return `PKG Manager X v${v} (${match[1]}, ${match[2]})${BASED_ON}`;
     }
   }
-  return `PKG Manager v${v} by PLK`;
+  return `PKG Manager X v${v}${BASED_ON}`;
 }
 
 export function getFullVersion(ver) {
   const raw = ver || BUILD_VERSION;
   const v = String(raw).trim().replace(/^v+/i, '') || BUILD_VERSION;
   if (BUILD_COMMIT && BUILD_DATE) {
-    return `PKG Manager v${v} (${BUILD_COMMIT}, ${BUILD_DATE})`;
+    return `PKG Manager X v${v} (${BUILD_COMMIT}, ${BUILD_DATE})`;
   }
   if (typeof document !== 'undefined' && document.title) {
-    const match = document.title.match(/\(([^,]+),\s*([^)]+)\)/);
+    const match = document.title.match(/\(([^,()]+),\s*([^)]+)\)/);
     if (match) {
-      return `PKG Manager v${v} (${match[1]}, ${match[2]})`;
+      return `PKG Manager X v${v} (${match[1]}, ${match[2]})`;
     }
   }
   if (BUILD_COMMIT) {
-    return `PKG Manager v${v} (${BUILD_COMMIT})`;
+    return `PKG Manager X v${v} (${BUILD_COMMIT})`;
   }
-  return `PKG Manager v${v}`;
+  return `PKG Manager X v${v}`;
+}
+
+export function getUpstreamVersionLabel() {
+  return UPSTREAM_VERSION ? `based on PKG Manager v${UPSTREAM_VERSION} by PLK` : 'based on PKG Manager by PLK';
 }
 
 export function getLocalizedTitle(pkg) {

@@ -1,9 +1,9 @@
 #!/bin/bash
 # PKG Manager X - Versioned Build Script
 # Builds the frontend once, then one ELF per console inside its SDK image.
-#   ./build_release.sh                      PS5 + PS4, version <upstream>-x-dev
-#   ./build_release.sh ps5                  PS5 only
-#   X_VERSION=1.2.4-x3 ./build_release.sh   release version (CI uses tools/fork_version.sh)
+#   ./build_release.sh                    PS5 + PS4, version from `git describe` (x-v* tags)
+#   ./build_release.sh ps5                PS5 only
+#   X_VERSION=1.1.0 ./build_release.sh    explicit version (CI takes it from the x-v1.1.0 tag)
 # Output: pkg-manager-x_v<version>[-<hash>]_<ps5|ps4>.elf
 # WORKDIR is /src (see Dockerfile.sdk*); mount with -v "$(pwd)":/src -w /src.
 set -euo pipefail
@@ -25,7 +25,8 @@ else
 fi
 export X_VERSION="$VERSION"
 
-echo "--- Building PKG Manager X v$VERSION ($TARGETS) ---"
+UPSTREAM=$(bash tools/fork_version.sh upstream)
+echo "--- Building PKG Manager X v$VERSION, based on PKG Manager v$UPSTREAM ($TARGETS) ---"
 
 # 1. Build React Frontend (on Host)
 echo "[1/3] Building React Frontend..."

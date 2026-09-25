@@ -5,7 +5,8 @@
  * PKG Manager X - REST routes added by the fork (kept out of http_server.c
  * so upstream merges stay small):
  *
- *   GET  /api/platform       console, installable platforms, capabilities
+ *   GET  /api/platform       console, installable platforms, capabilities,
+ *                            version + upstream_version ("based on")
  *   GET  /api/http/sources   configured HTTP sources (passwords masked)
  *   POST /api/http/sources   replace list: {"sources":[...]}; a blank password
  *                            keeps the stored one for the same id

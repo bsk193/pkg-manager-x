@@ -11,7 +11,7 @@ on:
   workflow_call:
     inputs:
       version:
-        description: 'Version compiled into the payloads (e.g. 1.2.4-x3). Empty = dev build.'
+        description: 'Version compiled into the payloads (e.g. 1.1.0 or 1.1.1-beta.1). Empty = dev build.'
         type: string
         required: false
         default: ''
@@ -28,6 +28,8 @@ jobs:
       artifact_suffix: ${{ steps.v.outputs.suffix }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # tags for `git describe` (dev version)
       - id: v
         run: |
           if [ -n "${{ inputs.version }}" ]; then

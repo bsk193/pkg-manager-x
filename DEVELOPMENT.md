@@ -58,31 +58,44 @@ net/timing modules, entropy and zeroize hooks provided by `src/http_source.c`).
 Use `make HTTPS=0` for a plain-HTTP build without mbedTLS.
 
 ### Versioning (PKG Manager X)
-Versions are `<upstream>-x<N>`, e.g. `1.2.4-x3`:
+PKG Manager X has **its own semantic version** (`1.0.0`, `1.1.0`, `1.1.1-beta.1`, ...),
+independent from upstream's. Every build also records the upstream release it is
+**based on**:
 
-- `<upstream>` is `PKGMGR_VERSION` from `include/version.h`, which is **never
-  edited in this fork**, so upstream version bumps merge without conflicts.
-- `x<N>` counts fork releases on top of that upstream version. It restarts at
-  `x1` after merging a new upstream release (`1.2.4-x3` → merge 1.2.5 → `1.2.5-x1`).
-- Fork versions can never collide with upstream's (`1.2.5` vs `1.2.5-x1`),
-  and it is always visible which upstream release a build is based on.
-- Local/dev builds report `<upstream>-x-dev`. `include/version_x.h` holds the
-  fallback; CI passes the release version with `make X_VERSION=...`.
-- `tools/fork_version.sh [next|current|dev|upstream]` computes versions from
-  the `v*-x*` git tags.
+- `include/version.h` (`PKGMGR_VERSION`) stays upstream's and is **never edited in
+  this fork**, so upstream version bumps merge without conflicts and the "based on"
+  version follows automatically.
+- `include/version_x.h` defines `PKGMGR_X_VERSION` (ours) and
+  `PKGMGR_UPSTREAM_VERSION`. CI compiles the release version in with
+  `make X_VERSION=...`; local builds use `git describe` (e.g. `1.1.0-3-gabc1234`)
+  or `0.0.0-dev`.
+- Shown as "PKG Manager X 1.1.0 - based on PKG Manager v1.2.4 by PLK" in the page
+  title, footer, logs, diagnostics, `/api/platform` (`version`, `upstream_version`)
+  and the release notes. `/api/version` returns our version.
+- Our git tags are prefixed, `x-v1.1.0`, so they never clash with upstream's
+  `v1.2.4` tags that forks carry.
 
 ### CI and Releases (GitHub Actions)
-- **Build** (`.github/workflows/build.yml`): every push and pull request runs
-  `make test`, builds the frontend, and builds both payloads in their SDK
-  images (cached between runs). The ELFs are attached to the run as artifacts
-  (`payload-ps5`, `payload-ps4`).
-- **Release** (`.github/workflows/release.yml`): *Actions → Release → Run
-  workflow*. It computes the next `<upstream>-x<N>`, builds both consoles,
-  tags `v<version>` and publishes `pkg-manager-x_v<version>_ps5.elf` and
-  `pkg-manager-x_v<version>_ps4.elf`. Optional inputs: explicit version,
-  pre-release flag.
-- Move the `## Unreleased` notes in `CHANGELOG.md` under the new version when releasing.
+- **Build** (`.github/workflows/build.yml`): every branch push and pull request runs
+  `make test`, builds the frontend, and builds both payloads in their SDK images
+  (cached between runs). The ELFs are attached to the run as artifacts.
+- **Release** (`.github/workflows/release.yml`) runs on tag push:
 
+  | Tag | Result |
+  |-----|--------|
+  | `x-v1.1.0` | Release, marked **Latest** |
+  | `x-v1.1.1-beta.1` / `-rc.1` / `-alpha.1` | **Pre-release**, never marked Latest |
+
+  ```bash
+  git tag x-v1.1.0 && git push origin x-v1.1.0
+  ```
+  Tags must match `x-vMAJOR.MINOR.PATCH` with an optional `-(alpha|beta|rc).N`
+  (write `beta.1`, not `beta1`, so `beta.10` sorts after `beta.9`); anything else
+  fails before building. Backup: *Actions → Release → Run workflow* with a version
+  creates the tag on the selected branch.
+- Each release publishes `pkg-manager-x_v<version>_ps5.elf` and `..._ps4.elf` with
+  notes linking the upstream release it is based on.
+- Move the `## Unreleased` notes in `CHANGELOG.md` under the new version when releasing.
 ### Keeping Up With Upstream
 ```bash
 git remote add upstream https://github.com/itsPLK/ps5-pkg-manager.git   # once

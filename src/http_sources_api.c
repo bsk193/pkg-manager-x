@@ -7,6 +7,7 @@
 #include "pkg_platform.h"
 #include "installer.h"
 #include "platform.h"
+#include "version_x.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,13 +55,15 @@ static void inherit_password(http_source_config_t *c, const http_source_config_t
 static char *platform_json(void) {
     const char *console = pkg_platform_console();
     int is_ps4 = strcmp(console, "ps4") == 0;
-    char *json = (char *)malloc(256);
+    char *json = (char *)malloc(512);
     if (!json) return NULL;
-    snprintf(json, 256,
-             "{\"console\":\"%s\",\"can_install\":%s,\"https_supported\":%s,\"shortcut_supported\":%s}",
+    snprintf(json, 512,
+             "{\"console\":\"%s\",\"can_install\":%s,\"https_supported\":%s,\"shortcut_supported\":%s,"
+             "\"version\":\"%s\",\"upstream_version\":\"%s\"}",
              console, is_ps4 ? "[\"ps4\"]" : "[\"ps4\",\"ps5\"]",
              http_source_is_https_supported() ? "true" : "false",
-             is_ps4 ? "false" : "true");
+             is_ps4 ? "false" : "true",
+             PKGMGR_X_VERSION, PKGMGR_UPSTREAM_VERSION);
     return json;
 }
 

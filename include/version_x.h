@@ -2,20 +2,26 @@
 #define VERSION_X_H
 
 /*
- * PKG Manager X version: "<upstream version>-x<N>", e.g. "1.2.4-x3".
+ * PKG Manager X versions.
  *
- *   - version.h (PKGMGR_VERSION) stays upstream's and is never edited here,
- *     so merging upstream releases never conflicts on the version line.
- *   - N counts fork releases on top of that upstream version and restarts
- *     at 1 when upstream bumps (1.2.4-x3 -> merge 1.2.5 -> 1.2.5-x1).
- *   - Release builds get the exact string from CI (tools/fork_version.sh,
- *     Makefile X_VERSION=...); local builds report "<upstream>-x-dev".
+ *   PKGMGR_X_VERSION         our own semver: "1.1.0", "1.1.1-beta.1"
+ *   PKGMGR_UPSTREAM_VERSION  the PKG Manager release this fork is based on
+ *
+ * version.h (PKGMGR_VERSION) stays upstream's and is never edited here, so
+ * merging upstream releases never conflicts on the version line; the
+ * "based on" version follows the merge automatically.
+ *
+ * Releases are cut by pushing a tag "x-v<version>" (see
+ * .github/workflows/release.yml); CI compiles the version in with
+ * `make X_VERSION=...`. Local builds use `git describe` or "0.0.0-dev".
  */
 
 #include "version.h"
 
 #ifndef PKGMGR_X_VERSION
-#define PKGMGR_X_VERSION PKGMGR_VERSION "-x-dev"
+#define PKGMGR_X_VERSION "0.0.0-dev"
 #endif
+
+#define PKGMGR_UPSTREAM_VERSION PKGMGR_VERSION
 
 #endif /* VERSION_X_H */

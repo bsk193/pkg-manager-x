@@ -131,7 +131,10 @@ static void handle_sigcont(int sig) {
     g_resumed = 1;
 }
 
-__attribute__((used)) volatile const char pkgmgr_version_sig[] = "PKGMGR_VER:" PKGMGR_X_VERSION;
+/* Upstream's marker keeps the upstream version it has always carried (external
+ * tools may read it); the fork version has its own marker. */
+__attribute__((used)) volatile const char pkgmgr_version_sig[] = "PKGMGR_VER:" PKGMGR_UPSTREAM_VERSION;
+__attribute__((used)) volatile const char pkgmgrx_version_sig[] = "PKGMGRX_VER:" PKGMGR_X_VERSION;
 
 int main(int argc, char **argv) {
     (void)argc;
@@ -157,8 +160,8 @@ int main(int argc, char **argv) {
     (void)write(STDOUT_FILENO, process_check_done, sizeof(process_check_done) - 1);
 #endif
 
-    printf("[PKG Manager] Starting PKG Manager X v%s for %s (%s, %s)...\n",
-           PKGMGR_X_VERSION, PKGMGR_CONSOLE_NAME, PKGMGR_BUILD_COMMIT, PKGMGR_BUILD_DATE);
+    printf("[PKG Manager] Starting PKG Manager X v%s (based on PKG Manager v%s) for %s (%s, %s)...\n",
+           PKGMGR_X_VERSION, PKGMGR_UPSTREAM_VERSION, PKGMGR_CONSOLE_NAME, PKGMGR_BUILD_COMMIT, PKGMGR_BUILD_DATE);
 
     signal(SIGINT, handle_signal);
     signal(SIGTERM, SIG_IGN);
@@ -186,7 +189,7 @@ int main(int argc, char **argv) {
 #endif
     static const char services_done[] = "[PKG Manager] service initialization complete\n";
     (void)write(STDOUT_FILENO, services_done, sizeof(services_done) - 1);
-    ps5_notify("PKG Manager v%s starting...", PKGMGR_X_VERSION);
+    ps5_notify("PKG Manager X v%s starting...", PKGMGR_X_VERSION);
 
     int port = DEFAULT_HTTP_PORT;
     char server_url[128];
@@ -198,8 +201,8 @@ int main(int argc, char **argv) {
         ps5_notify("PKG Manager: installer initialization failed");
         return 1;
     }
-    install_log("[PKG Manager] Starting PKG Manager v%s (%s, %s)...",
-                PKGMGR_X_VERSION, PKGMGR_BUILD_COMMIT, PKGMGR_BUILD_DATE);
+    install_log("[PKG Manager] Starting PKG Manager X v%s (based on PKG Manager v%s) (%s, %s)...",
+                PKGMGR_X_VERSION, PKGMGR_UPSTREAM_VERSION, PKGMGR_BUILD_COMMIT, PKGMGR_BUILD_DATE);
 
     printf("[PKG Manager] Initializing package scanner (%s & %s)...\n", PKG_DEFAULT_DIR, PKG_DISC_DIR);
     pkg_scanner_init();
@@ -234,10 +237,10 @@ int main(int argc, char **argv) {
     }
 
     if (strcmp(current_ip, "unknown") != 0) {
-        ps5_notify("PKG Manager v%s\nFound %d package(s)\nhttp://%s:%d",
+        ps5_notify("PKG Manager X v%s\nFound %d package(s)\nhttp://%s:%d",
                    PKGMGR_X_VERSION, found_count, current_ip, port);
     } else {
-        ps5_notify("PKG Manager v%s\nFound %d package(s)\nPort: %d",
+        ps5_notify("PKG Manager X v%s\nFound %d package(s)\nPort: %d",
                    PKGMGR_X_VERSION, found_count, port);
     }
 

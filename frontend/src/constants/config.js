@@ -1,6 +1,10 @@
 export const BUILD_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.1.0';
 export const BUILD_COMMIT = typeof __APP_COMMIT__ !== 'undefined' ? __APP_COMMIT__ : '';
 export const BUILD_DATE = typeof __APP_BUILD_DATE__ !== 'undefined' ? __APP_BUILD_DATE__ : '';
+// PKG Manager X: the upstream PKG Manager release this build is based on.
+export const UPSTREAM_VERSION = typeof __APP_UPSTREAM_VERSION__ !== 'undefined' ? __APP_UPSTREAM_VERSION__ : '';
+export const FORK_REPO_URL = 'https://github.com/bsk193/pkg-manager-x';
+export const UPSTREAM_REPO_URL = 'https://github.com/itsPLK/ps5-pkg-manager';
 
 export const DONATE_URL = 'https://github.com/itsPLK/ps5-pkg-manager/blob/main/DONATE.md';
 export const isPlayStation = typeof navigator !== 'undefined' && /PlayStation/i.test(navigator.userAgent);

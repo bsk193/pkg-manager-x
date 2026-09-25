@@ -1,19 +1,20 @@
 name: Release
 
-# Manual release: Actions -> Release -> Run workflow (pick the branch, usually main).
-# Version = <upstream PKGMGR_VERSION>-x<N>, N = next free fork revision for that
-# upstream version (tools/fork_version.sh). Tag: v<version>, e.g. v1.2.4-x3.
+# Releases are cut from tags:
+#   git tag x-v1.1.0         && git push origin x-v1.1.0         -> release (marked Latest)
+#   git tag x-v1.1.1-beta.1  && git push origin x-v1.1.1-beta.1  -> pre-release (alpha/beta/rc)
+# Or: Actions -> Release -> Run workflow, enter the version; the tag is created
+# on the selected branch's commit.
+# The version is our own semver; the notes say which upstream PKG Manager
+# release it is based on (PKGMGR_VERSION in include/version.h at that commit).
 on:
+  push:
+    tags: ['x-v*']
   workflow_dispatch:
     inputs:
       version:
-        description: 'Override version (leave empty for the next <upstream>-x<N>)'
-        required: false
-        default: ''
-      prerelease:
-        description: 'Mark as pre-release (e.g. PS4 builds still untested)'
-        type: boolean
-        default: false
+        description: 'Version to release, e.g. 1.1.0 or 1.1.1-beta.1 (creates tag x-v<version>)'
+        required: true
 
 permissions:
   contents: write
@@ -23,6 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
       upstream: ${{ steps.v.outputs.upstream }}
     steps:
       - uses: actions/checkout@v4
@@ -31,20 +34,33 @@ jobs:
       - id: v
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          UP=$(bash tools/fork_version.sh upstream)
-          VER="${{ inputs.version }}"
-          [ -n "$VER" ] || VER=$(bash tools/fork_version.sh next)
-          case "$VER" in
-            "$UP"-x[0-9]*) ;;
-            *) echo "::error::Version '$VER' must look like ${UP}-x<N>"; exit 1 ;;
-          esac
-          if git rev-parse -q --verify "refs/tags/v$VER" >/dev/null || gh release view "v$VER" >/dev/null 2>&1; then
-            echo "::error::Release v$VER already exists"; exit 1
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            TAG="$GITHUB_REF_NAME"
+          else
+            TAG="x-v${INPUT_VERSION#v}"
+            if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+              echo "::error::Tag $TAG already exists"; exit 1
+            fi
           fi
-          echo "Releasing v$VER (upstream $UP)"
-          echo "version=$VER" >> "$GITHUB_OUTPUT"
-          echo "upstream=$UP" >> "$GITHUB_OUTPUT"
+          if ! OUT=$(bash tools/fork_version.sh parse "$TAG"); then
+            echo "::error::Invalid release tag '$TAG'. Use x-v1.2.3 (release) or x-v1.2.3-beta.1 (pre-release: alpha/beta/rc)"
+            exit 1
+          fi
+          VER="${OUT% *}"
+          KIND="${OUT#* }"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists"; exit 1
+          fi
+          UP=$(bash tools/fork_version.sh upstream)
+          echo "Releasing PKG Manager X $VER ($KIND), based on PKG Manager $UP"
+          {
+            echo "version=$VER"
+            echo "tag=$TAG"
+            echo "prerelease=$([ "$KIND" = prerelease ] && echo true || echo false)"
+            echo "upstream=$UP"
+          } >> "$GITHUB_OUTPUT"
 
   build:
     needs: version
@@ -67,23 +83,37 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VER: ${{ needs.version.outputs.version }}
+          TAG: ${{ needs.version.outputs.tag }}
+          UP: ${{ needs.version.outputs.upstream }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
         run: |
-          VER="${{ needs.version.outputs.version }}"
-          UP="${{ needs.version.outputs.upstream }}"
-          PREV=$(git tag -l 'v*-x*' --sort=-v:refname | head -1)
+          # Previous release tag for the compare link (pre-releases sort before their release).
+          PREV=$(git -c versionsort.suffix=- tag -l 'x-v*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)
           {
-            echo "PKG Manager X **v$VER**, based on [PKG Manager v$UP](https://github.com/itsPLK/ps5-pkg-manager/releases/tag/v$UP) by PLK."
+            echo "**PKG Manager X $VER**, based on [PKG Manager v$UP](https://github.com/itsPLK/ps5-pkg-manager/releases/tag/v$UP) by PLK."
             echo
+            if [ "$PRERELEASE" = "true" ]; then
+              echo "> Pre-release for testing. The latest stable release is unchanged."
+              echo
+            fi
             echo "| File | Console | Loader |"
             echo "|------|---------|--------|"
             echo "| \`pkg-manager-x_v${VER}_ps5.elf\` | PS5 | Payload Manager / elfldr (9021) |"
-            echo "| \`pkg-manager-x_v${VER}_ps4.elf\` | PS4 (experimental, see docs/PS4.md) | GoldHEN payload loader (9090) |"
+            echo "| \`pkg-manager-x_v${VER}_ps4.elf\` | PS4, experimental (see docs/PS4.md) | GoldHEN payload loader (9090) |"
             echo
-            [ -n "$PREV" ] && echo "Full changelog: https://github.com/${{ github.repository }}/compare/$PREV...v$VER"
+            if [ -n "$PREV" ]; then
+              echo "Changes: https://github.com/${{ github.repository }}/compare/$PREV...$TAG"
+            fi
           } > notes.md
           ls -l dist
-          gh release create "v$VER" dist/*.elf \
-            --target "${{ github.sha }}" \
-            --title "PKG Manager X v$VER" \
+          if [ "$PRERELEASE" = "true" ]; then
+            FLAGS="--prerelease --latest=false"
+          else
+            FLAGS="--latest"
+          fi
+          gh release create "$TAG" dist/*.elf \
+            --target "$GITHUB_SHA" \
+            --title "PKG Manager X $VER" \
             --notes-file notes.md \
-            ${{ inputs.prerelease && '--prerelease --latest=false' || '--latest' }}
+            $FLAGS

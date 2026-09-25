@@ -36,7 +36,7 @@
 
 ## Installation
 
-Download the latest versioned ELF for your console (for example, `pkg-manager-x_v1.2.4-x1_ps5.elf` or `..._ps4.elf`) from the [Releases](https://github.com/bsk193/pkg-manager-x/releases) page. Versions are `<upstream version>-x<N>` (see [DEVELOPMENT.md](DEVELOPMENT.md#versioning-pkg-manager-x)).
+Download the latest versioned ELF for your console (for example, `pkg-manager-x_v1.0.0_ps5.elf` or `..._ps4.elf`) from the [Releases](https://github.com/bsk193/pkg-manager-x/releases) page. PKG Manager X has its own version numbers; each release says which PKG Manager version it is based on (see [DEVELOPMENT.md](DEVELOPMENT.md#versioning-pkg-manager-x)).
 
 - **Payload Manager (Recommended)**: Use [Payload Manager](https://github.com/itsPLK/ps5-payload-manager) to launch the downloaded ELF automatically.
 - **Manual ELF Loading**: You can load the downloaded ELF like any other standard ELF payload.
