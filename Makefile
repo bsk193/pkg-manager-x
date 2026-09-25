@@ -26,6 +26,12 @@ SRCS := src/main.c src/pkg_parser.c src/pkg_scanner.c src/pkg_cache.c src/smb_cl
         src/app_installer.c
 # Direct-install WebSocket upload modules.
 SRCS_WS := src/ws_upload.c src/ws_stream.c
+SRCS_INSTALL_SERVICE := src/install_service.c src/install_ipc.c \
+                        src/install_process.c src/install_helper_blob.S
+INSTALL_HELPER := build/install-helper.elf
+INSTALL_HELPER_SMOKE := build/install-helper-smoke.elf
+INSTALL_HELPER_SMOKE_NET := build/install-helper-smoke-net.elf
+INSTALL_HELPER_SMOKE_APPINST := build/install-helper-smoke-appinst.elf
 OBJS := $(SRCS:.c=.o)
 ELF  := pkgmgr.elf
 
@@ -54,7 +60,7 @@ LDFLAGS := -Wl,--gc-sections
 # Host test build (uses tests/mock_smb.c instead of real libsmb2; MHD not needed)
 TEST_CFLAGS := -g -O0 -Wall -Wextra -Iinclude -Ideps/libsmb2/include -Ideps/libsmb2/include/smb2 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_WAL -DPKGMGR_BUILD_COMMIT=\"$(BUILD_COMMIT)\" -DPKGMGR_BUILD_DATE=\"$(BUILD_DATE)\"
 TEST_SRCS := src/multipart.c src/pkg_parser.c src/pkg_scanner.c src/pkg_cache.c src/miniz.c src/smb_client.c src/smb_debug_log.c src/debug_log_retention.c src/installer.c src/stream_server.c src/stream_debug_log.c src/notification.c src/app_info.c src/icon_blurhash.c src/leftovers.c src/app_diag.c src/app_installer.c src/sqlite3.c tests/mock_smb.c tests/ps5_sim.c src/ws_upload.c src/ws_stream.c tests/ws_test_client.c
-TESTS := test_pkg_parser test_pkg_scanner test_pkg_cache test_installer test_leftovers test_edge_cases test_multipart test_stream_sim test_ws_upload test_direct_install_e2e test_ws_stream test_ws_stream_far test_parse_mem
+TESTS := test_smb_scan test_pkg_parser test_pkg_scanner test_pkg_cache test_installer test_leftovers test_edge_cases test_multipart test_stream_sim test_ws_upload test_direct_install_e2e test_ws_stream test_ws_stream_far test_parse_mem
 
 all: $(ELF)
 
@@ -114,17 +120,50 @@ deps/libsmb2/build/lib/libsmb2.a:
 	/opt/ps5-payload-sdk/bin/prospero-cmake .. -DBUILD_SHARED_LIBS=OFF && \
 	$(MAKE) -j$$(nproc)
 
-$(ELF): $(ASSET_HEADERS) $(LIBSMB2) $(SRCS) $(SRCS_WS)
+$(INSTALL_HELPER): Makefile src/install_helper.c src/install_ipc.c include/install_ipc.h include/install_service.h include/install_appinst.h include/version.h
+	mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ src/install_helper.c src/install_ipc.c -lpthread \
+		-lSceNetCtl -lSceUserService -lSceSystemService -lSceAppInstUtil -lSceNet
+	$(STRIP) $@
+
+$(INSTALL_HELPER_SMOKE): Makefile src/install_helper_smoke.c
+	mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ src/install_helper_smoke.c -lpthread
+	$(STRIP) $@
+
+$(INSTALL_HELPER_SMOKE_NET): Makefile src/install_helper_smoke.c
+	mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DINSTALL_HELPER_SMOKE_NET -o $@ src/install_helper_smoke.c -lpthread -lSceNet
+	$(STRIP) $@
+
+$(INSTALL_HELPER_SMOKE_APPINST): Makefile src/install_helper_smoke.c
+	mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DINSTALL_HELPER_SMOKE_APPINST -o $@ src/install_helper_smoke.c -lpthread -lSceAppInstUtil
+	$(STRIP) $@
+
+.PHONY: install-helper-smoke install-helper-smoke-net install-helper-smoke-appinst
+install-helper-smoke: $(INSTALL_HELPER_SMOKE)
+install-helper-smoke-net: $(INSTALL_HELPER_SMOKE_NET)
+install-helper-smoke-appinst: $(INSTALL_HELPER_SMOKE_APPINST)
+
+$(ELF): $(ASSET_HEADERS) $(LIBSMB2) $(SRCS) $(SRCS_WS) $(SRCS_INSTALL_SERVICE) $(INSTALL_HELPER) $(wildcard include/*.h)
 	@echo "Building $(ELF)..."
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $(ELF) $(SRCS) $(SRCS_WS) $(LIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $(ELF) $(SRCS) $(SRCS_WS) $(SRCS_INSTALL_SERVICE) $(LIBS)
 	@echo "Stripping $(ELF)..."
 	$(STRIP) $(ELF)
 
 clean:
-	rm -f $(ELF) pkgmgr_v*.elf pkg-manager_v*.elf $(ASSET_HEADERS) src/*.o $(addprefix tests/,$(TESTS))
+	rm -f $(ELF) $(INSTALL_HELPER) $(INSTALL_HELPER_SMOKE) $(INSTALL_HELPER_SMOKE_NET) $(INSTALL_HELPER_SMOKE_APPINST) pkgmgr_v*.elf pkg-manager_v*.elf $(ASSET_HEADERS) src/*.o $(addprefix tests/,$(TESTS))
 	rm -rf $(addprefix tests/,$(addsuffix .dSYM,$(TESTS)))
 
-test: $(PARAM_JSON_HEADER) $(ICON0_PNG_HEADER)
+test-install-service:
+	mkdir -p build
+	cc $(TEST_CFLAGS) -DINSTALL_HELPER_TEST -o build/test_install_service tests/test_install_service.c src/install_service.c src/install_ipc.c src/install_helper.c -lpthread
+	./build/test_install_service
+	cc $(TEST_CFLAGS) -o build/test_install_process tests/test_install_process.c tests/install_helper_fixture.S src/install_process.c src/install_ipc.c -lpthread
+	./build/test_install_process
+
+test: $(PARAM_JSON_HEADER) $(ICON0_PNG_HEADER) test-install-service
 	@for t in $(TESTS); do \
 		echo "=== CC tests/$$t ==="; \
 		cc $(TEST_CFLAGS) -o tests/$$t tests/$$t.c $(TEST_SRCS) -lpthread -lm -ldl || exit 1; \
@@ -139,6 +178,6 @@ test: $(PARAM_JSON_HEADER) $(ICON0_PNG_HEADER)
 dist-clean: clean
 	rm -rf frontend/dist frontend/node_modules
 
-.PHONY: all clean test frontend-build dist-clean mock
+.PHONY: all clean test test-install-service frontend-build dist-clean mock
 mock:
 	node frontend/mock-server.js

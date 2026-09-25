@@ -24,10 +24,13 @@
 
 ## Installation
 
-Download the latest versioned ELF (for example, `pkg-manager_v1.2.4.elf`) from the [Releases](https://github.com/itsPLK/ps5-pkg-manager/releases) page.
+### Recommended: Payload Manager
 
-- **Payload Manager (Recommended)**: Use [Payload Manager](https://github.com/itsPLK/ps5-payload-manager) to launch the downloaded ELF automatically.
-- **Manual ELF Loading**: You can load the downloaded ELF like any other standard ELF payload.
+Download and launch PKG Manager from the default repository in [Payload Manager](https://github.com/itsPLK/ps5-payload-manager).
+
+### Manual ELF Loading
+
+Alternatively, download the ELF from [Releases](https://github.com/itsPLK/ps5-pkg-manager/releases) and load it with elfldr.
 
 ## Usage
 
@@ -43,6 +46,17 @@ When using a USB drive or optical disc, packages are detected in:
 
 ### Network Shares (Samba / SMB)
 You can configure SMB network shares in the app's **Settings** tab to browse and install packages stored on your PC or NAS.
+
+For large shares, enable **Browse only** when adding or editing a share to skip
+full and background catalog scans. Open the share from the storage screen or
+choose **Browse files** in Samba settings, navigate folders, select a PKG, and
+choose **Install selected PKG**. Folder listings have 64 entries per page;
+metadata is read only for the selected file. The scanned catalog shows 60 titles
+per page.
+
+Full rescans run in the background. Retrying or reopening the interface attaches
+to an active scan without queuing another pass. Network shares are not rescanned
+by the frontend's 15-second polling timer; use **Rescan** to refresh their catalog.
 
 ### Direct Install
 From another device on the same network, open the PKG Manager interface and choose **Direct Install**. Select or drop a local `.pkg` file to install it directly on the console.

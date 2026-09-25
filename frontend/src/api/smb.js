@@ -37,9 +37,18 @@ export async function browseSmb(config) {
       password: config.password || '',
       workgroup: config.workgroup || 'WORKGROUP',
       share: config.share || '',
-      path: config.path || ''
+      path: config.path || '',
+      after: config.after || ''
     })
   });
   if (!res.ok) throw new Error(`SMB browse failed: ${res.status}`);
   return res.json();
+}
+
+export async function inspectSmb(path) {
+  const res = await fetch(`/api/smb/inspect?path=${encodeURIComponent(path)}`);
+  if (!res.ok) throw new Error(`Package inspection failed: ${res.status}`);
+  const data = await res.json();
+  if (!data.success) throw new Error(data.error || 'Could not read package');
+  return { ...data, path };
 }

@@ -204,7 +204,7 @@ int stream_debug_log_open(const char *title_id, const char *content_id,
         g_dbglog_fp = NULL;
     }
 
-    /* Build filename: stream_debug_<title_id>_<kind>_<YYYYMMDD_HHMMSS>.txt */
+    /* Include PID and sequence so same-second attempts never overwrite. */
     const char *tid = (title_id && title_id[0] != '\0') ? title_id : "UNKNOWN";
     const char *kind = (pkg_kind && pkg_kind[0] != '\0') ? pkg_kind : "unknown";
     const char *cid = (content_id && content_id[0] != '\0') ? content_id : "";
@@ -219,7 +219,9 @@ int stream_debug_log_open(const char *title_id, const char *content_id,
 
     const char *dir = dbglog_get_dir();
     char filepath[1024];
-    snprintf(filepath, sizeof(filepath), "%s/stream_debug_%s_%s_%s.txt", dir, tid, kind, ts);
+    static unsigned session_sequence;
+    snprintf(filepath, sizeof(filepath), "%s/stream_debug_%s_%s_%s_%d_%u.txt",
+             dir, tid, kind, ts, (int)getpid(), ++session_sequence);
 
     g_dbglog_fp = fopen(filepath, "w");
     if (!g_dbglog_fp) {

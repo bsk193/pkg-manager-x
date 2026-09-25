@@ -1,3 +1,4 @@
+import SmbFileBrowser from './components/views/SmbFileBrowser';
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import BlurIcon, { iconUrlFor } from './BlurIcon';
@@ -8,7 +9,7 @@ import { DONATE_URL, isPlayStation, DONATE_MODAL_STORAGE_KEY, DONATE_MODAL_INTER
 import { checkVersion } from './api/health';
 import { getStorage } from './api/storage';
 import { getDrives } from './api/drives';
-import { getPackages, refreshPackages, getScanStatus, quickScan } from './api/packages';
+import { getPackages, refreshPackages, getScanStatus, waitForScan, quickScan, shouldAutoScanDrive } from './api/packages';
 import { pollStatus, installPackage, cancelInstall } from './api/installer';
 import { getSettings, saveSettings } from './api/settings';
 import { installShortcut as apiInstallShortcut } from './api/settings';
@@ -122,6 +123,9 @@ export default function App() {
     selectedTitleIdRef.current = selectedTitleId;
   }, [selectedTitleId]);
 
+  const [packagePage, setPackagePage] = useState(0);
+  useEffect(() => { setPackagePage(0); }, [searchQuery, sortBy, selectedDrive?.id]);
+
   const [scanStatus, setScanStatus] = useState({
     is_scanning: false,
     total_files: 0,
@@ -189,7 +193,9 @@ export default function App() {
     }
   };
 
-  const refreshAll = async () => {
+  const refreshAll = async (resume = false) => {
+    if (refreshingRef.current) return false;
+    refreshingRef.current = true;
     setRefreshing(true);
     setScanStatus({
       is_scanning: true,
@@ -200,15 +206,9 @@ export default function App() {
       progress: 0
     });
 
-    const pollScanTimer = setInterval(async () => {
-      try {
-        const data = await getScanStatus();
-        setScanStatus(data);
-      } catch (e) {}
-    }, 250);
-
     try {
-      await refreshPackages();
+      if (resume === true) await waitForScan(setScanStatus);
+      else await refreshPackages(setScanStatus);
       await Promise.all([fetchDrives(), fetchStorage()]);
       if (selectedDriveRef.current) {
         await fetchPackagesForDrive(selectedDriveRef.current, true);
@@ -219,7 +219,7 @@ export default function App() {
       showToast('Error refreshing: ' + err.message, 'error');
       return false;
     } finally {
-      clearInterval(pollScanTimer);
+      refreshingRef.current = false;
       setScanStatus((prev) => ({ ...prev, is_scanning: false }));
       setTimeout(() => {
         setRefreshing(false);
@@ -247,7 +247,7 @@ export default function App() {
   const {
     showSmbModal, setShowSmbModal, smbEditIndex, setSmbEditIndex, smbForm, setSmbForm,
     smbTesting, smbTestResult, setSmbTestResult, handleSaveSmbShare, handleRemoveSmbShare, handleToggleSmbShare, handleTestSmbConnection
-  } = useSmb({ settings, showToast, handleSaveSettings, refreshAll });
+  } = useSmb({ settings, showToast, handleSaveSettings, refreshAll, fetchDrives });
 
   const groupedTitles = useMemo(() => {
     const isAllSources = selectedDrive && selectedDrive.id === '__all__';
@@ -677,14 +677,15 @@ export default function App() {
             if (!data || data.success !== true) {
               throw new Error((data && data.error) || 'Cache clear failed');
             }
+            // Invalidation succeeded even if the browser later loses its scan connection.
+            try { localStorage.setItem(CACHE_VERSION_STORAGE_KEY, v); } catch (e) {}
             versionRescanCompleted = await refreshAll();
           } catch (err) {
             showToast('Failed to refresh cache after update: ' + err.message, 'error');
           }
         }
 
-        // Keep the previous marker when migration failed so it is retried on
-        // the next startup instead of silently leaving a stale cache behind.
+        // If invalidation failed, retain the previous marker and retry next startup.
         if (!versionChanged || versionRescanCompleted) {
           try { localStorage.setItem(CACHE_VERSION_STORAGE_KEY, v); } catch (e) {}
         }
@@ -700,6 +701,13 @@ export default function App() {
         return;
       }
 
+      // Reattach after a browser reload without starting another scan.
+      if (!versionRescanCompleted) {
+        try {
+          const status = await getScanStatus();
+          if (status.is_scanning) versionRescanCompleted = await refreshAll(true);
+        } catch (e) {}
+      }
       fetchDrives();
       fetchStorage();
       fetchStatus();
@@ -738,11 +746,10 @@ export default function App() {
 
   useEffect(() => {
     if (isOffline) return;
-    // Periodically run a light/quick scan every ~15s when on a specific drive page
-    // (or in all-sources mode) to catch new/modified files without user intervention
+    // Poll individual local drives; network discovery runs on explicit navigation/rescan.
     const interval = setInterval(() => {
       const curDrive = selectedDriveRef.current;
-      if (curDrive && curDrive.id) {
+      if (shouldAutoScanDrive(curDrive)) {
         triggerQuickScan(curDrive);
       }
     }, 15000);
@@ -910,6 +917,7 @@ export default function App() {
             onRemove={handleRemoveSmbShare}
             onTest={handleTestSmbConnection}
             testing={smbTesting}
+            onInstall={handleInstall}
           />
         ) : showSettings ? (
           <SettingsView
@@ -942,8 +950,14 @@ export default function App() {
             drives={drives}
             selectedDrive={selectedDrive}
           />
+        ) : selectedDrive && (settings.smb_shares || []).some((share) => share.id === selectedDrive.id && share.browse_only) ? (
+          <SmbFileBrowser key={selectedDrive.id}
+            share={settings.smb_shares.find((share) => share.id === selectedDrive.id)}
+            onBack={handleBackToDrives} onInstall={handleInstall} />
         ) : selectedDrive ? (
           <PackageGridView
+            page={packagePage}
+            onPageChange={setPackagePage}
             groupedTitles={groupedTitles}
             searchQuery={searchQuery}
             onSearch={(q) => setSearchQuery(q)}
