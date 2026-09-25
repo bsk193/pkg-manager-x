@@ -22,6 +22,9 @@ void pkg_scanner_init(void);
  */
 int pkg_scanner_scan(void);
 
+/* Start a detached full scan: 1 started, 0 already active, -1 start failed. */
+int pkg_scanner_start_scan(void);
+
 /**
  * Returns the number of packages currently in the cache.
  */
@@ -122,6 +125,7 @@ char *pkg_scanner_to_json(void);
  */
 typedef struct {
     int is_scanning;
+    int failed_sources;
     size_t total_files;
     size_t processed_files;
     char current_drive[64];

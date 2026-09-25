@@ -165,8 +165,11 @@ static const char *bgft_package_type(const platform_install_request_t *req) {
 }
 
 int platform_install_start(const platform_install_request_t *req,
-                           char *out_content_id, size_t content_id_size) {
+                           char *out_content_id, size_t content_id_size,
+                           platform_install_canceled_fn canceled) {
+    (void)canceled; /* BGFT registration returns immediately */
     if (!g_bgft.ready) return -1;
+    g_bgft.task_id = -1;
 
     int user_id = -1;
     if (sceUserServiceGetForegroundUser(&user_id) != 0) user_id = -1;
@@ -214,10 +217,10 @@ int platform_install_start(const platform_install_request_t *req,
 
 int platform_install_poll(const char *content_id, platform_install_progress_t *out) {
     (void)content_id;
-    if (!out || !g_bgft.ready || !g_bgft.get_progress || g_bgft.task_id < 0) return -1;
+    if (!out || !g_bgft.ready || !g_bgft.get_progress || g_bgft.task_id < 0) return PLATFORM_INSTALL_NO_STATUS;
     bgft_task_progress_t pr;
     memset(&pr, 0, sizeof(pr));
-    if (g_bgft.get_progress(g_bgft.task_id, &pr) != 0) return -1;
+    if (g_bgft.get_progress(g_bgft.task_id, &pr) != 0) return PLATFORM_INSTALL_NO_STATUS;
     memset(out, 0, sizeof(*out));
     out->downloaded_size = pr.transferred_total;
     if (pr.error_result != 0) {
@@ -228,6 +231,11 @@ int platform_install_poll(const char *content_id, platform_install_progress_t *o
         snprintf(out->status, sizeof(out->status), "downloading");
     }
     return 0;
+}
+
+void platform_install_close(void) {
+    /* The BGFT task keeps running in the system; only forget our handle. */
+    g_bgft.task_id = -1;
 }
 
 const char *platform_install_strerror(int code) {

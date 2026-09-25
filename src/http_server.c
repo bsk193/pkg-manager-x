@@ -634,14 +634,15 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
 
     /* ── POST /api/packages/refresh ────────────────────────────── */
     if (strcmp(method, "POST") == 0 && strcmp(url, "/api/packages/refresh") == 0) {
-        int count = pkg_scanner_scan();
+        int started = pkg_scanner_start_scan();
         char buf[128];
-        snprintf(buf, sizeof(buf), "{\"status\":\"ok\",\"count\":%d}", count);
+        snprintf(buf, sizeof(buf), "{\"status\":\"%s\",\"started\":%s}",
+                 started < 0 ? "error" : "accepted", started > 0 ? "true" : "false");
         struct MHD_Response *resp = MHD_create_response_from_buffer(
             strlen(buf), (void *)buf, MHD_RESPMEM_MUST_COPY);
         add_cors_headers(resp);
         MHD_add_response_header(resp, "Content-Type", "application/json");
-        enum MHD_Result ret = MHD_queue_response(conn, MHD_HTTP_OK, resp);
+        enum MHD_Result ret = MHD_queue_response(conn, started < 0 ? MHD_HTTP_INTERNAL_SERVER_ERROR : MHD_HTTP_ACCEPTED, resp);
         MHD_destroy_response(resp);
         return ret;
     }
@@ -851,6 +852,7 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
                              "\"has_password\":%s,"
                              "\"workgroup\":\"%s\","
                              "\"is_read_only\":%s,"
+                             "\"browse_only\":%s,"
                              "\"enabled\":%s"
                              "}",
                              (i > 0 ? "," : ""),
@@ -859,6 +861,7 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
                              sh->password[0] != '\0' ? "true" : "false",
                              e_grp,
                              sh->is_read_only ? "true" : "false",
+                             sh->browse_only ? "true" : "false",
                              sh->enabled ? "true" : "false");
             if (w > 0 && spos + (size_t)w < sizeof(shares_json)) spos += (size_t)w;
         }
@@ -1136,6 +1139,39 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
         return ret;
     }
 
+    /* Inspect just the selected file; manual browsing never indexes a tree. */
+    if (strcmp(method, "GET") == 0 && strcmp(url, "/api/smb/inspect") == 0) {
+        const char *path = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "path");
+        pkg_detail_t pkg;
+        char buf[8192];
+        if (!path || strncmp(path, "smb://", 6) != 0 || strlen(path) >= sizeof(pkg.path) ||
+            pkg_parser_parse(path, &pkg) != 0) {
+            strcpy(buf, "{\"success\":false,\"error\":\"Could not read package metadata\"}");
+        } else {
+            pkg_install_eligibility_t eligibility;
+            pkg_scanner_check_install_eligibility(&pkg, &eligibility);
+            char title[1600], reason[1600], tid[128], version[128], type[128];
+            json_str_esc(pkg.title_name, title, sizeof(title));
+            json_str_esc(pkg.title_id, tid, sizeof(tid));
+            json_str_esc(pkg.app_version, version, sizeof(version));
+            json_str_esc(pkg.pkg_type_str, type, sizeof(type));
+            json_str_esc(eligibility.disabled_reason, reason, sizeof(reason));
+            snprintf(buf, sizeof(buf),
+                     "{\"success\":true,\"title_name\":\"%s\",\"title_id\":\"%s\","
+                     "\"app_version\":\"%s\",\"pkg_type\":\"%s\",\"file_size\":%llu,"
+                     "\"total_pkg_size\":%llu,\"can_install\":%s,\"install_disabled_reason\":\"%s\"}",
+                     title, tid, version, type, (unsigned long long)pkg.file_size,
+                     (unsigned long long)pkg.total_pkg_size,
+                     eligibility.can_install ? "true" : "false", reason);
+        }
+        struct MHD_Response *resp = MHD_create_response_from_buffer(strlen(buf), buf, MHD_RESPMEM_MUST_COPY);
+        add_cors_headers(resp);
+        MHD_add_response_header(resp, "Content-Type", "application/json");
+        enum MHD_Result ret = MHD_queue_response(conn, MHD_HTTP_OK, resp);
+        MHD_destroy_response(resp);
+        return ret;
+    }
+
     /* ── POST /api/smb/browse: list folders (+ .pkg) inside a share ─
      * Body: {server, port?, username?, password?, workgroup?, share, path?}
      * path is relative to the share root ("" = root). Directories sort first. */
@@ -1160,12 +1196,17 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
         install_log("[HTTP] POST /api/smb/browse: host='%s' share='%s' path='%s'",
                     cfg.server, cfg.share, cfg.path);
 
-        smb_dir_entry_t entries[MAX_SMB_BROWSE_ENTRIES];
+        smb_dir_entry_t entries[64];
+        char after[260] = {0};
+        extract_json_string_value(ps && ps->data ? ps->data : "", "after", after, sizeof(after));
+        int has_more = 0;
         char err_buf[512] = {0};
-        int n = smb_client_list_dir(&cfg, NULL, entries, MAX_SMB_BROWSE_ENTRIES,
-                                    err_buf, sizeof(err_buf));
+        int n = smb_client_list_dir_page(&cfg, NULL, after, entries, 64,
+                                         &has_more, err_buf, sizeof(err_buf));
+        /* Worst-case escaped names plus framing, bounded to one page. */
+        size_t response_size = 4096 + 64 * 1800;
 
-        char *resp_json = (char *)malloc(RESPONSE_BUFFER_SIZE);
+        char *resp_json = (char *)malloc(response_size);
         if (!resp_json) {
             static const char oom[] = "{\"success\":false,\"error\":\"Out of memory\"}";
             struct MHD_Response *resp = MHD_create_response_from_buffer(
@@ -1180,7 +1221,7 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
         if (n < 0) {
             char esc[1024] = {0};
             json_str_esc(err_buf[0] ? err_buf : "Folder listing failed", esc, sizeof(esc));
-            snprintf(resp_json, RESPONSE_BUFFER_SIZE,
+            snprintf(resp_json, response_size,
                      "{\"success\":false,\"error\":\"%s\"}", esc);
             install_log("[HTTP] POST /api/smb/browse: failed share='%s' path='%s': %s",
                         cfg.share, cfg.path, err_buf);
@@ -1189,21 +1230,24 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
             json_str_esc(cfg.share, esc_share, sizeof(esc_share));
             json_str_esc(cfg.path, esc_path, sizeof(esc_path));
             size_t off = 0;
-            off += snprintf(resp_json + off, RESPONSE_BUFFER_SIZE - off,
+            off += snprintf(resp_json + off, response_size - off,
                             "{\"success\":true,\"share\":\"%s\",\"path\":\"%s\",\"entries\":[",
                             esc_share, esc_path);
             for (int i = 0; i < n; i++) {
-                char esc_name[1024] = {0};
+                char esc_name[1600] = {0};
                 json_str_esc(entries[i].name, esc_name, sizeof(esc_name));
-                off += snprintf(resp_json + off, RESPONSE_BUFFER_SIZE - off,
+                off += snprintf(resp_json + off, response_size - off,
                                 "%s{\"name\":\"%s\",\"is_dir\":%s,\"size\":%llu,\"mtime\":%u}",
                                 i ? "," : "", esc_name,
                                 entries[i].is_dir ? "true" : "false",
                                 (unsigned long long)entries[i].size,
                                 entries[i].mtime);
-                if (off + 512 >= RESPONSE_BUFFER_SIZE) break;
             }
-            snprintf(resp_json + off, RESPONSE_BUFFER_SIZE - off, "]}");
+            char cursor[260] = {0}, esc_cursor[1600];
+            if (has_more && n > 0)
+                snprintf(cursor, sizeof(cursor), "%c:%s", entries[n - 1].is_dir ? 'D' : 'F', entries[n - 1].name);
+            json_str_esc(cursor, esc_cursor, sizeof(esc_cursor));
+            snprintf(resp_json + off, response_size - off, "],\"next_cursor\":\"%s\"}", esc_cursor);
             install_log("[HTTP] POST /api/smb/browse: share='%s' path='%s' -> %d entries",
                         cfg.share, cfg.path, n);
         }

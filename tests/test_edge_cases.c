@@ -354,13 +354,18 @@ static void test_logging_reduction(void) {
     install_log_set_file_path(test_log);
 
     /* 7. Ring buffer rollover (more than MAX_LOG_LINES lines) */
-    for (int i = 0; i < 2200; i++) {
+    install_log_clear();
+    for (int i = 0; i < INSTALL_LOG_MAX_LINES + 100; i++) {
         install_log("[TEST] Informational line %d", i);
     }
     char *rollover_logs = install_log_get_text(&sz);
     assert(rollover_logs != NULL);
-    assert(strstr(rollover_logs, "Informational line 2199") != NULL);
-    /* Line 0 should have been rolled out past the 2048 capacity */
+    char last_line[80];
+    snprintf(last_line, sizeof(last_line), "Informational line %d\n", INSTALL_LOG_MAX_LINES + 99);
+    assert(strstr(rollover_logs, last_line) != NULL);
+    assert(strstr(rollover_logs, "Informational line 100\n") != NULL);
+    /* Only the oldest 100 entries should have rolled out. */
+    assert(strstr(rollover_logs, "Informational line 99\n") == NULL);
     assert(strstr(rollover_logs, "Informational line 0\n") == NULL);
     free(rollover_logs);
 
@@ -713,6 +718,19 @@ static void test_stream_debug_logging(void) {
     while (recv(sock3, buf3, sizeof(buf3), 0) > 0) {}
     close(sock3);
 
+    /* A retry must preserve the stream report across transport restarts. */
+    stream_server_session_stop_keep_log();
+    assert(stream_debug_log_is_active() == 1);
+    assert(stream_server_session_start_ex(fix_path, "package-retry.pkg") == 0);
+    int retry_sock = tcp_connect_stream_server();
+    assert(retry_sock >= 0);
+    const char *retry_req = "HEAD /stream/install/package-retry.pkg HTTP/1.1\r\n"
+                            "Host: 127.0.0.1:18841\r\nConnection: close\r\n\r\n";
+    assert(send(retry_sock, retry_req, strlen(retry_req), 0) == (ssize_t)strlen(retry_req));
+    char retry_buf[512];
+    while (recv(retry_sock, retry_buf, sizeof(retry_buf), 0) > 0) {}
+    close(retry_sock);
+
     /* 5. Stop session and close debug log */
     stream_server_session_stop();
     assert(stream_server_is_running() == 0);
@@ -761,6 +779,8 @@ static void test_stream_debug_logging(void) {
     assert(strstr(log_content, "CONN_CLOSE") != NULL);
     assert(strstr(log_content, "404") != NULL);
     assert(strstr(log_content, "# Session ended") != NULL);
+    assert(strstr(log_content, "package-retry.pkg") != NULL);
+    assert(strstr(log_content, "INSTALL_EVENT") == NULL);
 
     /* Clean up */
     unlink(found_file);

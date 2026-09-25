@@ -9,7 +9,7 @@ const PLATFORM_FILTERS = [
   { id: 'ps5', label: 'PS5' }
 ];
 
-export default function PackageGridView({ groupedTitles, searchQuery, onSearch, sortBy, onSort, onOpenTitle, selectedDrive, onBack, settings, installerStatus, loadingPackages, packages = [], platformFilter = 'all', onPlatformFilter }) {
+export default function PackageGridView({ groupedTitles, searchQuery, onSearch, sortBy, onSort, onOpenTitle, selectedDrive, onBack, settings, installerStatus, loadingPackages, packages = [], platformFilter = 'all', onPlatformFilter, page = 0, onPageChange = () => {} }) {
   const platformCounts = useMemo(() => {
     const counts = { all: packages.length, ps4: 0, ps5: 0 };
     for (const p of packages) {
@@ -18,6 +18,9 @@ export default function PackageGridView({ groupedTitles, searchQuery, onSearch, 
     }
     return counts;
   }, [packages]);
+  const setPage = onPageChange;
+  const pageCount = Math.max(1, Math.ceil(groupedTitles.length / 60));
+  const currentPage = Math.min(page, pageCount - 1);
   const setSearchQuery = onSearch;
   const setSortBy = onSort;
   const handleOpenTitle = onOpenTitle;
@@ -132,7 +135,7 @@ export default function PackageGridView({ groupedTitles, searchQuery, onSearch, 
               </div>
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-5">
-                {groupedTitles.map((group, index) => {
+                {groupedTitles.slice(currentPage * 60, (currentPage + 1) * 60).map((group, index) => {
                   const isBaseInstalled = group.isBaseInstalled;
                   const hasBaseOnDrive = group.hasBaseOnDrive;
                   const hasNewBase = group.hasNewBase;
@@ -302,6 +305,13 @@ export default function PackageGridView({ groupedTitles, searchQuery, onSearch, 
                 })}
               </div>
             )}
+            {pageCount > 1 && <div className="flex justify-center items-center space-x-4 py-6">
+              <button className="ps5-focus-item px-4 py-2 bg-white/10 disabled:opacity-40" disabled={currentPage === 0}
+                onClick={() => { setPage(currentPage - 1); window.scrollTo(0, 0); }}>Previous</button>
+              <span>Page {currentPage + 1} of {pageCount}</span>
+              <button className="ps5-focus-item px-4 py-2 bg-white/10 disabled:opacity-40" disabled={currentPage + 1 >= pageCount}
+                onClick={() => { setPage(currentPage + 1); window.scrollTo(0, 0); }}>Next</button>
+            </div>}
           </div>
   );
 }

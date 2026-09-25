@@ -38,8 +38,8 @@
 
 Download the latest versioned ELF for your console (for example, `pkg-manager-x_v1.0.0_ps5.elf` or `..._ps4.elf`) from the [Releases](https://github.com/bsk193/pkg-manager-x/releases) page. PKG Manager X has its own version numbers; each release says which PKG Manager version it is based on (see [DEVELOPMENT.md](DEVELOPMENT.md#versioning-pkg-manager-x)).
 
-- **Payload Manager (Recommended)**: Use [Payload Manager](https://github.com/itsPLK/ps5-payload-manager) to launch the downloaded ELF automatically.
-- **Manual ELF Loading**: You can load the downloaded ELF like any other standard ELF payload.
+- **PS5**: add the ELF to [Payload Manager](https://github.com/itsPLK/ps5-payload-manager) (autoload) or load it with elfldr (port 9021).
+- **PS4**: send the ELF with the GoldHEN payload loader (port 9090). See [docs/PS4.md](docs/PS4.md).
 
 ## Usage
 
@@ -56,6 +56,17 @@ When using a USB drive or optical disc, packages are detected in:
 
 ### Network Shares (Samba / SMB)
 You can configure SMB network shares in the app's **Settings** tab to browse and install packages stored on your PC or NAS.
+
+For large shares, enable **Browse only** when adding or editing a share to skip
+full and background catalog scans. Open the share from the storage screen or
+choose **Browse files** in Samba settings, navigate folders, select a PKG, and
+choose **Install selected PKG**. Folder listings have 64 entries per page;
+metadata is read only for the selected file. The scanned catalog shows 60 titles
+per page.
+
+Full rescans run in the background. Retrying or reopening the interface attaches
+to an active scan without queuing another pass. Network shares are not rescanned
+by the frontend's 15-second polling timer; use **Rescan** to refresh their catalog.
 
 ### HTTP / HTTPS Servers
 Add a server under **Settings → Network Sources**. Packages are found through the server's directory listing

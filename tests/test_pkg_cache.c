@@ -317,8 +317,6 @@ int main(void) {
 
     int test_res = smb_client_test_connection(&mock_cfg, err_buf, sizeof(err_buf));
     assert(test_res == 0);
-    /* Since v1.2.3 SMB sources are always read-only (no write probe),
-     * regardless of the legacy is_read_only flag. */
     assert(strstr(err_buf, "Connected successfully (Read-Only)") != NULL);
 
     /* Test read-only flag */

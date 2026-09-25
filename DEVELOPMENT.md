@@ -34,6 +34,11 @@ docker run --rm -v $(pwd):/src -w /src ps5-payload-sdk-pkgmgr make clean all
 
 The resulting `pkgmgr.elf` will be created in the root directory.
 
+The build also creates `build/install-helper.elf` and embeds it in `pkgmgr.elf`.
+Only `pkgmgr.elf` is deployed. Package installs require an elfldr service on
+`127.0.0.1:9021` at runtime. The daemon sends its embedded helper to elfldr;
+the launched process identifies itself as `pkgmgr-inst.elf`.
+
 ### 4. Build a Versioned Development Binary
 To build versioned development binaries (`pkg-manager-x_v<VERSION>-dev-<SHORT_HASH>_<ps5|ps4>.elf`):
 ```bash
@@ -126,6 +131,37 @@ You can run the full host test suite locally without Docker:
 make test
 ```
 
+`make test-install-service` exercises the actual helper protocol in freshly
+executed host processes with stubbed PS5 APIs. It covers consecutive installs,
+single-submission enforcement, native failures, malformed IPC, helper death,
+cancellation, parent disconnection, and graceful/forced child cleanup. It also
+tests the real launcher against a fake elfldr: ELF upload, upload half-close,
+loopback IPC callback, and missing-loader failure. Host tests do not emulate
+the PS5 loader or AppInstUtil, so console validation remains necessary.
+
+For console validation, install at least two packages without restarting the
+manager, then exercise a base/update batch, consecutive Direct Installs, and a
+cancel followed by another install. The manager PID should stay constant; each
+attempt should report a distinct helper PID. Check both older firmware and an
+affected newer firmware.
+
+### Collecting install diagnostics from users
+
+Enable **PKG install debug** before reproducing the issue. Collect the generated
+`stream_debug_*.txt` report from `/data/pkgmgr/` (or `PKG_DEBUG_DIR`) and the full
+`/api/log` response. Stream reports contain HTTP/WS events and remain open across
+transport retries until helper cleanup finishes. Names include PID and sequence
+to avoid overwriting same-second attempts; retention is 20 stream reports.
+
+The daemon's recent log includes helper launch, IPC failures, native return codes,
+status changes, and process cleanup. Native status snapshots are written on
+changes and every 30 seconds while unchanged. The helper also writes startup
+and native-call details to `/data/pkgmgr/helper-log.txt`; the daemon copies that
+file into its log when startup or cleanup fails.
+
+`/api/log` retains the latest **2,048 lines**, at most **1 MiB** in its fixed
+buffer. The ordinary `install.log` stores warnings/errors only.
+
 This compiles and runs tests for:
 - Package parser (`test_pkg_parser`)
 - Drive and package scanner with manifest caching (`test_pkg_scanner`)
@@ -146,6 +182,42 @@ This compiles and runs tests for:
   pooled range streaming, auth, redirects, no-Range servers, scanner
   integration (`test_http_source`)
 - Legacy CSS syntax transformer (`test_fix_legacy_css.py`)
+
+### Large SMB share regressions
+
+`make test TESTS=test_smb_scan` generates 3,000 small synthetic PKGs in separate
+games, updates and DLC folders, using the real scanner/parser over the local SMB
+transport mock. It checks:
+
+- overlapping full scans perform one traversal (the original implementation
+  reproduced two traversals: 16 directory opens instead of 8);
+- background admission, progress and catalog access during directory I/O;
+- directory enumeration closes before metadata reads;
+- cursor paging reaches every file in a 1,000-entry folder without opening PKGs;
+- a nested directory failure preserves the quick-scan catalog and reports a full
+  scan error;
+- browse-only settings persist, perform no scan I/O, remove previously indexed
+  entries, and still allow parsing an individually selected file.
+
+`cd frontend && npm test` covers scan polling through a transient connection
+failure, reconnecting without another scan request, manual browse/inspect requests,
+and rendering 60 cards from 3,000 titles, including the last page.
+
+To manually inspect the frontend with a large synthetic catalog, build the
+frontend once, then run the mock server (which serves both the UI and mock API):
+
+```bash
+cd frontend && npm run build
+PKG_MOCK_COUNT=3000 npm run mock
+```
+
+Open `http://localhost:8844`. The mock API adds synthetic SMB packages to the
+main catalog; the default mock remains the small hand-authored demo.
+`PKG_MOCK_COUNT` can be set to another total, up to 20,000.
+
+These tests validate application behavior with a mocked SMB transport. A live
+PS5/NAS run is still needed to confirm console memory limits, server timeouts,
+controller interaction and installation from the reporter's share.
 
 ### PS5 Installer Stream Simulator
 

@@ -1,7 +1,9 @@
 /*
- * PKG Manager X - PS5 install backend (sceAppInstUtil)
+ * PKG Manager X - PS5 install backend
  *
- * Moved verbatim from installer.c so the worker can drive either console.
+ * Thin adapter over upstream's install service (install_service.c): every
+ * install runs sceAppInstUtilInstallByPackage in a fresh helper process,
+ * which fixes follow-up installs on firmware 9.60+ (upstream v1.3.0).
  */
 
 #include "platform.h"
@@ -9,60 +11,21 @@
 #if PKGMGR_CONSOLE_PS5
 
 #include "platform_install.h"
+#include "install_service.h"
 #include "notification.h"
 
-#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
-typedef struct pkg_metadata {
-    const char *uri;
-    const char *ex_uri;
-    const char *playgo_scenario_id;
-    const char *content_id;
-    const char *content_name;
-    const char *icon_url;
-} pkg_metadata_t;
-
-typedef struct pkg_info {
-    char content_id[48];
-    int type;
-    int platform;
-} pkg_info_t;
-
-typedef struct playgo_info {
-    char languages[30][8];
-    char playgo_scenario_ids[64][3];
-    char content_ids[64][48];
-    unsigned char unknown[6480];
-} playgo_info_t;
-
-typedef struct {
-    int32_t error_code;
-    int32_t version;
-    char description[512];
-    char type[9];
-} SceAppInstallErrorInfo;
-
-typedef struct {
-    char status[16];
-    char src_type[8];
-    uint32_t remain_time;
-    uint64_t downloaded_size;
-    uint64_t initial_chunk_size;
-    uint64_t total_size;
-    uint32_t promote_progress;
-    SceAppInstallErrorInfo error_info;
-    int32_t local_copy_percent;
-    bool is_copy_only;
-} SceAppInstallStatusInstalled;
-
 extern int sceAppInstUtilInitialize(void);
 extern int sceAppInstUtilTerminate(void);
-extern int sceAppInstUtilInstallByPackage(const pkg_metadata_t *meta, pkg_info_t *info, playgo_info_t *playgo);
-extern int sceAppInstUtilGetInstallStatus(const char *content_id, SceAppInstallStatusInstalled *status);
+
+static install_service_t g_service = INSTALL_SERVICE_INIT;
 
 int platform_install_init(void) {
+    /* Catalog DLC queries and leftover removal still use the parent's
+     * AppInstUtil client. Package submission/status and shortcut registration
+     * use separate processes and never share this session. */
     int ret = sceAppInstUtilInitialize();
     if (ret != 0) {
         printf("[PKG Manager] sceAppInstUtilInitialize returned 0x%08X\n", ret);
@@ -72,26 +35,17 @@ int platform_install_init(void) {
 }
 
 void platform_install_shutdown(void) {
+    platform_install_close();
     sceAppInstUtilTerminate();
 }
 
 int platform_install_start(const platform_install_request_t *req,
-                           char *out_content_id, size_t content_id_size) {
-    /* ShellCore may read meta strings after return: keep them static. */
-    static pkg_metadata_t meta;
-    static pkg_info_t info;
-    static playgo_info_t playgo;
-    memset(&meta, 0, sizeof(meta));
+                           char *out_content_id, size_t content_id_size,
+                           platform_install_canceled_fn canceled) {
+    platform_install_close();
+    pkg_info_t info;
     memset(&info, 0, sizeof(info));
-    memset(&playgo, 0, sizeof(playgo));
-    meta.uri = req->uri;
-    meta.ex_uri = "";
-    meta.playgo_scenario_id = "";
-    meta.content_id = "";
-    meta.content_name = req->display_name;
-    meta.icon_url = "";
-
-    int ret = sceAppInstUtilInstallByPackage(&meta, &info, &playgo);
+    int ret = install_service_start(&g_service, req->uri, req->display_name, &info, canceled);
     if (out_content_id && content_id_size > 0) {
         snprintf(out_content_id, content_id_size, "%.*s", (int)sizeof(info.content_id), info.content_id);
     }
@@ -99,15 +53,26 @@ int platform_install_start(const platform_install_request_t *req,
 }
 
 int platform_install_poll(const char *content_id, platform_install_progress_t *out) {
-    if (!content_id || content_id[0] == '\0' || !out) return -1;
+    (void)content_id; /* the helper tracks its own install */
+    if (!out) return PLATFORM_INSTALL_NO_STATUS;
+    memset(out, 0, sizeof(*out));
     SceAppInstallStatusInstalled st;
     memset(&st, 0, sizeof(st));
-    if (sceAppInstUtilGetInstallStatus(content_id, &st) != 0) return -1;
-    memset(out, 0, sizeof(*out));
+    int ret = install_service_status(&g_service, &st);
+    if (ret == INSTALL_SERVICE_CANCELED) return PLATFORM_INSTALL_CANCELED;
+    if (ret == INSTALL_SERVICE_DISCONNECTED || ret == INSTALL_SERVICE_TIMEOUT) {
+        out->error_code = ret;
+        return PLATFORM_INSTALL_LOST;
+    }
+    if (ret != 0) return PLATFORM_INSTALL_NO_STATUS;
     snprintf(out->status, sizeof(out->status), "%.*s", (int)sizeof(st.status), st.status);
     out->error_code = st.error_info.error_code;
     out->downloaded_size = st.downloaded_size;
     return 0;
+}
+
+void platform_install_close(void) {
+    install_service_close(&g_service);
 }
 
 /* Human-readable names for installer/playgo error codes (verified against
@@ -115,6 +80,12 @@ int platform_install_poll(const char *content_id, platform_install_progress_t *o
 const char *platform_install_strerror(int code) {
     if (code == 0) {
         return "OK";
+    }
+    switch (code) {
+    case INSTALL_SERVICE_UNAVAILABLE: return "INSTALL_HELPER_UNAVAILABLE";
+    case INSTALL_SERVICE_DISCONNECTED: return "INSTALL_HELPER_DISCONNECTED";
+    case INSTALL_SERVICE_CANCELED: return "INSTALL_HELPER_CANCELED";
+    case INSTALL_SERVICE_TIMEOUT: return "INSTALL_HELPER_TIMEOUT";
     }
     switch ((uint32_t)code) {
     case 0x80A30001u: return "APP_INSTALLER_ERROR_UNKNOWN";
@@ -133,8 +104,8 @@ const char *platform_install_strerror(int code) {
 }
 
 /* Slot-family errors are transient (e.g. patch installed while the system
-   still finalizes the base): safe to retry with a fresh session. Anything
-   else, including PARAM, fails immediately. */
+   still finalizes the base): safe to retry with a fresh helper process.
+   Anything else, including PARAM, fails immediately. */
 int platform_install_is_transient(int code) {
     uint32_t c = (uint32_t)code;
     return c == 0x80B2116Fu || c == 0x80B2100Du || c == 0x80B2100Eu;

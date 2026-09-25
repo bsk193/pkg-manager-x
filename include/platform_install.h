@@ -6,9 +6,13 @@
  *
  * Both consoles install from the same local range-streaming URL
  * (http://127.0.0.1:18841/stream/install/package-*.pkg):
- *   PS5: sceAppInstUtilInstallByPackage   (platform_install_ps5.c)
- *   PS4: BGFT background download task    (platform_install_ps4.c)
+ *   PS5: upstream's install service - sceAppInstUtilInstallByPackage in a
+ *        fresh helper process per install (platform_install_ps5.c)
+ *   PS4: BGFT background download task, in-process (platform_install_ps4.c)
  * Host test builds use neither; installer.c keeps its mock worker.
+ *
+ * Per install: platform_install_start -> platform_install_poll... ->
+ * platform_install_close (also before every retry and on every exit path).
  */
 
 #include <stddef.h>
@@ -35,6 +39,15 @@ typedef struct {
     uint64_t downloaded_size;
 } platform_install_progress_t;
 
+/* platform_install_poll results besides 0 (= out is valid). */
+#define PLATFORM_INSTALL_NO_STATUS (-1) /* nothing to report; rely on own checks */
+#define PLATFORM_INSTALL_LOST      (-2) /* install process died / stopped answering;
+                                           out->error_code holds the reason */
+#define PLATFORM_INSTALL_CANCELED  (-3) /* canceled while waiting */
+
+/* Returns non-zero when the user canceled or the daemon is shutting down. */
+typedef int (*platform_install_canceled_fn)(void);
+
 int platform_install_init(void);
 void platform_install_shutdown(void);
 
@@ -42,11 +55,14 @@ void platform_install_shutdown(void);
  * the system uses to track it (may equal req->content_id). Otherwise returns
  * the (negative) system error code. */
 int platform_install_start(const platform_install_request_t *req,
-                           char *out_content_id, size_t content_id_size);
+                           char *out_content_id, size_t content_id_size,
+                           platform_install_canceled_fn canceled);
 
-/* Queries system progress for content_id. 0 when out is valid, negative
- * when the console offers no status (caller relies on its own checks). */
+/* Queries system progress for the running install (content_id may be ""). */
 int platform_install_poll(const char *content_id, platform_install_progress_t *out);
+
+/* Releases per-install resources (PS5 helper process). Idempotent. */
+void platform_install_close(void);
 
 /* Human-readable name for an install error code, or NULL. */
 const char *platform_install_strerror(int code);

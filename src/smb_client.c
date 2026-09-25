@@ -577,7 +577,8 @@ static int smb_dir_entry_cmp(const void *a, const void *b) {
     const smb_dir_entry_t *ea = (const smb_dir_entry_t *)a;
     const smb_dir_entry_t *eb = (const smb_dir_entry_t *)b;
     if (ea->is_dir != eb->is_dir) return eb->is_dir - ea->is_dir;
-    return strcasecmp(ea->name, eb->name);
+    int cmp = strcasecmp(ea->name, eb->name);
+    return cmp ? cmp : strcmp(ea->name, eb->name);
 }
 
 int smb_client_list_shares(const smb_share_config_t *cfg,
@@ -668,9 +669,19 @@ int smb_client_list_shares(const smb_share_config_t *cfg,
     return n;
 }
 
-int smb_client_list_dir(const smb_share_config_t *cfg, const char *subpath,
-                        smb_dir_entry_t *out, int max_out,
-                        char *out_err, size_t err_sz) {
+int smb_client_list_dir_page(const smb_share_config_t *cfg, const char *subpath,
+                             const char *after, smb_dir_entry_t *out, int max_out,
+                             int *has_more, char *out_err, size_t err_sz) {
+    if (has_more) *has_more = 0;
+    smb_dir_entry_t cursor = {0};
+    if (after && *after) {
+        if ((after[0] != 'D' && after[0] != 'F') || after[1] != ':' || strlen(after + 2) >= sizeof(cursor.name)) {
+            if (out_err && err_sz) snprintf(out_err, err_sz, "Invalid cursor");
+            return -1;
+        }
+        cursor.is_dir = after[0] == 'D';
+        strcpy(cursor.name, after + 2);
+    }
     if (!cfg || !out || max_out <= 0) {
         if (out_err && err_sz > 0) snprintf(out_err, err_sz, "Invalid arguments");
         return -1;
@@ -747,14 +758,21 @@ int smb_client_list_dir(const smb_share_config_t *cfg, const char *subpath,
             size_t nlen = strlen(ent->name);
             if (nlen <= 4 || strcasecmp(ent->name + nlen - 4, ".pkg") != 0) continue;
         }
-        if (n >= max_out) break;
-        smb_dir_entry_t *dst = &out[n];
+        smb_dir_entry_t candidate;
+        smb_dir_entry_t *dst = &candidate;
         memset(dst, 0, sizeof(*dst));
         strncpy(dst->name, ent->name, sizeof(dst->name) - 1);
         dst->is_dir = is_dir;
         dst->size = (uint64_t)ent->st.smb2_size;
         dst->mtime = (uint32_t)ent->st.smb2_mtime;
-        n++;
+        if (after && *after && smb_dir_entry_cmp(dst, &cursor) <= 0) continue;
+        int pos = 0;
+        while (pos < n && smb_dir_entry_cmp(&out[pos], dst) < 0) pos++;
+        if (n == max_out && has_more) *has_more = 1;
+        if (pos >= max_out) continue;
+        if (n < max_out) n++;
+        memmove(&out[pos + 1], &out[pos], (size_t)(n - pos - 1) * sizeof(*out));
+        out[pos] = candidate;
     }
 
     smb2_closedir(ctx, dir);
@@ -763,6 +781,12 @@ int smb_client_list_dir(const smb_share_config_t *cfg, const char *subpath,
     if (n > 1) qsort(out, (size_t)n, sizeof(out[0]), smb_dir_entry_cmp);
     if (out_err && err_sz > 0) out_err[0] = '\0';
     return n;
+}
+
+int smb_client_list_dir(const smb_share_config_t *cfg, const char *subpath,
+                        smb_dir_entry_t *out, int max_out,
+                        char *out_err, size_t err_sz) {
+    return smb_client_list_dir_page(cfg, subpath, NULL, out, max_out, NULL, out_err, err_sz);
 }
 
 /* Recursive directory scanner helper over SMB */
@@ -775,7 +799,7 @@ static int scan_smb_dir(struct smb2_context *ctx, const smb_share_config_t *cfg,
     while (*open_path == '/') open_path++;
 
     struct smb2dir *dir = smb2_opendir(ctx, open_path);
-    if (!dir) return (depth == 0) ? -1 : 0;
+    if (!dir) return -1;
 
     int count = 0;
     struct smb2dirent *ent;
@@ -792,7 +816,11 @@ static int scan_smb_dir(struct smb2_context *ctx, const smb_share_config_t *cfg,
         if (ent->st.smb2_type == SMB2_TYPE_DIRECTORY) {
             /* Descend into subdirectories */
             int sub_count = scan_smb_dir(ctx, cfg, child_path, depth + 1, pkg_cb, user_data);
-            if (sub_count > 0) count += sub_count;
+            if (sub_count < 0) {
+                smb2_closedir(ctx, dir);
+                return -1;
+            }
+            count += sub_count;
         } else if (ent->st.smb2_type == SMB2_TYPE_FILE) {
             const char *name = ent->name;
             size_t nlen = strlen(name);

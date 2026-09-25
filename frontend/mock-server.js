@@ -403,6 +403,49 @@ const examplePkgs = [
   }
 ];
 
+// Set PKG_MOCK_COUNT to exercise the catalog UI with a large synthetic SMB
+// library (for example: PKG_MOCK_COUNT=3000 npm run mock). The default demo
+// remains the small hand-authored catalog above.
+const requestedMockPkgCount = Number.parseInt(process.env.PKG_MOCK_COUNT || '0', 10);
+const mockPkgCount = Number.isFinite(requestedMockPkgCount)
+  ? Math.max(0, Math.min(requestedMockPkgCount, 20000))
+  : 0;
+for (let i = examplePkgs.length; i < mockPkgCount; i++) {
+  const serial = String(i + 1).padStart(5, '0');
+  const titleId = `PPSA${String(i + 1).padStart(5, '0')}`;
+  const filename = `Synthetic_Game_${serial}_Base.pkg`;
+  examplePkgs.push({
+    path: `smb://192.168.1.100/Games/PS5/Synthetic/${filename}`,
+    filename,
+    title_id: titleId,
+    title_name: `Synthetic Game ${serial}`,
+    content_id: `EP9000-${titleId}_00-SYNTHETICGAME${serial}`,
+    app_version: '01.000.000',
+    pkg_type: 'base',
+    category: 'gd',
+    mtime: 1718000000 - i,
+    file_size: 25000000000 + i * 1000000,
+    total_pkg_size: 25000000000 + i * 1000000,
+    has_icon: false,
+    is_multipart: false,
+    part_index: 0,
+    total_parts: 0,
+    is_installed: false,
+    installed_version: '',
+    is_dlc_installed: false,
+    has_leftover: false,
+    leftover_desc: '',
+    is_partially_installed: false,
+    partial_desc: '',
+    can_install: true,
+    install_disabled_reason: '',
+    blurhash: ''
+  });
+}
+if (mockPkgCount > 0) {
+  console.log(`[Mock Server] Serving ${examplePkgs.length} packages (${mockPkgCount} requested)`);
+}
+
 const mockDrives = [
   {
     id: 'usb0',
@@ -428,7 +471,7 @@ const mockDrives = [
     label: 'SMB: Games',
     path: 'smb://192.168.1.100/Games',
     mounted: true,
-    pkg_count: 4,
+    pkg_count: mockPkgCount > 0 ? Math.max(4, mockPkgCount - 10) : 4,
     clickable: true
   },
   {
@@ -639,8 +682,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && pathname === '/api/packages/refresh') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', count: examplePkgs.length }));
+    res.writeHead(202, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'accepted', started: true }));
     return;
   }
 
@@ -836,7 +879,7 @@ const server = http.createServer(async (req, res) => {
   // 9. Scan Status API
   if (req.method === 'GET' && pathname === '/api/scan/status') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ scanning: false, processed_files: examplePkgs.length, total_files: examplePkgs.length, progress: 100 }));
+    res.end(JSON.stringify({ is_scanning: false, failed_sources: 0, processed_files: examplePkgs.length, total_files: examplePkgs.length, progress: 100 }));
     return;
   }
 
@@ -986,6 +1029,17 @@ const server = http.createServer(async (req, res) => {
     });
     return;
   }
+  if (req.method === 'GET' && pathname === '/api/smb/inspect') {
+    const selectedPath = parsedUrl.searchParams.get('path') || '';
+    const pkg = examplePkgs.find((item) => item.path === selectedPath);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(pkg ? { success: true, can_install: true, ...pkg } : {
+      success: true, can_install: true, title_name: selectedPath.split('/').pop(),
+      title_id: 'CUSA90001', pkg_type: 'base', app_version: '01.00', file_size: 1024
+    }));
+    return;
+  }
+
   if (req.method === 'POST' && pathname === '/api/smb/browse') {
     let body = '';
     req.on('data', chunk => body += chunk);
@@ -1012,7 +1066,14 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: true, share, path: relPath, entries }));
+      const compare = (a, b) => Number(b.is_dir) - Number(a.is_dir) ||
+        a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || a.name.localeCompare(b.name);
+      const after = parsed.after ? { is_dir: parsed.after.startsWith('D:'), name: parsed.after.slice(2) } : null;
+      const remaining = entries.slice().sort(compare).filter((entry) => !after || compare(entry, after) > 0);
+      const page = remaining.slice(0, 64);
+      const last = page[page.length - 1];
+      const next_cursor = remaining.length > 64 ? `${last.is_dir ? 'D' : 'F'}:${last.name}` : '';
+      res.end(JSON.stringify({ success: true, share, path: relPath, entries: page, next_cursor }));
     });
     return;
   }
