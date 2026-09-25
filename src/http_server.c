@@ -22,6 +22,7 @@
 #include "ws_upload.h"
 #include "ws_stream.h"
 #include "http_sources_api.h"
+#include "http_source.h"
 #include "pkg_platform.h"
 
 #include <stdio.h>
@@ -869,11 +870,12 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
         char *buf = (char *)malloc(spos + 1024);
         if (!buf) return MHD_NO;
         snprintf(buf, spos + 1024,
-                 "{\"move_installed_to_end\":%s,\"fade_installed_packages\":%s,\"all_sources_mode\":%s,\"pkg_install_debug\":%s,\"smb_shares\":[%s]}",
+                 "{\"move_installed_to_end\":%s,\"fade_installed_packages\":%s,\"all_sources_mode\":%s,\"pkg_install_debug\":%s,\"allow_ps4_on_ps5\":%s,\"smb_shares\":[%s]}",
                  s.move_installed_to_end ? "true" : "false",
                  s.fade_installed_packages ? "true" : "false",
                  s.all_sources_mode ? "true" : "false",
-                 s.pkg_install_debug ? "true" : "false", shares_json);
+                 s.pkg_install_debug ? "true" : "false",
+                 s.allow_ps4_on_ps5 ? "true" : "false", shares_json);
         struct MHD_Response *resp = MHD_create_response_from_buffer(
             strlen(buf), (void *)buf, MHD_RESPMEM_MUST_FREE);
         add_cors_headers(resp);
@@ -924,6 +926,14 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
                 } else if (strncmp(dptr + 20, "false", 5) == 0 || strncmp(dptr + 21, "false", 5) == 0) {
                     s.pkg_install_debug = 0;
                 }
+            }
+
+            char *p4ptr = strstr(ps->data, "\"allow_ps4_on_ps5\":");
+            if (p4ptr) {
+                const char *v = p4ptr + 19;
+                while (*v == ' ') v++;
+                if (strncmp(v, "true", 4) == 0) s.allow_ps4_on_ps5 = 1;
+                else if (strncmp(v, "false", 5) == 0) s.allow_ps4_on_ps5 = 0;
             }
 
             if (strstr(ps->data, "\"smb_shares\"")) {
@@ -1365,9 +1375,9 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
                 snprintf(response_buf, sizeof(response_buf),
                          "{\"success\":false,\"error\":\"Live header timed out, re-upload the package\"}");
                 status_code = MHD_HTTP_BAD_REQUEST;
-            } else if (res == -15) {
+            } else if (res == INSTALLER_REFUSED) {
                 snprintf(response_buf, sizeof(response_buf),
-                         "{\"success\":false,\"error\":\"%s\"}", PKG_PLATFORM_REASON_PS5_ON_PS4);
+                         "{\"success\":false,\"refused\":true,\"error\":\"%s\"}", installer_refusal_reason());
                 status_code = MHD_HTTP_BAD_REQUEST;
             } else {
                 snprintf(response_buf, sizeof(response_buf),
@@ -1402,10 +1412,13 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
             } else if (res == -13) {
                 snprintf(response_buf, sizeof(response_buf),
                          "{\"success\":false,\"error\":\"Multi-part packages are only supported on USB/Disc\"}");
-                status_code = MHD_HTTP_BAD_REQUEST;
-            } else if (res == -15) {
+                status_code = MHD_HTTP_BAD_REQUEST;            } else if (res == INSTALLER_UNAVAILABLE) {
+                /* Not an error: the source simply no longer has this file. */
                 snprintf(response_buf, sizeof(response_buf),
-                         "{\"success\":false,\"error\":\"%s\"}", PKG_PLATFORM_REASON_PS5_ON_PS4);
+                         "{\"success\":false,\"unavailable\":true,\"error\":\"%s\"}", HTTP_SOURCE_UNAVAILABLE_REASON);
+            } else if (res == INSTALLER_REFUSED) {
+                snprintf(response_buf, sizeof(response_buf),
+                         "{\"success\":false,\"refused\":true,\"error\":\"%s\"}", installer_refusal_reason());
                 status_code = MHD_HTTP_BAD_REQUEST;
             } else {
                 snprintf(response_buf, sizeof(response_buf),

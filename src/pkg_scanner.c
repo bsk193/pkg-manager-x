@@ -37,6 +37,9 @@ static void evaluate_install_eligibility(const pkg_detail_t *pkg, int is_install
     if (!pkg_platform_can_install(pkg, &platform_reason)) {
         out->can_install = 0;
         out->disabled_reason = platform_reason;
+    } else if (pkg_parser_is_http_path(pkg->path) && http_source_is_unavailable(pkg->path)) {
+        out->can_install = 0;
+        out->disabled_reason = HTTP_SOURCE_UNAVAILABLE_REASON;
     } else if (pkg->is_multipart &&
                (strncmp(pkg->path, "smb://", 6) == 0 || pkg_parser_is_http_path(pkg->path))) {
         out->can_install = 0;
@@ -117,6 +120,9 @@ static int compare_pkg_by_title_name(const void *a, const void *b) {
 #define MAX_PACKAGES 4096
 #define MAX_DRIVES   16
 #define PKG_MANIFEST_VERSION 3
+/* PKG Manager X classification rules (kept apart from upstream's counter so
+ * the two never collide). Bump when fork-side package metadata changes. */
+#define PKG_MANIFEST_X_VERSION 2
 
 static pkg_detail_t g_packages[MAX_PACKAGES];
 static size_t g_package_count = 0;
@@ -297,7 +303,7 @@ static int save_manifest_locked(void) {
     FILE *f = fopen(tmp_path, "w");
     if (!f) return -1;
 
-    fprintf(f, "{\n  \"version\": %d,\n  \"drives\": [\n", PKG_MANIFEST_VERSION);
+    fprintf(f, "{\n  \"version\": %d,\n  \"x_version\": %d,\n  \"drives\": [\n", PKG_MANIFEST_VERSION, PKG_MANIFEST_X_VERSION);
     for (size_t i = 0; i < g_drive_count; i++) {
         const pkg_drive_t *d = &g_drives[i];
         char esc_id[64], esc_label[128], esc_path[512], esc_type[32];
@@ -421,7 +427,10 @@ static int load_manifest_locked(void) {
 
     char manifest_version[16] = {0};
     extract_json_field(buf, "version", manifest_version, sizeof(manifest_version));
-    if (atoi(manifest_version) != PKG_MANIFEST_VERSION) {
+    char manifest_x_version[16] = {0};
+    extract_json_field(buf, "x_version", manifest_x_version, sizeof(manifest_x_version));
+    if (atoi(manifest_version) != PKG_MANIFEST_VERSION ||
+        atoi(manifest_x_version) != PKG_MANIFEST_X_VERSION) {
         /* Package classification rules changed; force a fresh scan rather
          * than reusing entries produced by an older parser. */
         free(buf);
@@ -587,8 +596,8 @@ static int load_manifest_locked(void) {
                             extract_json_field(item, "mtime", val, sizeof(val));
                             if (val[0]) pkg->mtime = (uint64_t)strtoull(val, NULL, 10);
 
-                            /* Manifests written before the platform field
-                             * existed are completed from title ID / folder. */
+                            /* Multi-part entries without parser evidence are
+                             * completed from the title ID. */
                             extract_json_field(item, "platform", pkg->platform, sizeof(pkg->platform));
                             pkg_platform_finalize(pkg);
 
@@ -2231,6 +2240,9 @@ char *pkg_scanner_packages_for_drive_to_json_ex(const char *drive_id_or_path, co
                                      has_leftover, is_partially_installed, &eligibility);
         int can_install = eligibility.can_install;
         const char *disabled_reason = eligibility.disabled_reason;
+        const char *platform_reason = "";
+        int platform_ok = pkg_platform_can_install(pkg, &platform_reason);
+        int unavailable = pkg_parser_is_http_path(pkg->path) && http_source_is_unavailable(pkg->path);
 
         char esc_path[1024];
         char esc_filename[512];
@@ -2306,8 +2318,10 @@ char *pkg_scanner_packages_for_drive_to_json_ex(const char *drive_id_or_path, co
             "\"install_disabled_reason\":\"%s\","
             "\"blurhash\":\"%s\","
             "\"platform\":\"%s\","
-            "\"folder_platform\":\"%s\","
-            "\"platform_mismatch\":%s"
+            "\"content_type\":\"%s\","
+            "\"platform_blocked\":%s,"
+            "\"platform_reason\":\"%s\","
+            "\"unavailable\":%s"
             "}",
             (emitted > 0 ? "," : ""),
             esc_path,
@@ -2338,8 +2352,10 @@ char *pkg_scanner_packages_for_drive_to_json_ex(const char *drive_id_or_path, co
             esc_disabled_reason,
             esc_blurhash,
             pkg->platform,
-            pkg_platform_folder_hint(pkg->path),
-            pkg_platform_folder_mismatch(pkg) ? "true" : "false");
+            pkg_platform_content_type(pkg),
+            platform_ok ? "false" : "true",
+            platform_ok ? "" : platform_reason,
+            unavailable ? "true" : "false");
 
         if (w < 0 || (size_t)w >= buf_size - pos) {
             break;

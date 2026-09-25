@@ -4,15 +4,22 @@
 /*
  * PKG Manager X - HTTP/HTTPS package sources.
  *
- * A source is a base URL (e.g. http://nas.local:8080/pkgs/). Packages are
- * discovered from, in order:
- *   1. <base>/index.json  (see tools/make_http_index.py), or
- *   2. the server's HTML directory listing (nginx autoindex, Apache,
- *      python -m http.server, caddy file_server browse, ...), recursing
- *      into sub-folders such as PS4/ and PS5/.
- * Package bytes are read with HTTP Range requests, so the server must
- * answer "Range: bytes=a-b" with 206 Partial Content (all of the servers
- * above do). HTTPS uses mbedTLS when built with PKGMGR_HAVE_TLS.
+ * A source is one base URL (e.g. https://games.example/ or
+ * http://nas.local:8090/). Packages are discovered from, in order:
+ *   1. <base>api/catalog - a home-server gateway: JSON list of files, each
+ *      downloaded from <base>files/<path> (200 with Range, a 302 to a
+ *      signed Cloudflare R2 URL, or 404);
+ *   2. <base>index.json  (see tools/make_http_index.py);
+ *   3. the server's directory listing, recursing into sub-folders (ps4/,
+ *      ps5/, games/, dlcs/, ...): nginx "autoindex_format json" or any HTML
+ *      index page (nginx, Apache, caddy, python -m http.server).
+ * Where a package sits never decides its console or type; that always
+ * comes from the package metadata (pkg_platform.h).
+ * Package bytes are read with HTTP Range requests (206 Partial Content).
+ * Basic auth and relaxed TLS settings apply to the source's own host only;
+ * redirect targets get neither and are always certificate-checked.
+ * HTTPS uses mbedTLS when built with PKGMGR_HAVE_TLS, with the Mozilla CA
+ * list compiled in (assets/cacert.pem).
  */
 
 #include <stddef.h>
@@ -29,7 +36,7 @@ extern "C" {
 #define HTTP_SOURCE_URL_MAX_LEN 250 /* base URL limit (fits pkg_drive_t.path) */
 
 /* tls_mode values */
-#define HTTP_TLS_VERIFY "verify" /* CA bundle (PKG_CA_BUNDLE or /data/pkgmgr/cacert.pem) */
+#define HTTP_TLS_VERIFY "verify" /* bundled Mozilla CAs (+ PKG_CA_BUNDLE or /data/pkgmgr/cacert.pem) */
 #define HTTP_TLS_PIN    "pin"    /* SHA-256 fingerprint of the server certificate */
 #define HTTP_TLS_NONE   "none"   /* no certificate check (LAN / self-signed) */
 
@@ -75,7 +82,7 @@ typedef struct {
     int success;
     int pkg_count;
     int range_supported;     /* -1 unknown (no packages to probe) */
-    char listing[16];        /* "index.json" / "html" / "" */
+    char listing[16];        /* "catalog" / "index.json" / "json" / "html" / "" */
     char fingerprint[100];   /* hex SHA-256 of server cert (https) */
     char message[512];
 } http_source_test_result_t;
@@ -98,13 +105,29 @@ int http_source_get_icon(const char *url, uint64_t offset, uint32_t size,
                          uint8_t **out_data, size_t *out_size);
 ssize_t http_source_pread(const char *url, void *buf, size_t count, uint64_t offset);
 
+/* "Unavailable": the server answered 404 for the package, or the gateway
+ * catalog lists it as neither local nor on R2. Shown in the UI instead of
+ * an install error. */
+#define HTTP_SOURCE_UNAVAILABLE_REASON "Unavailable on the server"
+int http_source_is_unavailable(const char *url);
+void http_source_set_unavailable(const char *url, int unavailable);
+/* Size promised by the gateway catalog, 0 when unknown. Streams whose
+ * server-side size differs are refused. */
+uint64_t http_source_expected_size(const char *url);
+
 /* ── Streaming session ────────────────────────────────────────────────
  * Thread-safe: concurrent reads use separate pooled keep-alive
  * connections, so the installer's parallel range requests map to parallel
- * HTTP connections. */
+ * HTTP connections. Reads go to the final URL after redirects; when that
+ * signed link expires (403) or the origin starts redirecting, the listed
+ * URL is asked again for a fresh link and the read continues at the same
+ * offset (the size must not change). */
 typedef struct http_file_session http_file_session_t;
 
 http_file_session_t *http_file_session_open(const char *url);
+/* Install streams: retry network errors / 5xx for up to two minutes per
+ * read (until the install is canceled) instead of failing at once. */
+void http_file_session_set_resilient(http_file_session_t *s, int resilient);
 ssize_t http_file_session_read(http_file_session_t *s, void *buf, size_t count, uint64_t offset);
 uint64_t http_file_session_get_size(http_file_session_t *s);
 void http_file_session_close(http_file_session_t *s);

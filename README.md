@@ -9,11 +9,14 @@
 > It tracks upstream (`git fetch upstream && git merge upstream/main`) and adds:
 >
 > - **HTTP / HTTPS sources**: install straight from a web server (nginx, Apache, Caddy,
->   `python -m http.server`, NAS web shares) using byte-range streaming, with Basic auth and
->   certificate verification or pinning. See [docs/HTTP_SOURCES.md](docs/HTTP_SOURCES.md).
-> - **PS4 / PS5 tags**: every package shows which console it is for (read from the package
->   itself), a PS4/PS5 filter, and a warning when a package sits in the other console's folder.
->   `PS4/` and `PS5/` folders on USB drives and discs are scanned like `pkg/`.
+>   `python -m http.server`, NAS web shares) or a home-server gateway (`api/catalog`, local or
+>   Cloudflare R2 downloads with automatic link refresh) using byte-range streaming, with Basic
+>   auth and a built-in CA list. See [docs/HTTP_SOURCES.md](docs/HTTP_SOURCES.md).
+> - **PS4 / PS5 tags and types**: console and type (game, DLC, update, homebrew) are read from
+>   the package itself, never from folder names. Filters by console and type; packages this
+>   console cannot install stay visible, greyed with the reason ("PS5 only", "PS4 homebrew
+>   doesn't run on PS5"), and can be hidden. `PS4/` and `PS5/` folders on USB drives and discs
+>   are scanned like `pkg/`.
 > - **PS4 payload** (`pkg-manager-x_*_ps4.elf`, GoldHEN): same UI and sources; PS5 packages
 >   are shown but cannot be installed. **Experimental, see [docs/PS4.md](docs/PS4.md) before use.**
 

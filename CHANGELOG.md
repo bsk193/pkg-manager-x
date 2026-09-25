@@ -9,15 +9,28 @@
 - HTTPS via mbedTLS with CA verification, certificate pinning ("Trust this certificate") or no check
 
 ### PS4 / PS5 Tags
-- Every package reports its console, detected from the package itself (FIH / param.json / param.sfo), with Title ID and folder fallbacks
+- Every package reports its console, detected from the package itself (FIH / param.json / param.sfo), with a Title ID fallback
 - PS4 / PS5 filter in the package browser and badges in the detail view
-- Warning when a package is stored in the other console's `PS4/` / `PS5/` folder
 - `PS4/` and `PS5/` folders on USB drives and discs are scanned like `pkg/`
 
 ### PS4 Payload (experimental)
 - New `PLATFORM=ps4` build (ps4-payload-sdk, GoldHEN) sharing the UI and all sources
 - Installs through BGFT; PS5 packages are listed but refused on PS4
 - See docs/PS4.md for the on-console test checklist
+
+### Home Server
+- Gateway sources: one address, packages from `api/catalog`, downloads from `files/<path>` (local or a signed Cloudflare R2 redirect)
+- Signed links that expire during an install are refreshed and the download continues at the same offset; network drops are retried for up to two minutes
+- Sizes are checked against the catalog; files the server no longer has show as "Unavailable" instead of an install error
+- nginx `autoindex_format json` listings (sizes and dates without extra requests)
+- Mozilla CA list compiled in: HTTPS to Let's Encrypt / R2 hosts works on PS4 and PS5 without copying a CA file
+- Relaxed TLS settings (pinned / unchecked certificate) and credentials apply to the source's own host only, never to redirect targets
+
+### Library
+- Console and type (Games / DLC / Updates / Homebrew) come from package metadata only; folder names no longer matter
+- On PS4: PS5 packages are greyed "PS5 only". On PS5: PS4 games, DLC and updates are installable with a PS4 badge, PS4 homebrew is greyed "PS4 homebrew doesn't run on PS5"
+- Type filter and "Hide unavailable" toggle; setting "Allow PS4 installs on PS5" (on by default)
+- Install refusals now show their real reason in the browser
 
 ### Upstream
 - Merged PKG Manager v1.3.0 (PS5 install helper process, SMB browse-only shares, paged catalog)

@@ -1,5 +1,5 @@
 /*
- * PKG Manager X - Package Platform Detection & Install Gating
+ * PKG Manager X - Package Platform / Content Type Detection & Install Gating
  */
 
 #include "pkg_platform.h"
@@ -31,10 +31,22 @@ void pkg_platform_note_param_sfo(pkg_detail_t *d) {
     if (d && d->platform[0] == '\0') set_platform(d, "ps4");
 }
 
+/* Retail title ID prefixes (all regions). Anything else with the usual
+ * AAAA00000 shape is a homebrew / self-made ID. */
+static const char *const k_retail_ps4[] = { "CUSA", "PCAS", "PCJS", "PCKS", "PLAS", "PLJM", "PLJS", "PLKS", "NPXS" };
+static const char *const k_retail_ps5[] = { "PPSA", "ECAS", "ECJS", "ECKS", "ELAS", "ELJM", "ELJS", "ELKS" };
+
+static int has_prefix_in(const char *tid, const char *const *list, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (strncasecmp(tid, list[i], 4) == 0) return 1;
+    }
+    return 0;
+}
+
 const char *pkg_platform_from_title_id(const char *title_id) {
     if (!title_id) return "";
-    if (strncasecmp(title_id, "PPSA", 4) == 0) return "ps5";
-    if (strncasecmp(title_id, "CUSA", 4) == 0) return "ps4";
+    if (has_prefix_in(title_id, k_retail_ps5, sizeof(k_retail_ps5) / sizeof(k_retail_ps5[0]))) return "ps5";
+    if (has_prefix_in(title_id, k_retail_ps4, sizeof(k_retail_ps4) / sizeof(k_retail_ps4[0]))) return "ps4";
     return "";
 }
 
@@ -51,41 +63,40 @@ const char *pkg_platform_folder_name(const char *name) {
     return name ? component_platform(name, strlen(name)) : "";
 }
 
-const char *pkg_platform_folder_hint(const char *path) {
-    if (!path) return "";
-    /* Skip the scheme and host of URLs so a server named "ps4" does not
-     * count; SMB share names and folders below them do. */
-    const char *p = strstr(path, "://");
-    if (p) {
-        p = strchr(p + 3, '/');
-        if (!p) return "";
-    } else {
-        p = path;
-    }
-
-    const char *hint = "";
-    while (*p) {
-        while (*p == '/') p++;
-        const char *end = strchr(p, '/');
-        if (!end) break; /* last component is the file name */
-        const char *h = component_platform(p, (size_t)(end - p));
-        if (h[0]) hint = h; /* deepest folder wins */
-        p = end;
-    }
-    return hint;
-}
-
 void pkg_platform_finalize(pkg_detail_t *d) {
     if (!d || d->platform[0] != '\0') return;
     const char *p = pkg_platform_from_title_id(d->title_id);
-    if (!p[0]) p = pkg_platform_folder_hint(d->path);
     if (p[0]) set_platform(d, p);
 }
 
-int pkg_platform_folder_mismatch(const pkg_detail_t *d) {
-    if (!d || d->platform[0] == '\0') return 0;
-    const char *hint = pkg_platform_folder_hint(d->path);
-    return hint[0] != '\0' && strcmp(hint, d->platform) != 0;
+/* "ABCD12345" */
+static int is_title_id_shape(const char *tid) {
+    for (int i = 0; i < 4; i++) {
+        if (!isalpha((unsigned char)tid[i])) return 0;
+    }
+    for (int i = 4; i < 9; i++) {
+        if (!isdigit((unsigned char)tid[i])) return 0;
+    }
+    return 1;
+}
+
+int pkg_platform_is_homebrew(const pkg_detail_t *d) {
+    if (!d) return 0;
+    /* Patches and add-ons belong to a title; only applications count. */
+    if (d->pkg_type == PKG_TYPE_UPDATE || d->pkg_type == PKG_TYPE_DLC) return 0;
+    /* Fake-signed homebrew uses the "IV0000" publisher in its content ID
+     * (IV0000-LAPY20001_00-...), including homebrew with retail-like IDs. */
+    if (strncasecmp(d->content_id, "IV0000-", 7) == 0) return 1;
+    if (!is_title_id_shape(d->title_id)) return 0;
+    return !has_prefix_in(d->title_id, k_retail_ps4, sizeof(k_retail_ps4) / sizeof(k_retail_ps4[0])) &&
+           !has_prefix_in(d->title_id, k_retail_ps5, sizeof(k_retail_ps5) / sizeof(k_retail_ps5[0]));
+}
+
+const char *pkg_platform_content_type(const pkg_detail_t *d) {
+    if (!d) return "game";
+    if (d->pkg_type == PKG_TYPE_UPDATE) return "update";
+    if (d->pkg_type == PKG_TYPE_DLC) return "dlc";
+    return pkg_platform_is_homebrew(d) ? "homebrew" : "game";
 }
 
 const char *pkg_platform_console(void) {
@@ -98,12 +109,36 @@ const char *pkg_platform_console(void) {
 #endif
 }
 
+static volatile int g_allow_ps4_on_ps5 = 1;
+
+void pkg_platform_set_allow_ps4_on_ps5(int allow) {
+    g_allow_ps4_on_ps5 = allow ? 1 : 0;
+}
+
+int pkg_platform_get_allow_ps4_on_ps5(void) {
+    return g_allow_ps4_on_ps5;
+}
+
 int pkg_platform_can_install(const pkg_detail_t *d, const char **reason) {
     if (reason) *reason = "";
     if (!d) return 1;
-    if (strcmp(pkg_platform_console(), "ps4") == 0 && strcmp(d->platform, "ps5") == 0) {
-        if (reason) *reason = PKG_PLATFORM_REASON_PS5_ON_PS4;
-        return 0;
+    const char *console = pkg_platform_console();
+    if (strcmp(console, "ps4") == 0) {
+        if (strcmp(d->platform, "ps5") == 0) {
+            if (reason) *reason = PKG_PLATFORM_REASON_PS5_ONLY;
+            return 0;
+        }
+        return 1;
+    }
+    if (strcmp(d->platform, "ps4") == 0) {
+        if (pkg_platform_is_homebrew(d)) {
+            if (reason) *reason = PKG_PLATFORM_REASON_PS4_HOMEBREW;
+            return 0;
+        }
+        if (!g_allow_ps4_on_ps5) {
+            if (reason) *reason = PKG_PLATFORM_REASON_PS4_DISABLED;
+            return 0;
+        }
     }
     return 1;
 }

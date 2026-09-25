@@ -3,7 +3,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import { DONATE_URL, isPlayStation } from '../../constants/config';
 import { formatBytes, formatVersion } from '../../utils/formatters';
 
-export default function SettingsView({ settings, onSaveSettings, onClose, onOpenSmb, onInstallShortcut, installingShortcut, cacheStats, loadingStats, onClearCache, leftoversData, scanningLeftovers, onScanLeftovers, onDeleteLeftover, showDonateQr, setShowDonateQr, httpSourcesCount = 0, shortcutSupported = true }) {
+export default function SettingsView({ settings, onSaveSettings, onClose, onOpenSmb, onInstallShortcut, installingShortcut, cacheStats, loadingStats, onClearCache, leftoversData, scanningLeftovers, onScanLeftovers, onDeleteLeftover, showDonateQr, setShowDonateQr, httpSourcesCount = 0, shortcutSupported = true, consoleName = '' }) {
   const safeSettings = settings || {};
   const smbSharesCount = Array.isArray(safeSettings.smb_shares)
     ? safeSettings.smb_shares.length
@@ -73,6 +73,30 @@ export default function SettingsView({ settings, onSaveSettings, onClose, onOpen
                       </svg>
                     </div>
                   </button>
+
+                  {consoleName !== 'ps4' && (
+                    <button
+                      type="button"
+                      onClick={() => onSaveSettings({ ...safeSettings, allow_ps4_on_ps5: safeSettings.allow_ps4_on_ps5 === false })}
+                      className="w-full bg-white/5 hover:bg-white/10 border border-white/10 rounded-[2px] ps5-focus-item p-4 flex items-center justify-between transition-colors cursor-pointer text-left"
+                    >
+                      <div className="min-w-0 flex-1 mr-4">
+                        <span className="text-sm font-semibold text-white block">Allow PS4 installs on PS5</span>
+                        <span className="text-xs text-zinc-400 block mt-1">
+                          PS4 games, DLC and updates can be installed on this PS5. PS4 homebrew never runs on PS5.
+                        </span>
+                      </div>
+                      <div className={`w-6 h-6 rounded-[2px] border flex items-center justify-center shrink-0 transition-colors ${
+                        safeSettings.allow_ps4_on_ps5 !== false
+                          ? 'bg-blue-600 border-blue-500 text-white'
+                          : 'bg-black/40 border-white/20 text-transparent'
+                      }`}>
+                        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                      </div>
+                    </button>
+                  )}
 
                   <button
                     type="button"

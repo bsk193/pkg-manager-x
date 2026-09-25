@@ -111,7 +111,10 @@ PARAM_JSON_DIST    := assets/param.json
 PARAM_JSON_HEADER  := include/assets_param_json.h
 ICON0_PNG_DIST     := assets/icon0.png
 ICON0_PNG_HEADER   := include/assets_icon0_png.h
-ASSET_HEADERS      := $(ASSET_HEADER) $(MANIFEST_HEADER) $(FAVICON_SVG_HEADER) $(ICON_PNG_HEADER) $(PARAM_JSON_HEADER) $(ICON0_PNG_HEADER)
+# Mozilla CA bundle for HTTPS sources (refresh: tools/update_ca_bundle.sh)
+CA_BUNDLE_DIST     := assets/cacert.pem
+CA_BUNDLE_HEADER   := include/assets_ca_bundle_pem.h
+ASSET_HEADERS      := $(ASSET_HEADER) $(MANIFEST_HEADER) $(FAVICON_SVG_HEADER) $(ICON_PNG_HEADER) $(PARAM_JSON_HEADER) $(ICON0_PNG_HEADER) $(CA_BUNDLE_HEADER)
 
 CFLAGS := -Os -Wall -Wno-visibility $(PLATFORM_CFLAGS) $(TLS_CFLAGS) $(X_VERSION_CFLAGS) -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_WAL -DPKGMGR_BUILD_COMMIT=\"$(BUILD_COMMIT)\" -DPKGMGR_BUILD_DATE=\"$(BUILD_DATE)\" -ffunction-sections -fdata-sections $(INCLUDES)
 LDFLAGS := -Wl,--gc-sections
@@ -153,6 +156,7 @@ frontend-build:
 	$(PYTHON) tools/gen_assets.py $(ICON_PNG_DIST) $(ICON_PNG_HEADER) icon_png
 	$(PYTHON) tools/gen_assets.py $(PARAM_JSON_DIST) $(PARAM_JSON_HEADER) param_json
 	$(PYTHON) tools/gen_assets.py $(ICON0_PNG_DIST) $(ICON0_PNG_HEADER) icon0_png
+	$(PYTHON) tools/gen_assets.py $(CA_BUNDLE_DIST) $(CA_BUNDLE_HEADER) ca_bundle_pem
 
 $(ASSET_HEADER): $(FRONTEND_DIST)
 	$(PYTHON) tools/gen_assets.py $(FRONTEND_DIST) $(ASSET_HEADER) index_html
@@ -171,6 +175,9 @@ $(PARAM_JSON_HEADER): $(PARAM_JSON_DIST)
 
 $(ICON0_PNG_HEADER): $(ICON0_PNG_DIST)
 	$(PYTHON) tools/gen_assets.py $(ICON0_PNG_DIST) $(ICON0_PNG_HEADER) icon0_png
+
+$(CA_BUNDLE_HEADER): $(CA_BUNDLE_DIST)
+	$(PYTHON) tools/gen_assets.py $(CA_BUNDLE_DIST) $(CA_BUNDLE_HEADER) ca_bundle_pem
 
 $(FRONTEND_DIST):
 	@echo "ERROR: frontend/dist/index.html not found! Run 'make frontend-build' first."

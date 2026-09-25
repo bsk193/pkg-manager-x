@@ -9,6 +9,7 @@
 #include "pkg_parser.h"
 #include "smb_client.h"
 #include "http_source.h"
+#include "pkg_platform.h"
 #include "icon_blurhash.h"
 #include "miniz.h"
 #include <stdio.h>
@@ -25,6 +26,7 @@ static app_settings_t g_settings = {
     .fade_installed_packages = 1,
     .all_sources_mode = 0,
     .pkg_install_debug = 0,
+    .allow_ps4_on_ps5 = 1,
     .smb_share_count = 0
 };
 
@@ -135,6 +137,14 @@ static void load_settings_from_disk(void) {
         }
     }
 
+    char *ps4_ptr = strstr(buf, "\"allow_ps4_on_ps5\":");
+    if (ps4_ptr) {
+        const char *v = ps4_ptr + 19;
+        while (*v == ' ') v++;
+        g_settings.allow_ps4_on_ps5 = strncmp(v, "false", 5) != 0;
+    }
+    pkg_platform_set_allow_ps4_on_ps5(g_settings.allow_ps4_on_ps5);
+
     pkg_cache_parse_smb_shares(buf, g_settings.smb_shares, &g_settings.smb_share_count);
     free(buf);
 }
@@ -154,11 +164,13 @@ static void save_settings_to_disk(void) {
                "  \"fade_installed_packages\": %s,\n"
                "  \"all_sources_mode\": %s,\n"
                "  \"pkg_install_debug\": %s,\n"
+               "  \"allow_ps4_on_ps5\": %s,\n"
                "  \"smb_shares\": [\n",
             g_settings.move_installed_to_end ? "true" : "false",
             g_settings.fade_installed_packages ? "true" : "false",
             g_settings.all_sources_mode ? "true" : "false",
-            g_settings.pkg_install_debug ? "true" : "false");
+            g_settings.pkg_install_debug ? "true" : "false",
+            g_settings.allow_ps4_on_ps5 ? "true" : "false");
 
     for (int i = 0; i < g_settings.smb_share_count; i++) {
         const smb_share_config_t *s = &g_settings.smb_shares[i];
@@ -225,6 +237,8 @@ int pkg_cache_set_settings(const app_settings_t *settings) {
     g_settings.fade_installed_packages = settings->fade_installed_packages ? 1 : 0;
     g_settings.all_sources_mode = settings->all_sources_mode ? 1 : 0;
     g_settings.pkg_install_debug = settings->pkg_install_debug ? 1 : 0;
+    g_settings.allow_ps4_on_ps5 = settings->allow_ps4_on_ps5 ? 1 : 0;
+    pkg_platform_set_allow_ps4_on_ps5(g_settings.allow_ps4_on_ps5);
     g_settings.smb_share_count = (settings->smb_share_count <= MAX_SMB_SHARES) ? settings->smb_share_count : MAX_SMB_SHARES;
     if (g_settings.smb_share_count < 0) g_settings.smb_share_count = 0;
     for (int i = 0; i < g_settings.smb_share_count; i++) {
@@ -467,6 +481,11 @@ int pkg_cache_lookup(const char *checksum, pkg_detail_t *out_detail) {
     extract_json_field(buf, "blurhash", out_detail->blurhash, sizeof(out_detail->blurhash));
     extract_json_field(buf, "platform", out_detail->platform, sizeof(out_detail->platform));
 
+    /* PKG Manager X: entries written before the platform stopped falling back
+     * to folder names may carry a folder-derived platform; reparse them. */
+    extract_json_field(buf, "x_rules", val, sizeof(val));
+    if (atoi(val) != PKG_CACHE_X_RULES) return -1;
+
     /* Verify if cached icon file exists */
     char icon_path[1024];
     snprintf(icon_path, sizeof(icon_path), "%s/%s/icon.png", pkg_cache_get_dir(), checksum);
@@ -524,7 +543,8 @@ static int write_meta_json(const char *dir_path, const pkg_detail_t *detail, con
                "  \"category\": \"%s\",\n"
                "  \"mtime\": %llu,\n"
                "  \"blurhash\": \"%s\",\n"
-               "  \"platform\": \"%s\"\n"
+               "  \"platform\": \"%s\",\n"
+               "  \"x_rules\": %d\n"
                "}\n",
             esc_title_id, esc_title_name, esc_loc, esc_def_lang, esc_content_id, esc_app_ver,
             (unsigned long long)detail->file_size,
@@ -536,7 +556,8 @@ static int write_meta_json(const char *dir_path, const pkg_detail_t *detail, con
             (int)detail->pkg_type, esc_type_str, esc_cat,
             (unsigned long long)detail->mtime,
             blurhash ? blurhash : "",
-            detail->platform);
+            detail->platform,
+            PKG_CACHE_X_RULES);
     if (fflush(f) != 0) {
         fclose(f);
         unlink(tmp_path);

@@ -670,6 +670,27 @@ static int install_request_canceled(void) {
 }
 #endif
 
+int installer_is_canceling(void) {
+    return g_cancel_stream || !g_monitor_running;
+}
+
+static char g_refusal_reason[128];
+
+const char *installer_refusal_reason(void) {
+    return g_refusal_reason;
+}
+
+/* 0 when this console may install the package; otherwise records and
+ * announces the reason (see pkg_platform_can_install). */
+static int installer_check_platform(const pkg_detail_t *detail, const char *what) {
+    const char *reason = "";
+    if (pkg_platform_can_install(detail, &reason)) return 0;
+    snprintf(g_refusal_reason, sizeof(g_refusal_reason), "%s", reason);
+    install_log("[INSTALLER] Refusing %s: %s", what, reason);
+    ps5_notify("%s", reason);
+    return -1;
+}
+
 static void *stream_installer_worker(void *arg) {
     (void)arg;
 
@@ -1360,6 +1381,12 @@ static int installer_start_internal(const char *pkg_path, const char *pending_pk
 
     pkg_detail_t detail;
     if (pkg_parser_parse(pkg_path_copy, &detail) != 0) {
+        /* The server no longer has it (404): report "unavailable" instead
+         * of starting an install that can only fail. */
+        if (pkg_parser_is_http_path(pkg_path_copy) && http_source_is_unavailable(pkg_path_copy)) {
+            install_log("[INSTALLER] %s is unavailable on the server", pkg_path_copy);
+            return INSTALLER_UNAVAILABLE;
+        }
         /* Fallback: populate basic info so installation can still proceed via sceAppInstUtil */
         memset(&detail, 0, sizeof(detail));
         strncpy(detail.path, pkg_path_copy, sizeof(detail.path) - 1);
@@ -1386,14 +1413,10 @@ static int installer_start_internal(const char *pkg_path, const char *pending_pk
     }
     pkg_platform_finalize(&detail);
 
-    /* PS4 cannot install PS5 packages: refuse before streaming anything,
-     * even when the request bypasses the UI's disabled button. */
-    const char *platform_reason = "";
-    if (!pkg_platform_can_install(&detail, &platform_reason)) {
-        install_log("[INSTALLER] Refusing %s: %s", pkg_path_copy, platform_reason);
-        ps5_notify("%s", platform_reason);
-        return -15;
-    }
+    /* Console compatibility (PS5 packages on PS4, PS4 homebrew on PS5, the
+     * PS4-on-PS5 switch): refuse before streaming anything, even when the
+     * request bypasses the UI's disabled button. */
+    if (installer_check_platform(&detail, pkg_path_copy) != 0) return INSTALLER_REFUSED;
 
     /* Multi-part packages are only supported on local drives (USB / optical discs) */
     if ((detail.is_multipart || strstr(pkg_path_copy, ".part") != NULL || strstr(pkg_path_copy, ".pkg.part") != NULL) &&
@@ -1607,17 +1630,17 @@ int installer_start_live(const char *live_uri) {
         if (browser_title[0]) snprintf(detail.title_name, sizeof(detail.title_name), "%s", browser_title);
         if (browser_id[0]) snprintf(detail.title_id, sizeof(detail.title_id), "%s", browser_id);
         if (browser_version[0]) snprintf(detail.app_version, sizeof(detail.app_version), "%s", browser_version);
-        if (!strcmp(browser_kind, "base") || !strcmp(browser_kind, "update") || !strcmp(browser_kind, "dlc"))
+        if (!strcmp(browser_kind, "base") || !strcmp(browser_kind, "update") || !strcmp(browser_kind, "dlc")) {
             snprintf(detail.pkg_type_str, sizeof(detail.pkg_type_str), "%s", browser_kind);
+            /* Keep the enum in step: homebrew gating looks at it. */
+            detail.pkg_type = !strcmp(browser_kind, "update") ? PKG_TYPE_UPDATE
+                            : !strcmp(browser_kind, "dlc")    ? PKG_TYPE_DLC
+                                                              : PKG_TYPE_BASE;
+        }
     }
 
     pkg_platform_finalize(&detail);
-    const char *platform_reason = "";
-    if (!pkg_platform_can_install(&detail, &platform_reason)) {
-        install_log("[INSTALLER] Refusing live package: %s", platform_reason);
-        ps5_notify("%s", platform_reason);
-        return -15;
-    }
+    if (installer_check_platform(&detail, "live package") != 0) return INSTALLER_REFUSED;
 
     if (detail.is_multipart) {
         ps5_notify("Live install supports single packages only");

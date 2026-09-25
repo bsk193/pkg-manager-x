@@ -13,6 +13,12 @@ export function useInstaller(props) {
   const shouldRestoreDetailScrollRef = props.shouldRestoreDetailScrollRef;
   const storage = props.storage;
   const selectedTitle = props.selectedTitle;
+  // Reloads the current package list (e.g. to show a package as unavailable).
+  const refreshPackages = () => {
+    if (fetchPackagesForDrive && selectedDriveRef && selectedDriveRef.current) {
+      fetchPackagesForDrive(selectedDriveRef.current);
+    }
+  };
 
   const [batchInstall, setBatchInstall] = useState(() => {
     try {
@@ -217,7 +223,8 @@ export function useInstaller(props) {
     try {
       const data = await installPackage(pkg.path);
       if (!data || !data.success) {
-        if (showToast) showToast(data.error || 'Failed to start installation', 'error');
+        if (showToast) showToast(data.error || 'Failed to start installation', (data && (data.unavailable || data.refused)) ? 'warning' : 'error');
+        if (data && data.unavailable && refreshPackages) refreshPackages();
         if (shouldRestoreDetailScrollRef) shouldRestoreDetailScrollRef.current = false;
       } else {
         if (showToast) showToast(`Installing ${pkg.title_name || 'package'}...`, 'success');
@@ -281,7 +288,8 @@ export function useInstaller(props) {
     try {
       const data = await installPackage(basePkg.path, updatePkg.path);
       if (!data || !data.success) {
-        if (showToast) showToast(data.error || 'Failed to start base installation', 'error');
+        if (showToast) showToast(data.error || 'Failed to start base installation', (data && (data.unavailable || data.refused)) ? 'warning' : 'error');
+        if (data && data.unavailable && refreshPackages) refreshPackages();
         try { localStorage.removeItem('pkg_batch_install'); } catch (e) {}
         setBatchInstall(null);
         if (shouldRestoreDetailScrollRef) shouldRestoreDetailScrollRef.current = false;

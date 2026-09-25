@@ -21,6 +21,7 @@ export function useSettings(props) {
       fade_installed_packages: true,
       all_sources_mode: false,
       pkg_install_debug: false,
+      allow_ps4_on_ps5: true,
       smb_shares: []
     };
   });
@@ -45,6 +46,7 @@ export function useSettings(props) {
   };
 
   const handleSaveSettings = async (newSettings) => {
+    const compatChanged = (settings.allow_ps4_on_ps5 !== false) !== (newSettings.allow_ps4_on_ps5 !== false);
     setSettings(newSettings);
     try {
       localStorage.setItem('pkgmgr_settings', JSON.stringify(newSettings));
@@ -65,6 +67,10 @@ export function useSettings(props) {
     try {
       await saveSettings(newSettings);
       showToast('Settings saved', 'success');
+      // Installability of PS4 packages changed: reload the package flags.
+      if (compatChanged && fetchPackagesForDrive && selectedDriveRef.current) {
+        fetchPackagesForDrive(selectedDriveRef.current);
+      }
       return true;
     } catch (e) {
       showToast('Failed to save settings: ' + e.message, 'error');

@@ -17,7 +17,10 @@ import { getCacheStats, clearCache } from './api/cache';
 import { scanLeftovers as apiScanLeftovers, deleteLeftover } from './api/leftovers';
 import { testSmb } from './api/smb';
 import { getPlatformInfo, DEFAULT_PLATFORM_INFO } from './api/platform';
-import { pkgPlatform, groupPlatform, canInstallOnConsole, PLATFORM_FILTER_STORAGE_KEY } from './utils/platform';
+import {
+  pkgPlatform, groupPlatform, pkgContentType, pkgBlockedReason, pkgGreyed,
+  PLATFORM_FILTER_STORAGE_KEY, TYPE_FILTER_STORAGE_KEY, HIDE_GREYED_STORAGE_KEY
+} from './utils/platform';
 
 import { useToast } from './hooks/useToast';
 import { useCache } from './hooks/useCache';
@@ -94,6 +97,24 @@ export default function App() {
     setPlatformFilterState(value);
     try { localStorage.setItem(PLATFORM_FILTER_STORAGE_KEY, value); } catch (e) {}
   }, []);
+  const [typeFilter, setTypeFilterState] = useState(() => {
+    try {
+      const saved = localStorage.getItem(TYPE_FILTER_STORAGE_KEY);
+      if (['game', 'dlc', 'update', 'homebrew'].includes(saved)) return saved;
+    } catch (e) {}
+    return 'all';
+  });
+  const setTypeFilter = useCallback((value) => {
+    setTypeFilterState(value);
+    try { localStorage.setItem(TYPE_FILTER_STORAGE_KEY, value); } catch (e) {}
+  }, []);
+  const [hideGreyed, setHideGreyedState] = useState(() => {
+    try { return localStorage.getItem(HIDE_GREYED_STORAGE_KEY) === '1'; } catch (e) { return false; }
+  });
+  const setHideGreyed = useCallback((value) => {
+    setHideGreyedState(value);
+    try { localStorage.setItem(HIDE_GREYED_STORAGE_KEY, value ? '1' : '0'); } catch (e) {}
+  }, []);
   const [selectedTitleId, setSelectedTitleId] = useState(null);
   const [showDirectInstall, setShowDirectInstall] = useState(false);
   const directTabId = useRef(Math.random().toString(36).slice(2) + Date.now());
@@ -141,7 +162,7 @@ export default function App() {
   }, [selectedTitleId]);
 
   const [packagePage, setPackagePage] = useState(0);
-  useEffect(() => { setPackagePage(0); }, [searchQuery, sortBy, selectedDrive?.id, platformFilter]);
+  useEffect(() => { setPackagePage(0); }, [searchQuery, sortBy, selectedDrive?.id, platformFilter, typeFilter, hideGreyed]);
 
   const [scanStatus, setScanStatus] = useState({
     is_scanning: false,
@@ -285,6 +306,8 @@ export default function App() {
     const filtered = packages.filter((p) => {
       if (p.filename && p.filename.startsWith('.')) return false;
       if (platformFilter !== 'all' && pkgPlatform(p) !== platformFilter) return false;
+      if (typeFilter !== 'all' && pkgContentType(p) !== typeFilter) return false;
+      if (hideGreyed && pkgGreyed(p, platformInfo.console)) return false;
       if (!searchQuery.trim()) return true;
       const q = searchQuery.toLowerCase();
       let matchLocalized = false;
@@ -410,16 +433,22 @@ export default function App() {
         (dlcs.length === 0 || areAllDlcsInstalled);
 
       const platform = groupPlatform(items, base);
-      const platformMismatch = items.some((p) => p.platform_mismatch);
-      const installableHere = canInstallOnConsole(platformInfo.console, platform);
+      // Compatibility follows the representative package (the base, or the
+      // homebrew app itself): "PS5 only" on PS4, PS4 homebrew on PS5, ...
+      const blockedReason = pkgBlockedReason(primaryPkg, platformInfo.console);
+      const installableHere = !blockedReason;
+      const contentType = pkgContentType(primaryPkg);
+      const unavailable = items.every((p) => p.unavailable);
 
       groups.push({
         id: key,
         title_id: titleId,
         title_name: titleName,
         platform,
-        platformMismatch,
         installableHere,
+        blockedReason,
+        contentType,
+        unavailable,
         sourceName: srcInfo.name,
         sourceType: srcInfo.type,
         sourceId: srcInfo.id,
@@ -496,7 +525,7 @@ export default function App() {
       }
       return 0;
     });
-  }, [packages, searchQuery, sortBy, settings.move_installed_to_end, selectedDrive, drives, platformFilter, platformInfo.console]);
+  }, [packages, searchQuery, sortBy, settings.move_installed_to_end, selectedDrive, drives, platformFilter, typeFilter, hideGreyed, platformInfo.console]);
 
   const selectedTitle = useMemo(() => {
     if (!selectedTitleId) return null;
@@ -994,6 +1023,7 @@ export default function App() {
             setShowDonateQr={setShowDonateQr}
             httpSourcesCount={httpSources.length}
             shortcutSupported={platformInfo.shortcut_supported !== false}
+            consoleName={platformInfo.console}
           />
         ) : selectedTitle ? (
           <TitleDetailView
@@ -1031,6 +1061,11 @@ export default function App() {
             packages={packages}
             platformFilter={platformFilter}
             onPlatformFilter={setPlatformFilter}
+            typeFilter={typeFilter}
+            onTypeFilter={setTypeFilter}
+            hideGreyed={hideGreyed}
+            onHideGreyed={setHideGreyed}
+            consoleName={platformInfo.console}
           />
         ) : (
           <DrivesView

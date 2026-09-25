@@ -2,11 +2,11 @@ import React from 'react';
 import BlurIcon from '../../BlurIcon';
 import { formatBytes, formatVersion } from '../../utils/formatters';
 import { getInstallStorageOptions } from '../../utils/installStorage';
-import { platformLabel } from '../../utils/platform';
+import { platformLabel, CONTENT_TYPE_LABELS } from '../../utils/platform';
 
 export default function TitleDetailView({ title: selectedTitle, onBack, onInstall, onInstallBaseAndUpdate, onOpenLeftoverCleanup, installerStatus, storage, settings, drives, selectedDrive, consoleName = 'ps5' }) {
   const platform = platformLabel(selectedTitle.platform);
-  const otherFolder = platform === 'PS5' ? 'PS4' : 'PS5';
+  const typeLabel = CONTENT_TYPE_LABELS[selectedTitle.contentType] || '';
   const handleBackToPackages = onBack;
   const handleInstall = onInstall;
   const handleInstallBaseAndUpdate = onInstallBaseAndUpdate;
@@ -83,6 +83,12 @@ export default function TitleDetailView({ title: selectedTitle, onBack, onInstal
                         </span>
                       )}
 
+                      {typeLabel && (
+                        <span className="px-3 py-1 my-0.5 rounded-[2px] font-bold border shrink-0 bg-white/5 text-zinc-200 border-white/10">
+                          {typeLabel}
+                        </span>
+                      )}
+
                       {selectedDrive.id === '__all__' && selectedTitle.sourceName && (
                         <span className={`px-3 py-1 my-0.5 rounded-[2px] font-bold border shrink-0 text-xs sm:text-sm ${
                           selectedTitle.sourceType === 'smb'
@@ -130,12 +136,12 @@ export default function TitleDetailView({ title: selectedTitle, onBack, onInstal
 
                     {selectedTitle.installableHere === false && (
                       <p className="text-xs text-rose-300 mt-3 font-medium">
-                        This is a {platform} package. A {consoleName === 'ps4' ? 'PS4' : 'PS5'} cannot install it.
+                        {selectedTitle.blockedReason || `This is a ${platform} package. A ${consoleName === 'ps4' ? 'PS4' : 'PS5'} cannot install it.`}
                       </p>
                     )}
-                    {selectedTitle.platformMismatch && (
-                      <p className="text-xs text-amber-300 mt-3 font-medium">
-                        This {platform} package is stored in a {otherFolder} folder. Move it to keep your library organized.
+                    {selectedTitle.unavailable && (
+                      <p className="text-xs text-zinc-300 mt-3 font-medium">
+                        Unavailable on the server right now. It stays listed and can be installed once the server has it again.
                       </p>
                     )}
 

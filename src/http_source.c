@@ -38,6 +38,7 @@
 #include <sys/types.h>
 
 #ifdef PKGMGR_HAVE_TLS
+#include "assets_ca_bundle_pem.h" /* Mozilla CA list (assets/cacert.pem) */
 #include <sys/sysctl.h>
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/entropy.h>
@@ -55,7 +56,9 @@
 #define HTTP_MAX_DEPTH          5
 #define HTTP_MAX_DIRS           512
 #define HTTP_POOL_MAX           6
-#define HTTP_DEFAULT_CA_PATH    "/data/pkgmgr/cacert.pem"
+#define HTTP_DEFAULT_CA_PATH    "/data/pkgmgr/cacert.pem" /* optional extra CAs */
+#define HTTP_STATE_SLOTS        8192   /* per-file state (power of two) */
+#define HTTP_READ_RETRY_SEC     120    /* install streams ride out outages this long */
 
 #ifdef MSG_NOSIGNAL
 #define HTTP_SEND_FLAGS MSG_NOSIGNAL
@@ -787,30 +790,42 @@ static int tls_rng(void *ctx, unsigned char *out, size_t len) {
     return r;
 }
 
-static const char *ca_bundle_path(void) {
+static const char *ca_extra_path(void) {
     const char *env = getenv("PKG_CA_BUNDLE");
     return (env && env[0]) ? env : HTTP_DEFAULT_CA_PATH;
 }
 
-/* Loads the CA bundle once; retries later if it was missing/invalid. */
+/* Trust store: the Mozilla CA list compiled into the payload (console
+ * firmware root stores are not reachable from mbedTLS and lag behind, e.g.
+ * Let's Encrypt's newer roots), plus optional extra CAs (a home CA) from
+ * PKG_CA_BUNDLE or /data/pkgmgr/cacert.pem. Loaded once. */
 static int tls_load_ca(char *err, size_t err_sz) {
     pthread_mutex_lock(&g_tls_mutex);
     if (g_ca_loaded != 1) {
-        const char *path = ca_bundle_path();
-        struct stat st;
-        if (stat(path, &st) != 0) {
-            pthread_mutex_unlock(&g_tls_mutex);
-            snprintf(err, err_sz, "No CA bundle at %s. Copy a cacert.pem there, or trust the "
-                                  "server certificate fingerprint instead", path);
-            return -1;
-        }
         if (g_ca_loaded == -1) mbedtls_x509_crt_free(&g_ca);
         mbedtls_x509_crt_init(&g_ca);
-        int r = mbedtls_x509_crt_parse_file(&g_ca, path);
-        g_ca_loaded = (r >= 0 && g_ca.version != 0) ? 1 : -1;
+        /* PEM parsing needs the terminating NUL inside the length. */
+        unsigned char *pem = (unsigned char *)malloc(assets_ca_bundle_pem_len + 1);
+        if (pem) {
+            memcpy(pem, assets_ca_bundle_pem, assets_ca_bundle_pem_len);
+            pem[assets_ca_bundle_pem_len] = '\0';
+            /* > 0 = some certificates skipped (unsupported algorithms). */
+            int r = mbedtls_x509_crt_parse(&g_ca, pem, assets_ca_bundle_pem_len + 1);
+            if (r != 0) install_log("[HTTP] Bundled CA list: parse result -0x%04x / %d skipped",
+                                    r < 0 ? (unsigned)-r : 0u, r > 0 ? r : 0);
+            free(pem);
+        }
+        const char *extra = ca_extra_path();
+        struct stat st;
+        if (stat(extra, &st) == 0) {
+            int r = mbedtls_x509_crt_parse_file(&g_ca, extra);
+            if (r != 0) install_log("[HTTP] Extra CA file %s: parse result %d", extra, r);
+        }
+        g_ca_loaded = g_ca.version != 0 ? 1 : -1;
         if (g_ca_loaded != 1) {
             pthread_mutex_unlock(&g_tls_mutex);
-            snprintf(err, err_sz, "CA bundle %s could not be parsed (-0x%04x)", path, (unsigned)-r);
+            snprintf(err, err_sz, "No usable CA certificates. Trust the server certificate "
+                                  "fingerprint instead");
             return -1;
         }
     }
@@ -936,6 +951,15 @@ static int tcp_connect(const char *host, int port, char *err, size_t err_sz) {
     return fd;
 }
 
+/* 1 when u is the source's own host (scheme/host/port of its base URL).
+ * Credentials and relaxed TLS settings apply there only, never to a
+ * redirect target such as a signed R2 URL. */
+static int cfg_same_host(const http_source_config_t *cfg, const http_url_t *u) {
+    if (!cfg) return 0;
+    http_url_t cu;
+    return http_url_parse(cfg->url, &cu) == 0 && same_endpoint(&cu, u);
+}
+
 #ifdef PKGMGR_HAVE_TLS
 static int tls_handshake(http_conn_t *c, const http_source_config_t *cfg, const char *force_mode,
                          char *err, size_t err_sz) {
@@ -943,7 +967,9 @@ static int tls_handshake(http_conn_t *c, const http_source_config_t *cfg, const 
         snprintf(err, err_sz, "TLS random generator could not be seeded");
         return -1;
     }
-    const char *mode = force_mode ? force_mode : (cfg ? cfg->tls_mode : HTTP_TLS_VERIFY);
+    /* Other hosts (redirect targets) are always verified against the CA list. */
+    const char *mode = force_mode ? force_mode
+                     : cfg_same_host(cfg, &c->ep) ? cfg->tls_mode : HTTP_TLS_VERIFY;
     if (!mode || !mode[0]) mode = HTTP_TLS_VERIFY;
     if (strcmp(mode, HTTP_TLS_VERIFY) == 0 && tls_load_ca(err, err_sz) != 0) return -1;
 
@@ -1137,10 +1163,9 @@ typedef struct {
     size_t body_read;        /* bytes delivered into a range buffer */
 } http_resp_t;
 
+/* Basic auth goes to the source's own host only. */
 static int cfg_applies_to(const http_source_config_t *cfg, const http_url_t *u) {
-    if (!cfg || cfg->username[0] == '\0') return 0;
-    http_url_t cu;
-    return http_url_parse(cfg->url, &cu) == 0 && same_endpoint(&cu, u);
+    return cfg && cfg->username[0] != '\0' && cfg_same_host(cfg, u);
 }
 
 static int http_send_request(http_conn_t *c, const http_url_t *u, const http_source_config_t *cfg,
@@ -1462,16 +1487,86 @@ static const http_source_config_t *cfg_for(const char *url, http_source_config_t
 }
 
 /* ══════════════════════════════════════════════════════════════════════
+ * Per-file state: size promised by a gateway catalog, "unavailable" (404
+ * or listed as neither local nor on R2). Keyed by the package URL; small
+ * open-addressing table, entries are never removed.
+ * ══════════════════════════════════════════════════════════════════════ */
+
+typedef struct {
+    uint64_t key;            /* fnv1a64(url), 0 = empty slot */
+    uint64_t expected_size;  /* 0 = unknown */
+    int unavailable;
+} file_state_t;
+
+static file_state_t g_fstate[HTTP_STATE_SLOTS];
+static pthread_mutex_t g_fstate_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Caller holds g_fstate_mutex. */
+static file_state_t *fstate_find(const char *url, int create) {
+    uint64_t key = fnv1a64(url);
+    if (key == 0) key = 1;
+    size_t mask = HTTP_STATE_SLOTS - 1;
+    for (size_t i = 0, idx = (size_t)key & mask; i < HTTP_STATE_SLOTS; i++, idx = (idx + 1) & mask) {
+        file_state_t *e = &g_fstate[idx];
+        if (e->key == key) return e;
+        if (e->key == 0) {
+            if (!create) return NULL;
+            e->key = key;
+            return e;
+        }
+    }
+    return NULL; /* full */
+}
+
+void http_source_set_unavailable(const char *url, int unavailable) {
+    if (!url) return;
+    pthread_mutex_lock(&g_fstate_mutex);
+    file_state_t *e = fstate_find(url, unavailable);
+    if (e) e->unavailable = unavailable ? 1 : 0;
+    pthread_mutex_unlock(&g_fstate_mutex);
+}
+
+int http_source_is_unavailable(const char *url) {
+    if (!url) return 0;
+    pthread_mutex_lock(&g_fstate_mutex);
+    file_state_t *e = fstate_find(url, 0);
+    int v = e ? e->unavailable : 0;
+    pthread_mutex_unlock(&g_fstate_mutex);
+    return v;
+}
+
+static void expected_size_set(const char *url, uint64_t size) {
+    pthread_mutex_lock(&g_fstate_mutex);
+    file_state_t *e = fstate_find(url, size != 0);
+    if (e) e->expected_size = size;
+    pthread_mutex_unlock(&g_fstate_mutex);
+}
+
+uint64_t http_source_expected_size(const char *url) {
+    if (!url) return 0;
+    pthread_mutex_lock(&g_fstate_mutex);
+    file_state_t *e = fstate_find(url, 0);
+    uint64_t v = e ? e->expected_size : 0;
+    pthread_mutex_unlock(&g_fstate_mutex);
+    return v;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
  * One-shot operations
  * ══════════════════════════════════════════════════════════════════════ */
 
-static int range_probe(http_conn_t **pc, const char *url, const http_source_config_t *cfg,
-                       uint64_t *out_total, char *final_url, size_t final_sz,
-                       char *err, size_t err_sz) {
+/* 1 = byte ranges work (*out_total set), 0 = reachable without ranges,
+ * -1 = failure (*out_status gets the HTTP status, or -1 for transport). */
+static int range_probe_st(http_conn_t **pc, const char *url, const http_source_config_t *cfg,
+                          uint64_t *out_total, char *final_url, size_t final_sz,
+                          int *out_status, char *err, size_t err_sz) {
     unsigned char b[1];
     fetch_opts_t o = { "GET", 1, 0, 1, b, NULL, NULL, 0 };
     http_resp_t r;
     int st = http_fetch(pc, url, cfg, &o, &r, final_url, final_sz, err, err_sz);
+    if (out_status) *out_status = st;
+    if (st == 404 || st == 410) http_source_set_unavailable(url, 1);
+    else if (st == 206) http_source_set_unavailable(url, 0);
     if (st == 206 && r.range_total > 0) {
         *out_total = r.range_total;
         return 1;
@@ -1481,7 +1576,21 @@ static int range_probe(http_conn_t **pc, const char *url, const http_source_conf
     return -1;
 }
 
+static int range_probe(http_conn_t **pc, const char *url, const http_source_config_t *cfg,
+                       uint64_t *out_total, char *final_url, size_t final_sz,
+                       char *err, size_t err_sz) {
+    return range_probe_st(pc, url, cfg, out_total, final_url, final_sz, NULL, err, err_sz);
+}
+
 int http_source_stat(const char *url, uint64_t *out_size, uint32_t *out_mtime) {
+    /* A gateway catalog already told us the size; its /files/ links may
+     * redirect to signed GET-only URLs that reject HEAD. */
+    uint64_t known = http_source_expected_size(url);
+    if (known) {
+        if (out_size) *out_size = known;
+        if (out_mtime) *out_mtime = 0;
+        return 0;
+    }
     http_source_config_t cs;
     const http_source_config_t *cfg = cfg_for(url, &cs);
     http_conn_t *conn = NULL;
@@ -1584,6 +1693,7 @@ typedef struct {
     int dirs;
     http_conn_t *conn;
     char listing[16];
+    int json_listing;        /* directory listings came as nginx JSON */
     char first_pkg[HTTP_URL_MAX];
     uint64_t *seen;
     size_t seen_count, seen_cap;
@@ -1688,6 +1798,120 @@ static int scan_index_json(scan_ctx_t *s, const char *body, size_t len) {
     return 0;
 }
 
+/* Home-server gateway catalog (GET <base>api/catalog):
+ *   {"generated":"...","files":[{"path":"ps5/games/X.pkg","console":"ps5",
+ *     "size":123,"local":true,"r2":true}, ...]}
+ * Every file is fetched from <base>files/<path>; the gateway answers 200
+ * (with Range), a 302 to a signed R2 URL, or 404. "console" is ignored on
+ * purpose: the platform always comes from the package itself. */
+static int scan_catalog(scan_ctx_t *s, const char *body, size_t len) {
+    const char *end = body + len;
+    const char *arr = json_value(body, end, "files");
+    if (!arr || *arr != '[') return -1;
+    const char *arr_end = json_match(arr, end);
+    if (!arr_end) return -1;
+
+    const char *p = arr + 1;
+    while (p < arr_end) {
+        while (p < arr_end && (isspace((unsigned char)*p) || *p == ',')) p++;
+        if (p >= arr_end) break;
+        if (*p != '{') {
+            p++;
+            continue;
+        }
+        const char *oe = json_match(p, arr_end + 1);
+        if (!oe) break;
+        char path[HTTP_URL_MAX] = "";
+        uint64_t size = 0, mtime = 0;
+        int local = -1, r2 = -1;
+        json_get_str(p, oe, "path", path, sizeof(path));
+        int have_size = json_get_u64(p, oe, "size", &size) == 0;
+        json_get_u64(p, oe, "mtime", &mtime);
+        json_get_bool(p, oe, "local", &local);
+        json_get_bool(p, oe, "r2", &r2);
+        p = oe + 1;
+        if (path[0] == '\0') continue;
+
+        const char *rel = path;
+        while (*rel == '/') rel++;
+        char enc[HTTP_URL_MAX], url[HTTP_URL_MAX];
+        pct_encode_path(rel, enc, sizeof(enc));
+        if (strlen(s->cfg->url) + 6 + strlen(enc) >= sizeof(url)) continue;
+        snprintf(url, sizeof(url), "%sfiles/%s", s->cfg->url, enc);
+        if (have_size) expected_size_set(url, size);
+        /* Listed but stored nowhere: show it, but as unavailable. */
+        http_source_set_unavailable(url, local == 0 && r2 == 0);
+        emit_pkg(s, url, size, (uint32_t)mtime, have_size);
+    }
+    return 0;
+}
+
+static int scan_html_dir(scan_ctx_t *s, const char *dir_url, int depth);
+
+/* nginx "autoindex_format json":
+ *   [{"name":"PS5","type":"directory","mtime":"Thu, 25 Sep 2026 10:00:00 GMT"},
+ *    {"name":"x.pkg","type":"file","mtime":"...","size":123}]
+ * Sizes and dates come with the listing, so no per-file HEAD is needed. */
+static int scan_json_dir(scan_ctx_t *s, const char *dir_url, const char *body, size_t len,
+                         int depth) {
+    const char *end = body + len;
+    const char *arr = body;
+    while (arr < end && isspace((unsigned char)*arr)) arr++;
+    if (arr >= end || *arr != '[') return -1;
+    const char *arr_end = json_match(arr, end);
+    if (!arr_end) return -1;
+
+    char **subdirs = NULL;
+    size_t nsub = 0, capsub = 0;
+    const char *p = arr + 1;
+    while (p < arr_end) {
+        while (p < arr_end && (isspace((unsigned char)*p) || *p == ',')) p++;
+        if (p >= arr_end) break;
+        if (*p != '{') {
+            p++;
+            continue;
+        }
+        const char *oe = json_match(p, arr_end + 1);
+        if (!oe) break;
+        char name[512] = "", type[16] = "", mtime_str[64] = "";
+        uint64_t size = 0;
+        json_get_str(p, oe, "name", name, sizeof(name));
+        json_get_str(p, oe, "type", type, sizeof(type));
+        json_get_str(p, oe, "mtime", mtime_str, sizeof(mtime_str));
+        int have_size = json_get_u64(p, oe, "size", &size) == 0;
+        p = oe + 1;
+        if (name[0] == '\0' || name[0] == '.' || strchr(name, '/')) continue;
+
+        char enc[HTTP_URL_MAX], abs[HTTP_URL_MAX];
+        pct_encode_path(name, enc, sizeof(enc));
+        int is_dir = strcmp(type, "directory") == 0;
+        if (strlen(dir_url) + strlen(enc) + 2 >= sizeof(abs)) continue;
+        snprintf(abs, sizeof(abs), "%s%s%s", dir_url, enc, is_dir ? "/" : "");
+        if (is_dir) {
+            if (depth < HTTP_MAX_DEPTH && seen_add(s, abs)) {
+                if (nsub == capsub) {
+                    size_t ncap = capsub ? capsub * 2 : 16;
+                    char **n = (char **)realloc(subdirs, ncap * sizeof(char *));
+                    if (!n) continue;
+                    subdirs = n;
+                    capsub = ncap;
+                }
+                subdirs[nsub] = strdup(abs);
+                if (subdirs[nsub]) nsub++;
+            }
+        } else if (strcmp(type, "file") == 0) {
+            emit_pkg(s, abs, size, parse_http_date(mtime_str), have_size);
+        }
+    }
+
+    for (size_t i = 0; i < nsub; i++) {
+        scan_html_dir(s, subdirs[i], depth + 1);
+        free(subdirs[i]);
+    }
+    free(subdirs);
+    return 0;
+}
+
 static int scan_html_dir(scan_ctx_t *s, const char *dir_url, int depth) {
     if (depth > HTTP_MAX_DEPTH || s->dirs >= HTTP_MAX_DIRS) return 0;
     s->dirs++;
@@ -1703,6 +1927,20 @@ static int scan_html_dir(scan_ctx_t *s, const char *dir_url, int depth) {
         if (depth == 0) {
             if (st > 0) snprintf(s->err, sizeof(s->err), "Listing %s returned HTTP %d", dir_url, st);
             else copy_str(s->err, sizeof(s->err), err);
+            return -1;
+        }
+        return 0;
+    }
+
+    /* nginx with "autoindex_format json;" */
+    const char *first = body;
+    while (*first && isspace((unsigned char)*first)) first++;
+    if (*first == '[') {
+        if (depth == 0) s->json_listing = 1;
+        int rc = scan_json_dir(s, dir_url, body, blen, depth);
+        free(body);
+        if (rc != 0 && depth == 0) {
+            snprintf(s->err, sizeof(s->err), "Unreadable JSON listing at %s", dir_url);
             return -1;
         }
         return 0;
@@ -1775,15 +2013,39 @@ static int scan_html_dir(scan_ctx_t *s, const char *dir_url, int depth) {
 }
 
 static int scan_run(scan_ctx_t *s) {
-    /* 1. index.json */
-    char idx_url[HTTP_URL_MAX];
-    snprintf(idx_url, sizeof(idx_url), "%sindex.json", s->cfg->url);
     char *body = NULL;
     size_t blen = 0;
     char err[256] = "";
     fetch_opts_t o = { "GET", 0, 0, 0, NULL, &body, &blen, HTTP_MAX_LISTING };
     http_resp_t r;
-    int st = http_fetch(&s->conn, idx_url, s->cfg, &o, &r, NULL, 0, err, sizeof(err));
+
+    /* 1. Home-server gateway catalog */
+    char cat_url[HTTP_URL_MAX];
+    snprintf(cat_url, sizeof(cat_url), "%sapi/catalog", s->cfg->url);
+    int st = http_fetch(&s->conn, cat_url, s->cfg, &o, &r, NULL, 0, err, sizeof(err));
+    if (st < 0) {
+        free(body);
+        copy_str(s->err, sizeof(s->err), err);
+        return -1;
+    }
+    if (st == 401) {
+        free(body);
+        snprintf(s->err, sizeof(s->err), "Access denied (HTTP 401). Check username and password");
+        return -1;
+    }
+    if (st == 200 && body && scan_catalog(s, body, blen) == 0) {
+        free(body);
+        copy_str(s->listing, sizeof(s->listing), "catalog");
+        return s->count;
+    }
+    free(body);
+    body = NULL;
+    blen = 0;
+
+    /* 2. index.json */
+    char idx_url[HTTP_URL_MAX];
+    snprintf(idx_url, sizeof(idx_url), "%sindex.json", s->cfg->url);
+    st = http_fetch(&s->conn, idx_url, s->cfg, &o, &r, NULL, 0, err, sizeof(err));
     if (st < 0) {
         free(body);
         copy_str(s->err, sizeof(s->err), err);
@@ -1800,9 +2062,9 @@ static int scan_run(scan_ctx_t *s) {
         return -1;
     }
 
-    /* 2. HTML directory listing */
+    /* 3. Directory listing (nginx JSON autoindex, or any HTML index page) */
     if (seen_add(s, s->cfg->url) && scan_html_dir(s, s->cfg->url, 0) != 0) return -1;
-    copy_str(s->listing, sizeof(s->listing), "html");
+    copy_str(s->listing, sizeof(s->listing), s->json_listing ? "json" : "html");
     return s->count;
 }
 
@@ -1882,7 +2144,10 @@ void http_source_test(const http_source_config_t *cfg_in, http_source_test_resul
         out->range_supported = rp == 1 ? 1 : 0;
     }
 
-    const char *how = strcmp(s.listing, "index.json") == 0 ? "index.json" : "directory listing";
+    const char *how = strcmp(s.listing, "catalog") == 0    ? "server catalog (api/catalog)"
+                    : strcmp(s.listing, "index.json") == 0 ? "index.json"
+                    : strcmp(s.listing, "json") == 0       ? "JSON directory listing"
+                                                           : "directory listing";
     if (n == 0) {
         snprintf(out->message, sizeof(out->message),
                  "Connected, but no .pkg files were found in the %s", how);
@@ -1902,12 +2167,17 @@ void http_source_test(const http_source_config_t *cfg_in, http_source_test_resul
  * ══════════════════════════════════════════════════════════════════════ */
 
 struct http_file_session {
-    char url[HTTP_URL_MAX];      /* final URL after redirects */
+    char origin[HTTP_URL_MAX];   /* URL as listed (e.g. gateway /files/<path>) */
+    char url[HTTP_URL_MAX];      /* URL actually read, after redirects (signed R2) */
     http_url_t u;
+    int redirected;              /* url != origin */
+    unsigned generation;         /* bumped whenever url is re-resolved */
+    int resilient;               /* ride out outages (install streams) */
     http_source_config_t cfg;
     int has_cfg;
     uint64_t size;
-    pthread_mutex_t lock;
+    pthread_mutex_t lock;        /* url/u/redirected/generation + idle pool */
+    pthread_mutex_t refresh_lock;
     http_conn_t *idle[HTTP_POOL_MAX];
     int idle_count;
 };
@@ -1935,30 +2205,98 @@ static void session_give(http_file_session_t *s, http_conn_t *c) {
     if (c) conn_close(c);
 }
 
+static void session_set_url(http_file_session_t *s, const char *final_url, const http_url_t *u) {
+    copy_str(s->url, sizeof(s->url), final_url);
+    s->u = *u;
+    s->redirected = strcmp(s->url, s->origin) != 0;
+    s->generation++;
+}
+
 http_file_session_t *http_file_session_open(const char *url) {
     if (!url) return NULL;
     http_file_session_t *s = (http_file_session_t *)calloc(1, sizeof(*s));
     if (!s) return NULL;
     pthread_mutex_init(&s->lock, NULL);
+    pthread_mutex_init(&s->refresh_lock, NULL);
     s->has_cfg = http_sources_find_for_url(url, &s->cfg) == 0;
+    copy_str(s->origin, sizeof(s->origin), url);
 
     http_conn_t *conn = NULL;
-    char err[256] = "";
+    char err[256] = "", final_url[HTTP_URL_MAX] = "";
     uint64_t total = 0;
-    int rp = range_probe(&conn, url, s->has_cfg ? &s->cfg : NULL, &total,
-                         s->url, sizeof(s->url), err, sizeof(err));
-    if (rp != 1) {
+    int status = 0;
+    int rp = range_probe_st(&conn, url, s->has_cfg ? &s->cfg : NULL, &total,
+                            final_url, sizeof(final_url), &status, err, sizeof(err));
+    uint64_t expected = http_source_expected_size(url);
+    http_url_t u;
+    const char *why = NULL;
+    if (rp == 0) why = "server does not support byte ranges";
+    else if (rp != 1) why = (status == 404 || status == 410) ? "unavailable on the server" : err;
+    else if (expected && total != expected) why = "size differs from the server catalog";
+    else if (http_url_parse(final_url, &u) != 0) why = "invalid redirect target";
+    if (why) {
         if (conn) conn_close(conn);
-        install_log("[HTTP] Cannot stream %.300s: %s", url,
-                    rp == 0 ? "server does not support byte ranges" : err);
+        if (rp == 1 && expected && total != expected) {
+            install_log("[HTTP] Cannot stream %.300s: %s (%llu, expected %llu)", url, why,
+                        (unsigned long long)total, (unsigned long long)expected);
+        } else {
+            install_log("[HTTP] Cannot stream %.300s: %s", url, why);
+        }
+        pthread_mutex_destroy(&s->refresh_lock);
         pthread_mutex_destroy(&s->lock);
         free(s);
         return NULL;
     }
     s->size = total;
-    http_url_parse(s->url, &s->u);
+    session_set_url(s, final_url, &u);
     session_give(s, conn);
     return s;
+}
+
+void http_file_session_set_resilient(http_file_session_t *s, int resilient) {
+    if (s) s->resilient = resilient ? 1 : 0;
+}
+
+/* Asks the listed URL again for a fresh redirect target (signed links
+ * expire). Only one thread refreshes; the others find a new generation and
+ * simply retry. 0 = refreshed (or refreshed by another thread), -1 = the
+ * file is gone or changed, -2 = temporary failure. */
+static int session_refresh(http_file_session_t *s, unsigned seen_generation) {
+    pthread_mutex_lock(&s->refresh_lock);
+    pthread_mutex_lock(&s->lock);
+    int stale = s->generation == seen_generation;
+    pthread_mutex_unlock(&s->lock);
+    int rc = 0;
+    if (stale) {
+        http_conn_t *conn = NULL;
+        char err[256] = "", final_url[HTTP_URL_MAX] = "";
+        uint64_t total = 0;
+        int status = 0;
+        int rp = range_probe_st(&conn, s->origin, s->has_cfg ? &s->cfg : NULL, &total,
+                                final_url, sizeof(final_url), &status, err, sizeof(err));
+        http_url_t u;
+        if (rp == 1 && total == s->size && http_url_parse(final_url, &u) == 0) {
+            pthread_mutex_lock(&s->lock);
+            session_set_url(s, final_url, &u);
+            pthread_mutex_unlock(&s->lock);
+            session_give(s, conn);
+            conn = NULL;
+            install_log("[HTTP] Refreshed download link for %.300s", s->origin);
+        } else if (rp == 1) {
+            install_log("[HTTP] %.300s changed size on the server (%llu -> %llu)", s->origin,
+                        (unsigned long long)s->size, (unsigned long long)total);
+            rc = -1;
+        } else if (status < 0 || status >= 500 || status == 408 || status == 429) {
+            rc = -2;
+        } else {
+            install_log("[HTTP] Could not refresh the link for %.300s: %s", s->origin,
+                        (status == 404 || status == 410) ? "unavailable on the server" : err);
+            rc = -1;
+        }
+        if (conn) conn_close(conn);
+    }
+    pthread_mutex_unlock(&s->refresh_lock);
+    return rc;
 }
 
 ssize_t http_file_session_read(http_file_session_t *s, void *buf, size_t count, uint64_t offset) {
@@ -1966,16 +2304,70 @@ ssize_t http_file_session_read(http_file_session_t *s, void *buf, size_t count, 
     if (count == 0 || offset >= s->size) return 0;
     if (count > s->size - offset) count = (size_t)(s->size - offset);
 
-    http_conn_t *c = session_take(s);
-    char err[256] = "";
-    fetch_opts_t o = { "GET", 1, offset, count, buf, NULL, NULL, 0 };
-    http_resp_t r;
-    int st = fetch_on(&c, &s->u, s->has_cfg ? &s->cfg : NULL, &o, &r, err, sizeof(err));
-    session_give(s, c);
-    if (st == 206 && r.body_read > 0) return (ssize_t)r.body_read;
-    install_log("[HTTP] Range read %llu+%zu failed: %s",
-                (unsigned long long)offset, count, st > 0 ? "unexpected HTTP status" : err);
-    return -1;
+    time_t deadline = 0;
+    int delay = 1, refreshes = 0;
+    for (;;) {
+        http_url_t u;
+        pthread_mutex_lock(&s->lock);
+        u = s->u;
+        unsigned generation = s->generation;
+        int redirected = s->redirected;
+        pthread_mutex_unlock(&s->lock);
+
+        http_conn_t *c = session_take(s);
+        char err[256] = "";
+        fetch_opts_t o = { "GET", 1, offset, count, buf, NULL, NULL, 0 };
+        http_resp_t r;
+        int st = fetch_on(&c, &u, s->has_cfg ? &s->cfg : NULL, &o, &r, err, sizeof(err));
+        session_give(s, c);
+        if (st == 206 && r.body_read > 0) return (ssize_t)r.body_read;
+
+        int transient = 0;
+        if ((st >= 300 && st < 400) ||
+            (redirected && (st == 400 || st == 401 || st == 403 || st == 404 || st == 410))) {
+            /* Expired / revoked signed link (R2 answers 403 after 12 h), or
+             * the origin now redirects: get a fresh link and continue at the
+             * same offset. */
+            if (refreshes++ >= 3) {
+                install_log("[HTTP] Range read %llu+%zu: link keeps failing (HTTP %d)",
+                            (unsigned long long)offset, count, st);
+                return -1;
+            }
+            int rr = session_refresh(s, generation);
+            if (rr == 0) continue;
+            if (rr == -1) return -1;
+            transient = 1;
+        } else if (st == 404 || st == 410) {
+            http_source_set_unavailable(s->origin, 1);
+            install_log("[HTTP] %.300s is unavailable on the server (HTTP %d)", s->origin, st);
+            return -1;
+        } else if (st < 0 || st >= 500 || st == 408 || st == 429) {
+            transient = 1;
+        } else {
+            install_log("[HTTP] Range read %llu+%zu failed: unexpected HTTP %d",
+                        (unsigned long long)offset, count, st);
+            return -1;
+        }
+
+        /* Network outage or overloaded server. */
+        if (!transient || !s->resilient || installer_is_canceling()) {
+            install_log("[HTTP] Range read %llu+%zu failed: %s", (unsigned long long)offset, count,
+                        st > 0 ? "server error" : err);
+            return -1;
+        }
+        time_t now = time(NULL);
+        if (deadline == 0) deadline = now + HTTP_READ_RETRY_SEC;
+        if (now >= deadline) {
+            install_log("[HTTP] Range read %llu+%zu: giving up after %ds (%s)",
+                        (unsigned long long)offset, count, HTTP_READ_RETRY_SEC,
+                        st > 0 ? "server error" : err);
+            return -1;
+        }
+        install_log("[HTTP] Range read %llu+%zu failed (%s), retrying in %ds",
+                    (unsigned long long)offset, count, st > 0 ? "server error" : err, delay);
+        for (int i = 0; i < delay && !installer_is_canceling(); i++) sleep(1);
+        if (delay < 8) delay *= 2;
+    }
 }
 
 uint64_t http_file_session_get_size(http_file_session_t *s) {
@@ -1988,6 +2380,7 @@ void http_file_session_close(http_file_session_t *s) {
     for (int i = 0; i < s->idle_count; i++) conn_close(s->idle[i]);
     s->idle_count = 0;
     pthread_mutex_unlock(&s->lock);
+    pthread_mutex_destroy(&s->refresh_lock);
     pthread_mutex_destroy(&s->lock);
     free(s);
 }

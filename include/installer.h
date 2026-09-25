@@ -48,6 +48,15 @@ int installer_start_batch(const char *base_pkg_path, const char *update_pkg_path
 /* NEW: start from a live RAM session ("live:<id>"); see installer.c. */
 int installer_start_live(const char *live_uri);
 int installer_cancel(void);
+/* PKG Manager X: start results besides the upstream codes.
+ * INSTALLER_REFUSED: console/package combination not allowed; the reason is
+ *   in installer_refusal_reason().
+ * INSTALLER_UNAVAILABLE: the HTTP source no longer has the package (404). */
+#define INSTALLER_REFUSED     (-15)
+#define INSTALLER_UNAVAILABLE (-16)
+const char *installer_refusal_reason(void);
+/* 1 while the current install is being canceled or the daemon stops. */
+int installer_is_canceling(void);
 void installer_record_poll(void);
 void installer_get_status(installer_status_t *out);
 char *installer_status_to_json(void);

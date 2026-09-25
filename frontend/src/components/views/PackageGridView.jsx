@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import BlurIcon from '../../BlurIcon';
 import { formatBytes, formatVersion } from '../../utils/formatters';
-import { pkgPlatform, platformLabel } from '../../utils/platform';
+import { pkgPlatform, platformLabel, pkgContentType, pkgGreyed, blockedBadge, CONTENT_TYPE_FILTERS, CONTENT_TYPE_LABELS } from '../../utils/platform';
 
 const PLATFORM_FILTERS = [
   { id: 'all', label: 'All' },
@@ -9,7 +9,7 @@ const PLATFORM_FILTERS = [
   { id: 'ps5', label: 'PS5' }
 ];
 
-export default function PackageGridView({ groupedTitles, searchQuery, onSearch, sortBy, onSort, onOpenTitle, selectedDrive, onBack, settings, installerStatus, loadingPackages, packages = [], platformFilter = 'all', onPlatformFilter, page = 0, onPageChange = () => {} }) {
+export default function PackageGridView({ groupedTitles, searchQuery, onSearch, sortBy, onSort, onOpenTitle, selectedDrive, onBack, settings, installerStatus, loadingPackages, packages = [], platformFilter = 'all', onPlatformFilter, typeFilter = 'all', onTypeFilter, hideGreyed = false, onHideGreyed, consoleName = '', page = 0, onPageChange = () => {} }) {
   const platformCounts = useMemo(() => {
     const counts = { all: packages.length, ps4: 0, ps5: 0 };
     for (const p of packages) {
@@ -18,6 +18,18 @@ export default function PackageGridView({ groupedTitles, searchQuery, onSearch, 
     }
     return counts;
   }, [packages]);
+  const typeCounts = useMemo(() => {
+    const counts = { all: packages.length, game: 0, dlc: 0, update: 0, homebrew: 0 };
+    for (const p of packages) {
+      const type = pkgContentType(p);
+      if (counts[type] !== undefined) counts[type]++;
+    }
+    return counts;
+  }, [packages]);
+  const greyedCount = useMemo(
+    () => packages.filter((p) => pkgGreyed(p, consoleName)).length,
+    [packages, consoleName]
+  );
   const setPage = onPageChange;
   const pageCount = Math.max(1, Math.ceil(groupedTitles.length / 60));
   const currentPage = Math.min(page, pageCount - 1);
@@ -76,6 +88,40 @@ export default function PackageGridView({ groupedTitles, searchQuery, onSearch, 
                     ))}
                   </div>
                 )}
+                {onTypeFilter && (
+                  <div className="flex items-center bg-[#161722] border border-white/10 rounded-[2px] p-0.5 shrink-0" role="group" aria-label="Filter by type">
+                    {CONTENT_TYPE_FILTERS.filter((f) => f.id === 'all' || typeCounts[f.id] > 0 || typeFilter === f.id).map((f) => (
+                      <button
+                        key={f.id}
+                        type="button"
+                        onClick={() => onTypeFilter(f.id)}
+                        aria-pressed={typeFilter === f.id}
+                        className={`px-3 py-1.5 rounded-[2px] ps5-focus-item text-xs font-bold transition-colors cursor-pointer ${
+                          typeFilter === f.id ? 'bg-white text-black' : 'text-zinc-300 hover:text-white hover:bg-white/10'
+                        }`}
+                      >
+                        {f.label}
+                        <span className={`ml-1.5 font-mono font-normal ${typeFilter === f.id ? 'text-zinc-600' : 'text-zinc-500'}`}>
+                          {typeCounts[f.id]}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {onHideGreyed && (greyedCount > 0 || hideGreyed) && (
+                  <button
+                    type="button"
+                    onClick={() => onHideGreyed(!hideGreyed)}
+                    aria-pressed={hideGreyed}
+                    title="Packages this console cannot install, or that are unavailable on the server"
+                    className={`px-3 py-2 rounded-[2px] ps5-focus-item text-xs font-bold border transition-colors cursor-pointer shrink-0 ${
+                      hideGreyed ? 'bg-white text-black border-white' : 'bg-[#161722] text-zinc-300 border-white/10 hover:text-white'
+                    }`}
+                  >
+                    {hideGreyed ? 'Show' : 'Hide'} unavailable
+                    <span className={`ml-1.5 font-mono font-normal ${hideGreyed ? 'text-zinc-600' : 'text-zinc-500'}`}>{greyedCount}</span>
+                  </button>
+                )}
                 <div className="flex items-center bg-[#161722] border border-white/10 rounded-[2px] ps5-focus-item px-3.5 py-2 w-64 focus-within:border-white/30">
                   <svg
                     className="w-4 h-4 text-zinc-500 mr-2.5 shrink-0"
@@ -128,8 +174,8 @@ export default function PackageGridView({ groupedTitles, searchQuery, onSearch, 
               <div className="py-16 text-center rounded-[2px] border border-white/10 bg-[#12131a]/40 p-8">
                 <h3 className="text-lg font-bold text-white">No Matching Packages</h3>
                 <p className="text-sm text-zinc-400 max-w-md mx-auto mt-2">
-                  {platformFilter !== 'all'
-                    ? `No ${platformLabel(platformFilter)} packages matched on ${selectedDrive.label}.`
+                  {platformFilter !== 'all' || typeFilter !== 'all' || hideGreyed
+                    ? `No packages match the current filters on ${selectedDrive.label}.`
                     : `No packages matched your search query on ${selectedDrive.label}.`}
                 </p>
               </div>
@@ -146,6 +192,8 @@ export default function PackageGridView({ groupedTitles, searchQuery, onSearch, 
                   const isEverythingInstalled = group.isEverythingInstalled;
                   const platform = platformLabel(group.platform || pkgPlatform(group.primaryPkg));
                   const blockedHere = group.installableHere === false;
+                  const greyed = blockedHere || group.unavailable;
+                  const typeLabel = CONTENT_TYPE_LABELS[group.contentType] || 'Game';
 
                   return (
                     <div
@@ -160,7 +208,7 @@ export default function PackageGridView({ groupedTitles, searchQuery, onSearch, 
                         }
                       }}
                       className={`w-full group block text-left rounded-[2px] ps5-focus-item p-2.5 border transition-all cursor-pointer ${
-                        (settings.fade_installed_packages && isEverythingInstalled) || blockedHere
+                        (settings.fade_installed_packages && isEverythingInstalled) || greyed
                           ? 'card-darked-out'
                           : 'bg-[#141520] hover:bg-[#171824] border-white/10 hover:border-white/20'
                       }`}
@@ -202,10 +250,18 @@ export default function PackageGridView({ groupedTitles, searchQuery, onSearch, 
                                   ? 'bg-white text-black border-white'
                                   : 'bg-zinc-900 text-zinc-200 border-zinc-600'
                               }`}
-                              title={group.platformMismatch ? `${platform} package stored in a ${platform === 'PS5' ? 'PS4' : 'PS5'} folder` : undefined}
+                              title={blockedHere ? group.blockedReason : undefined}
                             >
-                              <span>{blockedHere ? `${platform} only` : platform}</span>
-                              {group.platformMismatch && <span className="text-amber-500" aria-label="Stored in the other console's folder">!</span>}
+                              <span>{blockedHere ? blockedBadge(group.blockedReason, group.platform) : platform}</span>
+                            </span>
+                          )}
+
+                          {group.unavailable && (
+                            <span
+                              className="absolute top-9 right-2 z-20 px-2 py-0.5 rounded-[2px] text-[10px] font-bold border bg-zinc-800 text-zinc-300 border-zinc-600 pointer-events-none"
+                              title="Unavailable on the server"
+                            >
+                              UNAVAILABLE
                             </span>
                           )}
 
@@ -260,7 +316,7 @@ export default function PackageGridView({ groupedTitles, searchQuery, onSearch, 
                                   ? 'bg-blue-600 text-white border-blue-400/60'
                                   : 'bg-blue-950/70 text-blue-300 border-blue-800/40'
                               }`}>
-                                base
+                                {typeLabel.toLowerCase()}
                               </span>
                             )}
                             {group.updates.length > 0 && (

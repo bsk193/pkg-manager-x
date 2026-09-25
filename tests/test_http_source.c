@@ -2,7 +2,9 @@
  * Host test: HTTP/HTTPS package sources (http_source.c) against the local
  * test server: discovery (HTML listing + index.json), metadata parsing,
  * pooled range streaming, auth, redirects, servers without Range support,
- * and scanner integration (drive type "http", platform tags).
+ * nginx JSON listings, the home-server gateway (catalog, signed redirects,
+ * expired-link refresh, unavailable files, size checks) and scanner
+ * integration (drive type "http", platform / content type).
  */
 
 #include <assert.h>
@@ -255,7 +257,7 @@ static void test_index_json(void) {
 
 static void test_auth_and_no_range(void) {
     http_test_server_stop();
-    http_test_server_opts_t o = { HT_ROOT, "alice", "s3cret", 0, 0 };
+    http_test_server_opts_t o = { HT_ROOT, "alice", "s3cret", 0, 0, 0, 0, 0 };
     assert(http_test_server_start(&o) == 0);
     snprintf(g_base, sizeof(g_base), "http://127.0.0.1:%d/", o.port);
 
@@ -279,7 +281,7 @@ static void test_auth_and_no_range(void) {
     printf("  basic auth ok\n");
 
     http_test_server_stop();
-    http_test_server_opts_t o2 = { HT_ROOT, NULL, NULL, 1, 0 };
+    http_test_server_opts_t o2 = { HT_ROOT, NULL, NULL, 1, 0, 0, 0, 0 };
     assert(http_test_server_start(&o2) == 0);
     snprintf(g_base, sizeof(g_base), "http://127.0.0.1:%d/", o2.port);
     make_config(&c, NULL, NULL);
@@ -290,13 +292,137 @@ static void test_auth_and_no_range(void) {
     printf("  no-range server rejected ok\n");
 
     http_test_server_stop();
-    http_test_server_opts_t o3 = { HT_ROOT, NULL, NULL, 0, 0 };
+    http_test_server_opts_t o3 = { HT_ROOT, NULL, NULL, 0, 0, 0, 0, 0 };
     assert(http_test_server_start(&o3) == 0);
     snprintf(g_base, sizeof(g_base), "http://127.0.0.1:%d/", o3.port);
 }
 
-static void test_scanner_integration(void) {
+static void restart_server(http_test_server_opts_t *o) {
+    http_test_server_stop();
+    assert(http_test_server_start(o) == 0);
+    snprintf(g_base, sizeof(g_base), "http://127.0.0.1:%d/", o->port);
+}
+
+static void test_json_listing(void) {
+    http_test_server_opts_t o = { HT_ROOT, NULL, NULL, 0, 0, 1, 0, 0 };
+    restart_server(&o);
     http_source_config_t c;
+    make_config(&c, NULL, NULL);
+    assert(http_source_sanitize(&c) == 0);
+    found_t f;
+    memset(&f, 0, sizeof(f));
+    assert(http_source_scan(&c, collect_cb, &f) == 3);
+    int id = find_name(&f, "Deep Game.pkg");
+    assert(id >= 0 && strstr(f.urls[id], "PS5/Deep/Deep%20Game.pkg"));
+    /* Sizes come straight from the listing. */
+    assert(f.sizes[find_name(&f, "HttpFour.pkg")] == file_size(HT_ROOT "/PS4/HttpFour.pkg"));
+    http_source_test_result_t r;
+    http_source_test(&c, &r);
+    assert(r.success && strcmp(r.listing, "json") == 0 && r.pkg_count == 3);
+    printf("  nginx JSON autoindex ok\n");
+}
+
+static void write_catalog(void) {
+    assert(system("mkdir -p " HT_ROOT "/api") == 0);
+    FILE *f = fopen(HT_ROOT "/api/catalog", "w");
+    assert(f);
+    fprintf(f, "{\"generated\":\"2026-09-25T10:00:00Z\",\"files\":["
+               "{\"path\":\"PS4/HttpFour.pkg\",\"console\":\"ps5\",\"size\":%llu,\"local\":true,\"r2\":true},"
+               "{\"path\":\"PS5/HttpFive.pkg\",\"console\":\"ps5\",\"size\":%llu,\"local\":false,\"r2\":true},"
+               "{\"path\":\"PS5/Deep/Deep Game.pkg\",\"console\":\"ps5\",\"size\":1,\"local\":true,\"r2\":false},"
+               "{\"path\":\"PS4/games/Gone.pkg\",\"console\":\"ps4\",\"size\":5,\"local\":false,\"r2\":false},"
+               "{\"path\":\"PS4/games/Missing.pkg\",\"console\":\"ps4\",\"size\":5,\"local\":true,\"r2\":false}"
+               "]}",
+            (unsigned long long)file_size(HT_ROOT "/PS4/HttpFour.pkg"),
+            (unsigned long long)file_size(HT_ROOT "/PS5/HttpFive.pkg"));
+    fclose(f);
+}
+
+static void test_gateway(void) {
+    write_catalog();
+    http_test_server_opts_t o = { HT_ROOT, "bob", "pw", 0, 0, 0, 1, 3600 };
+    restart_server(&o);
+
+    http_source_config_t c;
+    make_config(&c, "bob", "pw");
+    assert(http_source_sanitize(&c) == 0);
+    assert(http_sources_set(&c, 1) == 1);
+
+    /* Catalog: one address, every file under /files/<path>. */
+    found_t f;
+    memset(&f, 0, sizeof(f));
+    assert(http_source_scan(&c, collect_cb, &f) == 5);
+    int i4 = find_name(&f, "HttpFour.pkg");
+    assert(i4 >= 0 && strstr(f.urls[i4], "/files/PS4/HttpFour.pkg"));
+    assert(f.sizes[i4] == file_size(HT_ROOT "/PS4/HttpFour.pkg"));
+    char gone[256], missing[256], four[256], deep[256];
+    snprintf(gone, sizeof(gone), "%sfiles/PS4/games/Gone.pkg", g_base);
+    snprintf(missing, sizeof(missing), "%sfiles/PS4/games/Missing.pkg", g_base);
+    snprintf(four, sizeof(four), "%sfiles/PS4/HttpFour.pkg", g_base);
+    snprintf(deep, sizeof(deep), "%sfiles/PS5/Deep/Deep%%20Game.pkg", g_base);
+    assert(http_source_is_unavailable(gone));
+    assert(!http_source_is_unavailable(four));
+    assert(http_source_expected_size(four) == file_size(HT_ROOT "/PS4/HttpFour.pkg"));
+
+    http_source_test_result_t r;
+    http_source_test(&c, &r);
+    assert(r.success && strcmp(r.listing, "catalog") == 0 && r.range_supported == 1);
+
+    /* Metadata through the 302 to the signed host; the platform comes from
+     * the package (PS4) even though the catalog says "ps5". */
+    pkg_detail_t d;
+    assert(http_source_parse_pkg(four, &d) == 0);
+    assert(strcmp(d.title_id, "CUSA91001") == 0 && strcmp(d.platform, "ps4") == 0);
+
+    /* 404 -> unavailable, not a stream. */
+    assert(http_file_session_open(missing) == NULL);
+    assert(http_source_is_unavailable(missing));
+    /* Served size differs from the catalog -> refused. */
+    assert(http_file_session_open(deep) == NULL);
+
+    /* Expired signed link: the read re-asks /files/ and continues at the
+     * same offset. */
+    const char *path = HT_ROOT "/PS4/HttpFour.pkg";
+    uint64_t size = file_size(path);
+    uint8_t *ref = malloc(size);
+    FILE *fp = fopen(path, "rb");
+    assert(ref && fp && fread(ref, 1, size, fp) == size);
+    fclose(fp);
+
+    http_test_server_set_sign_ttl(1);
+    http_file_session_t *s = http_file_session_open(four);
+    assert(s && http_file_session_get_size(s) == size);
+    uint8_t buf[8192];
+    assert(http_file_session_read(s, buf, sizeof(buf), 4096) == (ssize_t)sizeof(buf));
+    assert(memcmp(buf, ref + 4096, sizeof(buf)) == 0);
+    http_test_server_stats_t before, after;
+    http_test_server_get_stats(&before);
+    http_test_server_set_sign_ttl(3600);
+    sleep(3); /* link expires */
+    uint64_t off = size - sizeof(buf) - 7;
+    assert(http_file_session_read(s, buf, sizeof(buf), off) == (ssize_t)sizeof(buf));
+    assert(memcmp(buf, ref + off, sizeof(buf)) == 0);
+    http_test_server_get_stats(&after);
+    assert(after.signed_expired > before.signed_expired);
+    assert(after.files_hits > before.files_hits);
+    assert(http_file_session_get_size(s) == size);
+    http_file_session_close(s);
+    free(ref);
+
+    /* Credentials never reached the signed ("R2") host. */
+    http_test_server_get_stats(&after);
+    assert(after.signed_hits > 0 && after.leaked_auth == 0);
+
+    unlink(HT_ROOT "/api/catalog");
+    http_source_config_t none;
+    memset(&none, 0, sizeof(none));
+    http_sources_set(&none, 0);
+    http_test_server_opts_t plain = { HT_ROOT, NULL, NULL, 0, 0, 0, 0, 0 };
+    restart_server(&plain);
+    printf("  gateway catalog / signed redirect / link refresh / unavailable ok\n");
+}
+
+static void test_scanner_integration(void) {    http_source_config_t c;
     make_config(&c, NULL, NULL);
     assert(http_source_sanitize(&c) == 0);
     assert(http_sources_set(&c, 1) == 1);
@@ -311,8 +437,9 @@ static void test_scanner_integration(void) {
     char *json = pkg_scanner_packages_for_drive_to_json(c.id);
     assert(json);
     assert(strstr(json, "\"title_id\":\"CUSA91001\""));
-    assert(strstr(json, "\"platform\":\"ps4\",\"folder_platform\":\"ps4\",\"platform_mismatch\":false"));
-    assert(strstr(json, "\"platform\":\"ps5\",\"folder_platform\":\"ps5\",\"platform_mismatch\":false"));
+    assert(strstr(json, "\"platform\":\"ps4\",\"content_type\":\"game\""));
+    assert(strstr(json, "\"platform\":\"ps5\",\"content_type\":\"game\""));
+    assert(strstr(json, "\"unavailable\":false"));
     free(json);
 
     int changed = 0;
@@ -333,7 +460,7 @@ int main(void) {
     setenv("PKG_DISC_DIR", HT_DIR "/no_disc", 1);
     setenv("PKG_LOG_FILE", "none", 1);
 
-    http_test_server_opts_t o = { HT_ROOT, NULL, NULL, 0, 0 };
+    http_test_server_opts_t o = { HT_ROOT, NULL, NULL, 0, 0, 0, 0, 0 };
     assert(http_test_server_start(&o) == 0);
     snprintf(g_base, sizeof(g_base), "http://127.0.0.1:%d/", o.port);
 
@@ -343,6 +470,8 @@ int main(void) {
     test_session_streaming();
     test_index_json();
     test_auth_and_no_range();
+    test_json_listing();
+    test_gateway();
     test_scanner_integration();
 
     http_test_server_stop();

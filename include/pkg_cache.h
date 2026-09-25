@@ -5,6 +5,9 @@
  * records must be reparsed. */
 #define PKG_CACHE_FORMAT_VERSION 3
 #define PKG_CACHE_FORMAT_TAG "pkg-cache-v3"
+/* PKG Manager X metadata rules stored as "x_rules" in each cache entry
+ * (separate from upstream's version so the two never collide). */
+#define PKG_CACHE_X_RULES 2
 
 #include <stdint.h>
 #include <stddef.h>
@@ -18,6 +21,7 @@ typedef struct {
     int fade_installed_packages;
     int all_sources_mode;
     int pkg_install_debug;  /* 1 = log every stream server connection to /data/pkgmgr/ */
+    int allow_ps4_on_ps5;   /* PKG Manager X: PS4 games/DLC/updates installable on PS5 (default 1) */
     smb_share_config_t smb_shares[MAX_SMB_SHARES];
     int smb_share_count;
 } app_settings_t;

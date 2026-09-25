@@ -458,6 +458,8 @@ int virtual_stream_open(const char *initial_path, virtual_stream_t *stream) {
             virtual_stream_close(stream);
             return -1;
         }
+        /* Install stream: ride out short outages and expired links. */
+        http_file_session_set_resilient(hs, 1);
         uint64_t fsz = http_file_session_get_size(hs);
         stream->is_http = 1;
         stream->http_session = (void *)hs;

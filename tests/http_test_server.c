@@ -37,7 +37,26 @@ static struct {
     char root[512];
     char auth_b64[256];
     int no_range;
-} g_ts = { -1, 0, 0, "", "", 0 };
+    int json_listing;
+    int gateway;
+    volatile int sign_ttl;
+    int port;
+    pthread_mutex_t stats_lock;
+    http_test_server_stats_t stats;
+} g_ts = { -1, 0, 0, "", "", 0, 0, 0, 3600, 0, PTHREAD_MUTEX_INITIALIZER, { 0, 0, 0, 0 } };
+
+#define TS_STAT(field) do { pthread_mutex_lock(&g_ts.stats_lock); g_ts.stats.field++; \
+                            pthread_mutex_unlock(&g_ts.stats_lock); } while (0)
+
+void http_test_server_get_stats(http_test_server_stats_t *out) {
+    pthread_mutex_lock(&g_ts.stats_lock);
+    *out = g_ts.stats;
+    pthread_mutex_unlock(&g_ts.stats_lock);
+}
+
+void http_test_server_set_sign_ttl(int seconds) {
+    g_ts.sign_ttl = seconds;
+}
 
 static void ts_b64(const char *in, char *out, size_t out_sz) {
     static const char tbl[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -103,7 +122,55 @@ static int send_simple(int fd, int code, const char *reason, const char *extra, 
     return send_all(fd, hdr, (size_t)n);
 }
 
+/* nginx "autoindex_format json" */
+static int send_json_listing(int fd, const char *fs_path, int head, int keep) {
+    DIR *d = opendir(fs_path);
+    if (!d) return send_simple(fd, 404, "Not Found", NULL, keep);
+    size_t cap = 65536, len = 0;
+    char *body = (char *)malloc(cap);
+    if (!body) {
+        closedir(d);
+        return -1;
+    }
+    len += (size_t)snprintf(body + len, cap - len, "[\n");
+    int first = 1;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        char child[1024];
+        snprintf(child, sizeof(child), "%s/%s", fs_path, e->d_name);
+        struct stat st;
+        if (stat(child, &st) != 0 || len + 2048 > cap) continue;
+        char date[64];
+        struct tm tmv;
+        time_t mt = st.st_mtime;
+        gmtime_r(&mt, &tmv);
+        strftime(date, sizeof(date), "%a, %d %b %Y %H:%M:%S GMT", &tmv);
+        if (S_ISDIR(st.st_mode)) {
+            len += (size_t)snprintf(body + len, cap - len,
+                                    "%s{ \"name\":\"%s\", \"type\":\"directory\", \"mtime\":\"%s\" }\n",
+                                    first ? "" : ",", e->d_name, date);
+        } else {
+            len += (size_t)snprintf(body + len, cap - len,
+                                    "%s{ \"name\":\"%s\", \"type\":\"file\", \"mtime\":\"%s\", \"size\":%llu }\n",
+                                    first ? "" : ",", e->d_name, date, (unsigned long long)st.st_size);
+        }
+        first = 0;
+    }
+    closedir(d);
+    len += (size_t)snprintf(body + len, cap - len, "]\n");
+    char hdr[256];
+    int n = snprintf(hdr, sizeof(hdr),
+                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %zu\r\nConnection: %s\r\n\r\n",
+                     len, keep ? "keep-alive" : "close");
+    int rc = send_all(fd, hdr, (size_t)n);
+    if (rc == 0 && !head) rc = send_all(fd, body, len);
+    free(body);
+    return rc;
+}
+
 static int send_listing(int fd, const char *fs_path, const char *url_path, int head, int keep) {
+    if (g_ts.json_listing) return send_json_listing(fd, fs_path, head, keep);
     DIR *d = opendir(fs_path);
     if (!d) return send_simple(fd, 404, "Not Found", NULL, keep);
     size_t cap = 65536, len = 0;
@@ -240,6 +307,21 @@ static void *conn_thread(void *arg) {
             }
         }
 
+        /* Gateway: signed "R2" links need no credentials and expire. */
+        if (g_ts.gateway && strncmp(raw_path, "/signed/", 8) == 0) {
+            TS_STAT(signed_hits);
+            if (auth) TS_STAT(leaked_auth);
+            char *rest = raw_path + 8;
+            long expiry = strtol(rest, &rest, 10);
+            if (*rest != '/' || (long)time(NULL) > expiry) {
+                TS_STAT(signed_expired);
+                if (send_simple(fd, 403, "Forbidden", NULL, keep) != 0 || !keep) goto done;
+                continue;
+            }
+            memmove(raw_path, rest, strlen(rest) + 1); /* serve /<path> below */
+            goto serve;
+        }
+
         if (g_ts.auth_b64[0] && (!auth || strcmp(auth, g_ts.auth_b64) != 0)) {
             if (send_simple(fd, 401, "Unauthorized", "WWW-Authenticate: Basic realm=\"pkgs\"\r\n", keep) != 0 || !keep) goto done;
             continue;
@@ -248,6 +330,25 @@ static void *conn_thread(void *arg) {
         char *q = strchr(raw_path, '?');
         if (q) *q = '\0';
 
+        if (g_ts.gateway && strncmp(raw_path, "/files/", 7) == 0) {
+            TS_STAT(files_hits);
+            char dec[2048], fsp[2600];
+            url_decode(raw_path + 6, dec, sizeof(dec));
+            snprintf(fsp, sizeof(fsp), "%s%s", g_ts.root, dec);
+            struct stat gst;
+            int rc;
+            if (strstr(dec, "..") || stat(fsp, &gst) != 0 || !S_ISREG(gst.st_mode)) {
+                rc = send_simple(fd, 404, "Not Found", NULL, keep);
+            } else {
+                char extra[2400];
+                snprintf(extra, sizeof(extra), "Location: http://localhost:%d/signed/%ld%s\r\n",
+                         g_ts.port, (long)time(NULL) + g_ts.sign_ttl, raw_path + 6);
+                rc = send_simple(fd, 302, "Found", extra, keep);
+            }
+            if (rc != 0 || !keep) goto done;
+            continue;
+        }
+
         if (strncmp(raw_path, "/redir/", 7) == 0) {
             char extra[2200];
             snprintf(extra, sizeof(extra), "Location: /%s\r\n", raw_path + 7);
@@ -255,6 +356,7 @@ static void *conn_thread(void *arg) {
             continue;
         }
 
+    serve:;
         char path[2048];
         url_decode(raw_path, path, sizeof(path));
         if (strstr(path, "..")) {
@@ -309,6 +411,12 @@ static void *accept_thread(void *arg) {
 int http_test_server_start(http_test_server_opts_t *o) {
     snprintf(g_ts.root, sizeof(g_ts.root), "%s", o->root);
     g_ts.no_range = o->no_range;
+    g_ts.json_listing = o->json_listing;
+    g_ts.gateway = o->gateway;
+    g_ts.sign_ttl = o->sign_ttl > 0 ? o->sign_ttl : 3600;
+    pthread_mutex_lock(&g_ts.stats_lock);
+    memset(&g_ts.stats, 0, sizeof(g_ts.stats));
+    pthread_mutex_unlock(&g_ts.stats_lock);
     g_ts.auth_b64[0] = '\0';
     if (o->user) {
         char creds[256];
@@ -332,6 +440,7 @@ int http_test_server_start(http_test_server_opts_t *o) {
     socklen_t al = sizeof(a);
     getsockname(fd, (struct sockaddr *)&a, &al);
     o->port = ntohs(a.sin_port);
+    g_ts.port = o->port;
 
     g_ts.listen_fd = fd;
     g_ts.running = 1;
