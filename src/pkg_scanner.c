@@ -110,6 +110,9 @@ static int compare_pkg_by_title_name(const void *a, const void *b) {
 #if PKGMGR_ON_CONSOLE
 #include <sys/mount.h>
 #endif
+#if PKGMGR_CONSOLE_PS4
+#include <sys/syscall.h>
+#endif
 
 #define MAX_PACKAGES 4096
 #define MAX_DRIVES   16
@@ -764,7 +767,13 @@ static int is_drive_mounted(const char *path) {
     }
 
     struct statfs sfs;
+#if PKGMGR_CONSOLE_PS4
+    /* libkernel_web (the PS4 SDK default) exports no statfs(); use the raw
+     * syscall like the SDK's own getfsstat(). */
+    if (syscall(SYS_statfs, path, &sfs) == 0) {
+#else
     if (statfs(path, &sfs) == 0) {
+#endif
         /* When a drive is actually mounted, sfs.f_mntonname matches path */
         if (strcmp(sfs.f_mntonname, path) == 0) {
             return 1;

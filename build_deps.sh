@@ -28,6 +28,12 @@ case "$PLATFORM" in
         source "$SDK/toolchain/orbis.sh"
         export PATH="$SDK/bin:$PATH"
         HOST=x86_64-pc-freebsd
+        # libsmb2 treats PS4 as OpenOrbis and includes <endian.h>; the FreeBSD 9
+        # based SDK only has <sys/endian.h> (same be16toh/htole64/... macros).
+        if [ ! -f "$SDK/target/include/endian.h" ]; then
+            printf '#pragma once\n/* PKG Manager X shim: OpenOrbis-style <endian.h> */\n#include <sys/endian.h>\n' \
+                > "$SDK/target/include/endian.h"
+        fi
         ;;
     *) echo "PLATFORM must be ps5 or ps4" >&2; exit 1 ;;
 esac

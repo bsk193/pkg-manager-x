@@ -12,6 +12,7 @@ HTTPS    ?= 1
 ifeq ($(PLATFORM),ps4)
 SDK      := /opt/ps4-payload-sdk
 TOOL     := $(SDK)/bin/orbis
+# No _BSD_SOURCE: with it sqlite3 calls getpagesize(), hidden in the SDK's FreeBSD 9 headers.
 PLATFORM_CFLAGS := -DPS4_BUILD
 PLATFORM_LIBS   := -lSceNetCtl -lSceUserService -lSceSystemService -lSceAppInstUtil -lSceNet
 LIBSMB2_LOCAL   := deps/libsmb2/build-ps4/lib/libsmb2.a
@@ -20,7 +21,7 @@ ELF             := pkgmgr-ps4.elf
 else ifeq ($(PLATFORM),ps5)
 SDK      := /opt/ps5-payload-sdk
 TOOL     := $(SDK)/bin/prospero
-PLATFORM_CFLAGS := -DPS5_BUILD
+PLATFORM_CFLAGS := -DPS5_BUILD -D_BSD_SOURCE
 PLATFORM_LIBS   := -lSceNetCtl -lSceUserService -lSceSystemService -lSceAppInstUtil -lSceNet
 LIBSMB2_LOCAL   := deps/libsmb2/build/lib/libsmb2.a
 CMAKE_WRAPPER   := $(SDK)/bin/prospero-cmake
@@ -67,7 +68,7 @@ SRCS := src/main.c src/pkg_parser.c src/pkg_scanner.c src/pkg_cache.c src/smb_cl
 SRCS_WS := src/ws_upload.c src/ws_stream.c
 # PKG Manager X additions (HTTP sources, platform tags, console backends).
 SRCS_X := src/pkg_platform.c src/pkg_parse_reader.c src/http_source.c src/http_sources_api.c \
-          src/platform_install_ps5.c src/platform_install_ps4.c
+          src/platform_install_ps5.c src/platform_install_ps4.c src/compat_ps4.c
 OBJS := $(SRCS:.c=.o)
 
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -98,7 +99,7 @@ ICON0_PNG_DIST     := assets/icon0.png
 ICON0_PNG_HEADER   := include/assets_icon0_png.h
 ASSET_HEADERS      := $(ASSET_HEADER) $(MANIFEST_HEADER) $(FAVICON_SVG_HEADER) $(ICON_PNG_HEADER) $(PARAM_JSON_HEADER) $(ICON0_PNG_HEADER)
 
-CFLAGS := -Os -Wall -Wno-visibility $(PLATFORM_CFLAGS) $(TLS_CFLAGS) $(X_VERSION_CFLAGS) -D_BSD_SOURCE -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_WAL -DPKGMGR_BUILD_COMMIT=\"$(BUILD_COMMIT)\" -DPKGMGR_BUILD_DATE=\"$(BUILD_DATE)\" -ffunction-sections -fdata-sections $(INCLUDES)
+CFLAGS := -Os -Wall -Wno-visibility $(PLATFORM_CFLAGS) $(TLS_CFLAGS) $(X_VERSION_CFLAGS) -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_WAL -DPKGMGR_BUILD_COMMIT=\"$(BUILD_COMMIT)\" -DPKGMGR_BUILD_DATE=\"$(BUILD_DATE)\" -ffunction-sections -fdata-sections $(INCLUDES)
 LDFLAGS := -Wl,--gc-sections
 
 # Host test build (uses tests/mock_smb.c instead of real libsmb2; MHD not needed)
