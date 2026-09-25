@@ -86,4 +86,4 @@ jobs:
             --target "${{ github.sha }}" \
             --title "PKG Manager X v$VER" \
             --notes-file notes.md \
-            ${{ inputs.prerelease && '--prerelease' || '' }}
+            ${{ inputs.prerelease && '--prerelease --latest=false' || '--latest' }}
