@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <pthread.h>
+#include <signal.h> /* sig_atomic_t (not pulled in transitively on glibc) */
 
 #include "pkg_parser.h"
 #include "pkg_scanner.h"

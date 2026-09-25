@@ -1,43 +1,61 @@
 #!/usr/bin/env bash
 # Dependency build script for the PS5 / PS4 Payload SDKs inside Docker.
-#   PLATFORM=ps5 (default) -> /opt/ps5-payload-sdk, prospero-* tools
-#   PLATFORM=ps4           -> /opt/ps4-payload-sdk, orbis-* tools
+#   PLATFORM=ps5 (default) -> /opt/ps5-payload-sdk, prospero-* tools,
+#                             installed into /opt/ps5-payload-sdk/target
+#   PLATFORM=ps4           -> /opt/ps4-payload-sdk, toolchain/orbis.sh (same
+#                             conventions as ps4-payload-dev/pacbrew), installed
+#                             into /opt/ps4-payload-sdk/target/user/homebrew
+# The Makefile's DEPS_ROOT points at the matching install root.
 # libmicrohttpd 1.0.1 and mbedTLS 3.6.2 are pinned. libsmb2 tracks upstream
 # master shallowly; set LIBSMB2_REF to a commit SHA to pin (see Dockerfile.sdk).
-# NOTE: Makefile links deps/libsmb2/build* (local) when the SDK target copy
-# is missing. Keep both in sync when bumping libsmb2.
 set -euo pipefail
 
 PLATFORM="${PLATFORM:-ps5}"
 case "$PLATFORM" in
-    ps5) SDK=/opt/ps5-payload-sdk; PFX=prospero ;;
-    ps4) SDK=/opt/ps4-payload-sdk; PFX=orbis ;;
+    ps5)
+        SDK=/opt/ps5-payload-sdk
+        export PATH="$SDK/bin:$PATH"
+        export CC=prospero-clang CXX=prospero-clang++ AR=prospero-ar NM=prospero-nm RANLIB=prospero-ranlib
+        CMAKE=prospero-cmake
+        HOST=x86_64-pc-freebsd12
+        PREFIX="$SDK/target"
+        unset DESTDIR || true
+        ;;
+    ps4)
+        SDK=/opt/ps4-payload-sdk
+        # Sets CC/CXX/AR/..., CMAKE, DESTDIR=$SDK/target and PREFIX=/user/homebrew.
+        # shellcheck disable=SC1091
+        source "$SDK/toolchain/orbis.sh"
+        export PATH="$SDK/bin:$PATH"
+        HOST=x86_64-pc-freebsd
+        ;;
     *) echo "PLATFORM must be ps5 or ps4" >&2; exit 1 ;;
 esac
-
-export PATH="$SDK/bin:$PATH"
+echo "=== $PLATFORM: CC=$CC HOST=$HOST PREFIX=$PREFIX DESTDIR=${DESTDIR:-} ==="
 
 TEMPDIR=$(mktemp -d)
 trap 'rm -rf -- "$TEMPDIR"' EXIT
 
 cd "$TEMPDIR"
 
-# Map tools to SDK wrappers
-export CC=$PFX-clang
-export CXX=$PFX-clang++
-export AR=$PFX-ar
-export NM=$PFX-nm
-export RANLIB=$PFX-ranlib
+# Print config.log when configure fails (CI only shows stdout).
+configure_or_log() {
+    if ! ./configure "$@"; then
+        echo "=== configure failed; tail of config.log ===" >&2
+        tail -n 120 config.log >&2 || true
+        exit 1
+    fi
+}
 
 echo "=== Building libmicrohttpd 1.0.1 for $PLATFORM ==="
-wget -O libmicrohttpd.tar.gz https://ftp.gnu.org/gnu/libmicrohttpd/libmicrohttpd-1.0.1.tar.gz
+wget -q -O libmicrohttpd.tar.gz https://ftp.gnu.org/gnu/libmicrohttpd/libmicrohttpd-1.0.1.tar.gz
 tar xf libmicrohttpd.tar.gz
 cd libmicrohttpd-1.0.1
-./configure --host=x86_64-pc-freebsd12 \
-            --disable-shared --enable-static \
-            --disable-curl --disable-examples \
-            --prefix=$SDK/target
-make -j$(nproc)
+configure_or_log --host="$HOST" \
+                 --disable-shared --enable-static \
+                 --disable-curl --disable-examples --disable-doc \
+                 --prefix="$PREFIX"
+make -j"$(nproc)"
 make install
 cd "$TEMPDIR"
 
@@ -45,14 +63,14 @@ echo "=== Building libsmb2 for $PLATFORM ==="
 git clone --depth 1 https://github.com/sahlberg/libsmb2.git libsmb2-src
 cd libsmb2-src
 mkdir build && cd build
-$PFX-cmake .. -DBUILD_SHARED_LIBS=OFF \
-              -DCMAKE_INSTALL_PREFIX=$SDK/target
-make -j$(nproc)
+$CMAKE .. -DBUILD_SHARED_LIBS=OFF \
+          -DCMAKE_INSTALL_PREFIX="$PREFIX"
+make -j"$(nproc)"
 make install
 cd "$TEMPDIR"
 
 echo "=== Building mbedTLS 3.6.2 for $PLATFORM (HTTPS sources) ==="
-wget -O mbedtls.tar.bz2 https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.2/mbedtls-3.6.2.tar.bz2
+wget -q -O mbedtls.tar.bz2 https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.2/mbedtls-3.6.2.tar.bz2
 tar xf mbedtls.tar.bz2
 cd mbedtls-3.6.2
 # Payload-friendly configuration:
@@ -68,10 +86,10 @@ python3 scripts/config.py set MBEDTLS_NO_PLATFORM_ENTROPY
 python3 scripts/config.py set MBEDTLS_ENTROPY_HARDWARE_ALT
 python3 scripts/config.py set MBEDTLS_PLATFORM_ZEROIZE_ALT
 mkdir build && cd build
-$PFX-cmake .. -DENABLE_PROGRAMS=OFF -DENABLE_TESTING=OFF \
-              -DUSE_SHARED_MBEDTLS_LIBRARY=OFF -DUSE_STATIC_MBEDTLS_LIBRARY=ON \
-              -DCMAKE_INSTALL_PREFIX=$SDK/target
-make -j$(nproc)
+$CMAKE .. -DENABLE_PROGRAMS=OFF -DENABLE_TESTING=OFF \
+          -DUSE_SHARED_MBEDTLS_LIBRARY=OFF -DUSE_STATIC_MBEDTLS_LIBRARY=ON \
+          -DCMAKE_INSTALL_PREFIX="$PREFIX"
+make -j"$(nproc)"
 make install
 
-echo "libmicrohttpd, libsmb2 and mbedTLS successfully built and installed into $SDK/target!"
+echo "libmicrohttpd, libsmb2 and mbedTLS installed for $PLATFORM (${DESTDIR:-}${PREFIX})"

@@ -35,19 +35,25 @@ RANLIB := $(TOOL)-ranlib
 STRIP  := $(TOOL)-strip
 
 TARGET   := $(SDK)/target
-ifneq ($(wildcard $(TARGET)/lib/libsmb2.a),)
-LIBSMB2  ?= $(TARGET)/lib/libsmb2.a
+# Where build_deps.sh installed libmicrohttpd / libsmb2 / mbedTLS.
+ifeq ($(PLATFORM),ps4)
+DEPS_ROOT := $(TARGET)/user/homebrew
+else
+DEPS_ROOT := $(TARGET)
+endif
+ifneq ($(wildcard $(DEPS_ROOT)/lib/libsmb2.a),)
+LIBSMB2  ?= $(DEPS_ROOT)/lib/libsmb2.a
 else
 LIBSMB2  ?= $(LIBSMB2_LOCAL)
 endif
-INCLUDES := -Iinclude -I$(TARGET)/include -Ideps/libsmb2/include -Ideps/libsmb2/include/smb2
+INCLUDES := -Iinclude -I$(DEPS_ROOT)/include -I$(TARGET)/include -Ideps/libsmb2/include -Ideps/libsmb2/include/smb2
 
 ifeq ($(HTTPS),1)
 TLS_CFLAGS := -DPKGMGR_HAVE_TLS
-TLS_LIBS   := $(TARGET)/lib/libmbedtls.a $(TARGET)/lib/libmbedx509.a $(TARGET)/lib/libmbedcrypto.a
+TLS_LIBS   := $(DEPS_ROOT)/lib/libmbedtls.a $(DEPS_ROOT)/lib/libmbedx509.a $(DEPS_ROOT)/lib/libmbedcrypto.a
 endif
 
-LIBS     := $(TARGET)/lib/libmicrohttpd.a \
+LIBS     := $(DEPS_ROOT)/lib/libmicrohttpd.a \
             $(LIBSMB2) \
             $(TLS_LIBS) \
             -L$(TARGET)/lib -lpthread \
