@@ -63,11 +63,6 @@ typedef struct {
 } bgft_download_param_t;
 
 typedef struct {
-    bgft_download_param_t param;
-    unsigned int slot;
-} bgft_download_param_ex_t;
-
-typedef struct {
     unsigned int bits;
     int error_result;
     unsigned long length;
@@ -84,7 +79,7 @@ typedef struct {
 
 typedef int (*bgft_init_fn)(bgft_init_params_t *);
 typedef int (*bgft_term_fn)(void);
-typedef int (*bgft_register_fn)(bgft_download_param_ex_t *, int *task_id);
+typedef int (*bgft_register_fn)(bgft_download_param_t *, int *task_id);
 typedef int (*bgft_start_fn)(int task_id);
 typedef int (*bgft_progress_fn)(int task_id, bgft_task_progress_t *);
 
@@ -122,7 +117,11 @@ int platform_install_init(void) {
     }
     g_bgft.init = (bgft_init_fn)bgft_sym("sceBgftServiceIntInit", "sceBgftServiceInit");
     g_bgft.term = (bgft_term_fn)bgft_sym("sceBgftServiceIntTerm", "sceBgftServiceTerm");
-    g_bgft.register_task = (bgft_register_fn)bgft_sym("sceBgftServiceIntDownloadRegisterTaskByStorageEx", NULL);
+    /* req->uri is an HTTP stream, not a local package path. StorageEx
+     * registration treats that URI as a filename and fails with 0x8099006A.
+     * Use the URL registration API, as Remote Package Installer does. */
+    g_bgft.register_task = (bgft_register_fn)bgft_sym("sceBgftServiceIntDownloadRegisterTask",
+                                                   "sceBgftServiceDownloadRegisterTask");
     g_bgft.start_task = (bgft_start_fn)bgft_sym("sceBgftServiceIntDownloadStartTask",
                                                 "sceBgftServiceDownloadStartTask");
     g_bgft.get_progress = (bgft_progress_fn)bgft_sym("sceBgftServiceIntDownloadGetProgress",
@@ -181,28 +180,27 @@ int platform_install_start(const platform_install_request_t *req,
              (req->title_name && req->title_name[0]) ? req->title_name : req->display_name);
     snprintf(s_cid, sizeof(s_cid), "%s", req->content_id ? req->content_id : "");
 
-    bgft_download_param_ex_t p;
+    bgft_download_param_t p;
     memset(&p, 0, sizeof(p));
-    p.param.user_id = user_id;
-    p.param.entitlement_type = 5;
-    p.param.id = s_cid;
-    p.param.content_url = s_uri;
-    p.param.content_ex_url = "";
-    p.param.content_name = s_name;
-    p.param.icon_path = "";
-    p.param.sku_id = "";
-    p.param.option = BGFT_TASK_OPTION_DISABLE_CDN_QUERY_PARAM;
-    p.param.playgo_scenario_id = "0";
-    p.param.release_date = "";
-    p.param.package_type = bgft_package_type(req);
-    p.param.package_sub_type = "";
-    p.param.package_size = (unsigned long)req->package_size;
-    p.slot = 0;
+    p.user_id = user_id;
+    p.entitlement_type = 5;
+    p.id = s_cid;
+    p.content_url = s_uri;
+    p.content_ex_url = "";
+    p.content_name = s_name;
+    p.icon_path = "";
+    p.sku_id = "";
+    p.option = BGFT_TASK_OPTION_DISABLE_CDN_QUERY_PARAM;
+    p.playgo_scenario_id = "0";
+    p.release_date = "";
+    p.package_type = bgft_package_type(req);
+    p.package_sub_type = "";
+    p.package_size = (unsigned long)req->package_size;
 
     int task_id = -1;
     int ret = g_bgft.register_task(&p, &task_id);
     install_log("[BGFT] register type=%s size=%llu user=%d -> 0x%08X task=%d",
-                p.param.package_type, (unsigned long long)req->package_size, user_id, ret, task_id);
+                p.package_type, (unsigned long long)req->package_size, user_id, ret, task_id);
     if (ret != 0) return ret;
 
     ret = g_bgft.start_task(task_id);
