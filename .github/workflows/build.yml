@@ -122,3 +122,56 @@ jobs:
           name: payload-${{ matrix.platform }}
           path: ${{ env.ELF_NAME }}
           retention-days: 30
+
+  # PS4 home screen tile: a fake PKG (OpenOrbis toolchain) that starts the
+  # bundled PS4 payload through GoldHEN's BinLoader and opens the web UI.
+  ps4-tile:
+    runs-on: ubuntu-latest
+    needs: [version, payload]
+    env:
+      OO_URL: https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/download/v0.5.4/toolchain-llvm-18.tar.gz
+      DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: payload-ps4
+          path: payload
+      - name: OpenOrbis toolchain (cached)
+        id: oo-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/OpenOrbis
+          key: openorbis-v0.5.4-llvm18
+      - name: Download OpenOrbis toolchain
+        if: steps.oo-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/OpenOrbis
+          curl -fsSL "$OO_URL" | tar xz -C ~/OpenOrbis
+      - name: Tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang lld python3-pil
+          OO=$(dirname "$(find ~/OpenOrbis -name link.x -print -quit)")
+          echo "Toolchain: $OO"
+          chmod +x "$OO"/bin/linux/* || true
+          echo "OO_PS4_TOOLCHAIN=$OO" >> "$GITHUB_ENV"
+      - name: Build tile package
+        run: |
+          VER="${{ needs.version.outputs.version }}"
+          # Package version xx.yy from x.y.z (1.2.3 -> 01.23); pre-releases share it.
+          CORE="${VER%%-*}"
+          IFS=. read -r MA MI PA <<< "$CORE"
+          PKGVER=$(printf '%02d.%02d' "$MA" "$(( MI * 10 + PA ))")
+          ELF=$(ls payload/*.elf | head -1)
+          make -C ps4-launcher OO_PS4_TOOLCHAIN="$OO_PS4_TOOLCHAIN" \
+               PAYLOAD="$PWD/$ELF" VERSION="$PKGVER"
+          OUT="pkg-manager-x_v${VER}${{ needs.version.outputs.artifact_suffix }}_ps4-tile.pkg"
+          mv ps4-launcher/IV0000-PKGX00001_00-PKGMANAGERX00000.pkg "$OUT"
+          ls -l "$OUT"
+          echo "PKG_NAME=$OUT" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: payload-ps4-tile
+          path: ${{ env.PKG_NAME }}
+          retention-days: 30

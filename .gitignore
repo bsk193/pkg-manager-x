@@ -82,3 +82,10 @@ compile_commands.json
 
 # Reference files & directories
 .for_reference/
+
+# PS4 tile build outputs
+ps4-launcher/build/
+ps4-launcher/eboot.bin
+ps4-launcher/sce_sys/
+ps4-launcher/pkg.gp4
+ps4-launcher/pkgmgr-ps4.elf

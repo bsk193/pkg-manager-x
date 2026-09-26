@@ -108,6 +108,7 @@ jobs:
             echo "|------|---------|--------|"
             echo "| \`pkg-manager-x_v${VER}_ps5.elf\` | PS5 | Payload Manager / elfldr (9021) |"
             echo "| \`pkg-manager-x_v${VER}_ps4.elf\` | PS4, experimental (see docs/PS4.md) | GoldHEN payload loader (9090) |"
+            echo "| \`pkg-manager-x_v${VER}_ps4-tile.pkg\` | PS4 home screen tile (optional): starts the bundled payload and opens the UI | GoldHEN Package Installer |"
             echo
             if [ -n "$PREV" ]; then
               echo "Changes: https://github.com/${{ github.repository }}/compare/$PREV...$TAG"
@@ -119,7 +120,7 @@ jobs:
           else
             FLAGS="--latest"
           fi
-          gh release create "$TAG" dist/*.elf \
+          gh release create "$TAG" dist/*.elf dist/*.pkg \
             --target "$GITHUB_SHA" \
             --title "PKG Manager X $VER" \
             --notes-file notes.md \

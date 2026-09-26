@@ -10,7 +10,7 @@ Direct Install with the PS5 build. Only the console integration differs:
 | Install call | `sceAppInstUtilInstallByPackage` | BGFT download task (`libSceBgft.sprx`, resolved at runtime) |
 | Install progress | `sceAppInstUtilGetInstallStatus` | BGFT task progress + app.db / version checks |
 | Installable packages | PS4 and PS5 | PS4 only (PS5 packages are listed, tagged "PS5 only", and refused) |
-| Home screen shortcut | yes | no (hidden in Settings) |
+| Home screen shortcut | installed by the payload | separate tile package `*_ps4-tile.pkg` (see below) |
 | DLC status | native API + app.db | app.db / addcont.db / filesystem |
 
 Target setup: **GoldHEN on firmware 13.52** (WebKit jailbreak). GoldHEN handles
@@ -51,9 +51,29 @@ Please run them in order before relying on it and report the results (log:
 - BGFT structure layouts and option flags follow public PS4 homebrew headers
   (OpenOrbis `libSceBgft.h`, flatz' Remote Package Installer). If step 3 fails,
   `src/platform_install_ps4.c` is the only file to adjust.
-- A PS4 home-screen tile would need a real fake-PKG app (Homebrew Launcher style); not implemented.
 - `sceAppInstUtilInstallByPackage` may also exist on newer PS4 firmware. If BGFT
   proves unreliable, it could be tried as an alternative backend.
+
+## Home screen tile (optional)
+
+PS4 has no "web link" tile like the PS5 shortcut, so releases include a small
+app package, `pkg-manager-x_<version>_ps4-tile.pkg` (title ID `PKGX00001`).
+Install it once with GoldHEN's **Package Installer** (or any fake-PKG installer).
+
+Pressing the tile:
+1. If PKG Manager X is not running yet (nothing answers on port 8844), it sends
+   the payload bundled in the package to GoldHEN's **BinLoader** on
+   `127.0.0.1:9090` and waits for the server to start. The BinLoader must be
+   enabled in GoldHEN's settings; otherwise load the ELF as usual first.
+2. It opens the console browser at `http://127.0.0.1:8844/`.
+
+So after a reboot + jailbreak the tile is all you need. The bundled payload is
+the one from the same release; install the new tile package when you update
+(pre-releases of the same version share the package version, so remove the
+old tile first if the installer says it is already installed).
+
+The tile is built in CI with the [OpenOrbis PS4 toolchain](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain)
+from `ps4-launcher/` (`make -C ps4-launcher OO_PS4_TOOLCHAIN=... PAYLOAD=pkgmgr-ps4.elf`).
 
 ## Building
 
