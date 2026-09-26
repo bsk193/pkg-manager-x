@@ -18,8 +18,9 @@ ICON        ?= ../assets/icon0.png
 
 TOOLCHAIN   := $(OO_PS4_TOOLCHAIN)
 BUILD       := build
-CC          ?= clang
-LD          ?= ld.lld
+# Always clang: make's built-in default CC=cc would pick gcc.
+OO_CC       ?= clang
+OO_LD       ?= ld.lld
 TOOLS       := $(TOOLCHAIN)/bin/linux
 
 CFLAGS      := --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -O2 -Wall \
@@ -34,10 +35,10 @@ all: $(CONTENT_ID).pkg
 
 $(BUILD)/main.o: main.c
 	@mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(OO_CC) $(CFLAGS) -c -o $@ $<
 
 $(BUILD)/launcher.elf: $(BUILD)/main.o
-	$(LD) $< -o $@ $(LDFLAGS)
+	$(OO_LD) $< -o $@ $(LDFLAGS)
 
 eboot.bin: $(BUILD)/launcher.elf
 	$(TOOLS)/create-fself -in=$< -out=$(BUILD)/launcher.oelf --eboot "eboot.bin" --paid 0x3800000000000011
