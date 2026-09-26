@@ -34,6 +34,14 @@ LDFLAGS     := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x --eh-frame-hdr \
 SCE_MODULES := sce_module/libc.prx sce_module/libSceFios2.prx
 STAGE_FILES := eboot.bin sce_sys/param.sfo sce_sys/icon0.png sce_sys/about/right.sprx $(SCE_MODULES) pkgmgr-ps4.elf
 
+# Optional private build: PRESET=/path/source.json bundles one HTTP source
+# ({"label":..,"url":..,"username":..,"password":..}) that the tile adds on
+# first start. Never set it in CI: the password ends up inside the package.
+PRESET      ?=
+ifneq ($(PRESET),)
+STAGE_FILES += preset_sources.json
+endif
+
 all: $(CONTENT_ID).pkg
 
 $(BUILD)/main.o: main.c
@@ -77,6 +85,9 @@ sce_module/%.prx:
 pkgmgr-ps4.elf: $(PAYLOAD)
 	cp $< $@
 
+preset_sources.json: $(PRESET)
+	cp $< $@
+
 pkg.gp4: $(STAGE_FILES)
 	$(TOOLS)/create-gp4 -out $@ --content-id=$(CONTENT_ID) --files "$(STAGE_FILES)"
 
@@ -84,6 +95,6 @@ $(CONTENT_ID).pkg: pkg.gp4
 	$(TOOLS)/PkgTool.Core pkg_build $< .
 
 clean:
-	rm -rf $(BUILD) eboot.bin sce_sys sce_module pkg.gp4 pkgmgr-ps4.elf $(CONTENT_ID).pkg
+	rm -rf $(BUILD) eboot.bin sce_sys sce_module pkg.gp4 pkgmgr-ps4.elf preset_sources.json $(CONTENT_ID).pkg
 
 .PHONY: all clean
