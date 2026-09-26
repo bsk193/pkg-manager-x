@@ -29,7 +29,10 @@ LDFLAGS     := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x --eh-frame-hdr \
                -L$(TOOLCHAIN)/lib -lc -lkernel -lSceUserService -lSceSystemService \
                $(TOOLCHAIN)/lib/crt1.o
 
-STAGE_FILES := eboot.bin sce_sys/param.sfo sce_sys/icon0.png sce_sys/about/right.sprx pkgmgr-ps4.elf
+# sce_module/*.prx: the system libc modules every OpenOrbis app ships. Without
+# them the PS4 cannot load eboot.bin and reports the app as "corrupted".
+SCE_MODULES := sce_module/libc.prx sce_module/libSceFios2.prx
+STAGE_FILES := eboot.bin sce_sys/param.sfo sce_sys/icon0.png sce_sys/about/right.sprx $(SCE_MODULES) pkgmgr-ps4.elf
 
 all: $(CONTENT_ID).pkg
 
@@ -67,6 +70,10 @@ sce_sys/about/right.sprx:
 	@mkdir -p sce_sys/about
 	cp "$$(find $(TOOLCHAIN)/samples -path '*sce_sys/about/right.sprx' | head -1)" $@
 
+sce_module/%.prx:
+	@mkdir -p sce_module
+	cp "$$(find $(TOOLCHAIN)/samples -path '*sce_module/$*.prx' | head -1)" $@
+
 pkgmgr-ps4.elf: $(PAYLOAD)
 	cp $< $@
 
@@ -77,6 +84,6 @@ $(CONTENT_ID).pkg: pkg.gp4
 	$(TOOLS)/PkgTool.Core pkg_build $< .
 
 clean:
-	rm -rf $(BUILD) eboot.bin sce_sys pkg.gp4 pkgmgr-ps4.elf $(CONTENT_ID).pkg
+	rm -rf $(BUILD) eboot.bin sce_sys sce_module pkg.gp4 pkgmgr-ps4.elf $(CONTENT_ID).pkg
 
 .PHONY: all clean
