@@ -7,10 +7,13 @@
  *      bundled payload (/app0/pkgmgr-ps4.elf) to GoldHEN's BinLoader on
  *      127.0.0.1:9090 and wait for the web server to come up.
  *   2. Open the console browser at http://127.0.0.1:8844/.
- * The app then stays idle in the background. PS4 apps must not return from
- * main: the system reports that as a crash (CE-34878-0), and GoldHEN may
- * take the payload it started for us down with it. Closing the app from
- * the home screen ends it cleanly.
+ * The app then stays in the background. Whenever it gets the focus back
+ * (Circle in the browser, or the tile opened again from the home screen) it
+ * reopens the browser instead of showing a black screen; any controller
+ * button on the black screen does the same. PS4 apps must not return from
+ * main: the system reports that as a crash (CE-34878-0) and GoldHEN may take
+ * the payload it started for us down with it. Closing the app from the home
+ * screen ends it cleanly.
  */
 
 #include <errno.h>
@@ -25,6 +28,8 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <time.h>
+#include <orbis/Pad.h>
 
 #define PKGMGR_PORT     8844
 #define BINLOADER_PORT  9090
@@ -37,6 +42,13 @@ int sceUserServiceTerminate(void);
 int sceSystemServiceLaunchWebBrowser(const char *uri, void *param);
 int sceSystemServiceHideSplashScreen(void);
 int sceKernelUsleep(unsigned int usec);
+int sceUserServiceGetInitialUser(int *user_id);
+
+/* Set in OrbisPadData.buttons while another app / the system UI has focus. */
+#define PAD_BUTTON_INTERCEPTED 0x80000000u
+#define POLL_USEC          (250 * 1000)
+#define RESUME_GAP_SEC     2   /* loop stalled this long => we were suspended */
+#define RELAUNCH_COOLDOWN  3   /* seconds between browser launches */
 
 /* libkernel notification (same layout as OpenOrbis' OrbisNotificationRequest). */
 typedef struct {
@@ -120,41 +132,84 @@ static int send_payload(void) {
     return rc;
 }
 
-/* Never returns; the user closes the app from the home screen. */
-static void idle_forever(void) {
-    for (;;) sceKernelUsleep(60 * 1000 * 1000);
+/* Starts the payload through GoldHEN's BinLoader unless the server already
+ * answers. 0 when the server is up. */
+static int ensure_server(void) {
+    if (port_open(PKGMGR_PORT)) return 0;
+    notify("Starting PKG Manager X...");
+    int rc = send_payload();
+    if (rc == -1) {
+        notify("PKG Manager X: GoldHEN BinLoader (port 9090) is not running.\n"
+               "Enable it in GoldHEN settings, or load the payload manually.");
+        return -1;
+    }
+    if (rc != 0) {
+        notify("PKG Manager X: could not send the payload (%d)", rc);
+        return -1;
+    }
+    for (int i = 0; i < START_WAIT_SEC * 4; i++) {
+        sceKernelUsleep(250 * 1000);
+        if (port_open(PKGMGR_PORT)) return 0;
+    }
+    notify("PKG Manager X did not start. Check http://<PS4-IP>:8844/api/log");
+    return -1;
+}
+
+static time_t g_last_launch;
+
+static void open_browser(void) {
+    g_last_launch = time(NULL);
+    if (ensure_server() != 0) return;
+    int rc = sceSystemServiceLaunchWebBrowser(UI_URL, NULL);
+    if (rc != 0) notify("PKG Manager X: could not open the browser (0x%08X)\nOpen %s", rc, UI_URL);
+    g_last_launch = time(NULL);
 }
 
 int main(void) {
     sceSystemServiceHideSplashScreen();
+    sceUserServiceInitialize(NULL);
 
-    if (!port_open(PKGMGR_PORT)) {
-        notify("Starting PKG Manager X...");
-        int rc = send_payload();
-        if (rc == -1) {
-            notify("PKG Manager X: GoldHEN BinLoader (port 9090) is not running.\n"
-                   "Enable it in GoldHEN settings, or load the payload manually.");
-            idle_forever();
-        }
-        if (rc != 0) {
-            notify("PKG Manager X: could not send the payload (%d)", rc);
-            idle_forever();
-        }
-        int up = 0;
-        for (int i = 0; i < START_WAIT_SEC * 4 && !up; i++) {
-            sceKernelUsleep(250 * 1000);
-            up = port_open(PKGMGR_PORT);
-        }
-        if (!up) {
-            notify("PKG Manager X did not start. Check http://<PS4-IP>:8844/api/log");
-            idle_forever();
-        }
+    int pad = -1;
+    int user = -1;
+    if (scePadInit() == 0 && sceUserServiceGetInitialUser(&user) == 0) {
+        pad = scePadOpen(user, 0, 0, NULL);
     }
 
-    sceUserServiceInitialize(NULL);
-    int rc = sceSystemServiceLaunchWebBrowser(UI_URL, NULL);
-    if (rc != 0) notify("PKG Manager X: could not open the browser (0x%08X)\nOpen %s", rc, UI_URL);
-    sceUserServiceTerminate();
-    idle_forever();
+    open_browser();
+
+    /* Never returns; the user closes the app from the home screen. */
+    uint32_t prev_buttons = 0;
+    int had_focus_loss = 0;
+    time_t prev_tick = time(NULL);
+    for (;;) {
+        sceKernelUsleep(POLL_USEC);
+        time_t now = time(NULL);
+        int reopen = 0;
+
+        /* Suspended while the browser was in front, now running again. */
+        if (now - prev_tick >= RESUME_GAP_SEC) reopen = 1;
+        prev_tick = now;
+
+        if (pad >= 0) {
+            OrbisPadData d;
+            memset(&d, 0, sizeof(d));
+            if (scePadReadState(pad, &d) == 0 && d.connected) {
+                if (d.buttons & PAD_BUTTON_INTERCEPTED) {
+                    had_focus_loss = 1;            /* browser / system UI in front */
+                } else {
+                    if (had_focus_loss) reopen = 1; /* focus is back on the black screen */
+                    had_focus_loss = 0;
+                    uint32_t pressed = d.buttons & ~prev_buttons;
+                    if (pressed) reopen = 1;        /* any button on the black screen */
+                }
+                prev_buttons = d.buttons & ~PAD_BUTTON_INTERCEPTED;
+            }
+        }
+
+        if (reopen && now - g_last_launch >= RELAUNCH_COOLDOWN) {
+            open_browser();
+            prev_tick = time(NULL);
+        }
+    }
     return 0;
 }

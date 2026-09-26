@@ -26,7 +26,7 @@ TOOLS       := $(TOOLCHAIN)/bin/linux
 CFLAGS      := --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -O2 -Wall \
                -isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include
 LDFLAGS     := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x --eh-frame-hdr \
-               -L$(TOOLCHAIN)/lib -lc -lkernel -lSceUserService -lSceSystemService \
+               -L$(TOOLCHAIN)/lib -lc -lkernel -lSceUserService -lSceSystemService -lScePad \
                $(TOOLCHAIN)/lib/crt1.o
 
 # sce_module/*.prx: the system libc modules every OpenOrbis app ships. Without
