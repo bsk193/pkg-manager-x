@@ -65,7 +65,8 @@ Pressing the tile:
    the payload bundled in the package to GoldHEN's **BinLoader** on
    `127.0.0.1:9090` and waits for the server to start. The BinLoader must be
    enabled in GoldHEN's settings; otherwise load the ELF as usual first.
-2. It opens the console browser at `http://127.0.0.1:8844/`.
+2. It opens the console browser at `http://127.0.0.1:8844/` and stays idle in the
+   background (close it from the home screen like any app).
 
 So after a reboot + jailbreak the tile is all you need. The bundled payload is
 the one from the same release; install the new tile package when you update

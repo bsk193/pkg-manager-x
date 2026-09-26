@@ -6,7 +6,11 @@
  *   1. If PKG Manager X is not running (nothing on 127.0.0.1:8844), send the
  *      bundled payload (/app0/pkgmgr-ps4.elf) to GoldHEN's BinLoader on
  *      127.0.0.1:9090 and wait for the web server to come up.
- *   2. Open the console browser at http://127.0.0.1:8844/ and exit.
+ *   2. Open the console browser at http://127.0.0.1:8844/.
+ * The app then stays idle in the background. PS4 apps must not return from
+ * main: the system reports that as a crash (CE-34878-0), and GoldHEN may
+ * take the payload it started for us down with it. Closing the app from
+ * the home screen ends it cleanly.
  */
 
 #include <errno.h>
@@ -116,6 +120,11 @@ static int send_payload(void) {
     return rc;
 }
 
+/* Never returns; the user closes the app from the home screen. */
+static void idle_forever(void) {
+    for (;;) sceKernelUsleep(60 * 1000 * 1000);
+}
+
 int main(void) {
     sceSystemServiceHideSplashScreen();
 
@@ -125,11 +134,11 @@ int main(void) {
         if (rc == -1) {
             notify("PKG Manager X: GoldHEN BinLoader (port 9090) is not running.\n"
                    "Enable it in GoldHEN settings, or load the payload manually.");
-            return 0;
+            idle_forever();
         }
         if (rc != 0) {
             notify("PKG Manager X: could not send the payload (%d)", rc);
-            return 0;
+            idle_forever();
         }
         int up = 0;
         for (int i = 0; i < START_WAIT_SEC * 4 && !up; i++) {
@@ -138,15 +147,14 @@ int main(void) {
         }
         if (!up) {
             notify("PKG Manager X did not start. Check http://<PS4-IP>:8844/api/log");
-            return 0;
+            idle_forever();
         }
     }
 
     sceUserServiceInitialize(NULL);
     int rc = sceSystemServiceLaunchWebBrowser(UI_URL, NULL);
     if (rc != 0) notify("PKG Manager X: could not open the browser (0x%08X)\nOpen %s", rc, UI_URL);
-    /* Give the system time to bring the browser up before this app exits. */
-    sceKernelUsleep(2 * 1000 * 1000);
     sceUserServiceTerminate();
+    idle_forever();
     return 0;
 }
