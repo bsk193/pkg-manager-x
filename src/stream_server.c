@@ -10,6 +10,7 @@
 #include "installer.h"
 #include "stream_debug_log.h"
 #include "smb_client.h"
+#include "platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,7 +27,13 @@
 #include <sys/time.h>
 #include <time.h>
 
+#if PKGMGR_CONSOLE_PS4
+/* GoldHEN payload heap cannot reliably allocate the PS5's 2 MiB per
+ * connection buffer. Stream the same ranges in bounded 64 KiB chunks. */
+#define STREAM_SEND_CHUNK (64 * 1024)
+#else
 #define STREAM_SEND_CHUNK (2048 * 1024)
+#endif
 #define STREAM_REQ_MAX (16 * 1024)
 #define STREAM_IO_TIMEOUT_SEC 30
 
