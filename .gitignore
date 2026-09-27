@@ -33,6 +33,7 @@ tests/test_ws_stream_far
 tests/test_parse_mem
 tests/test_pkg_platform
 tests/test_http_source
+tests/test_ps4_notify
 
 # Generated asset headers
 include/assets_*.h

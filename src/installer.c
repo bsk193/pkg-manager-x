@@ -19,6 +19,7 @@
 #include "platform.h"
 #include "platform_install.h"
 #include "pkg_platform.h"
+#include "ps4_notify.h"
 #include "http_source.h"
 
 #include <stdio.h>
@@ -670,6 +671,29 @@ static int install_request_canceled(void) {
 }
 #endif
 
+/* 1 when the manager's own start / "ready to play" popups are skipped for
+ * this title: the PKG Manager X tile (PKGX00001) on a PS4, where the system's
+ * own download notifications already cover it. Status, logs and the web UI
+ * still report the install. Never on PS5 builds. */
+static int installer_quiet_popups(const char *title_id) {
+#if PKGMGR_CONSOLE_PS5
+    (void)title_id;
+    return 0;
+#else
+    return ps4_suppress_install_notification(pkg_platform_console(), title_id);
+#endif
+}
+
+/* "<title> is ready to play!" popup for a finished install (all completion
+ * paths go through here). */
+static void installer_notify_ready(const char *title_id, const char *name) {
+    if (installer_quiet_popups(title_id)) {
+        install_log("[INSTALLER] %s (%s) ready; popup skipped for the PKG Manager X tile", name, title_id);
+        return;
+    }
+    ps5_notify("%s is ready to play!", name);
+}
+
 int installer_is_canceling(void) {
     return g_cancel_stream || !g_monitor_running;
 }
@@ -1073,7 +1097,8 @@ static void *stream_installer_worker(void *arg) {
                     snprintf(g_status.prompt_message, sizeof(g_status.prompt_message),
                              "%s is ready to play!", g_status.title_name[0] ? g_status.title_name : clean_pkg_name);
                     pthread_mutex_unlock(&g_installer_mutex);
-                    ps5_notify("%s is ready to play!", g_status.title_name[0] ? g_status.title_name : clean_pkg_name);
+                    installer_notify_ready(g_status.title_id,
+                                           g_status.title_name[0] ? g_status.title_name : clean_pkg_name);
                     break;
                 }
 
@@ -1160,7 +1185,8 @@ static void *stream_installer_worker(void *arg) {
                     snprintf(g_status.prompt_message, sizeof(g_status.prompt_message),
                              "%s is ready to play!", g_status.title_name[0] ? g_status.title_name : clean_pkg_name);
                     pthread_mutex_unlock(&g_installer_mutex);
-                    ps5_notify("%s is ready to play!", g_status.title_name[0] ? g_status.title_name : clean_pkg_name);
+                    installer_notify_ready(g_status.title_id,
+                                           g_status.title_name[0] ? g_status.title_name : clean_pkg_name);
                     break;
                 }
             }
@@ -1198,6 +1224,8 @@ static void *stream_installer_worker(void *arg) {
 
 #else
     /* Mock streaming simulation for host tests */
+    int mock_done = 0;
+    char mock_tid[32] = "", mock_name[256] = "";
     char mock_pkg_path[512];
     pthread_mutex_lock(&g_installer_mutex);
     strncpy(mock_pkg_path, g_status.pkg_path, sizeof(mock_pkg_path) - 1);
@@ -1242,8 +1270,14 @@ static void *stream_installer_worker(void *arg) {
         strncpy(g_status.status_str, "playable", sizeof(g_status.status_str) - 1);
         g_status.is_installing = 0;
         g_status.completed = 1;
+        mock_done = 1;
+        snprintf(mock_tid, sizeof(mock_tid), "%s", g_status.title_id);
+        snprintf(mock_name, sizeof(mock_name), "%s",
+                 g_status.title_name[0] ? g_status.title_name : clean_pkg_name);
     }
     pthread_mutex_unlock(&g_installer_mutex);
+    /* Same completion popup as the console paths, so host tests see it. */
+    if (mock_done) installer_notify_ready(mock_tid, mock_name);
 #endif
 
     /* Capture a queued second package before releasing the first package's
@@ -1519,8 +1553,11 @@ static int installer_start_internal(const char *pkg_path, const char *pending_pk
     notify_title[sizeof(notify_title) - 1] = '\0';
     int notify_multipart = g_status.is_multipart;
     uint32_t notify_total = g_status.total_parts;
+    int notify_quiet = installer_quiet_popups(g_status.title_id);
     pthread_mutex_unlock(&g_installer_mutex);
-    if (notify_multipart) {
+    if (notify_quiet) {
+        install_log("[INSTALLER] Installing %s; popup skipped for the PKG Manager X tile", notify_title);
+    } else if (notify_multipart) {
         if (is_disc_start) {
             ps5_notify("Installing %s (Disc 1 of %u)...", notify_title, notify_total);
         } else {
@@ -1703,8 +1740,13 @@ int installer_start_live(const char *live_uri) {
     strncpy(notify_title, g_status.title_name[0] ? g_status.title_name : "Package",
             sizeof(notify_title) - 1);
     notify_title[sizeof(notify_title) - 1] = '\0';
+    int notify_quiet = installer_quiet_popups(g_status.title_id);
     pthread_mutex_unlock(&g_installer_mutex);
-    ps5_notify("Installing %s (live)...", notify_title);
+    if (notify_quiet) {
+        install_log("[INSTALLER] Installing %s (live); popup skipped for the PKG Manager X tile", notify_title);
+    } else {
+        ps5_notify("Installing %s (live)...", notify_title);
+    }
     return 0;
 }
 

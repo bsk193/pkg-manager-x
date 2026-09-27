@@ -20,6 +20,7 @@
 #include "app_installer.h"
 #include "http_source.h"
 #include "platform.h"
+#include "ps4_notify.h"
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -34,6 +35,9 @@
 
 extern int sceNetCtlInit(void);
 extern int sceUserServiceInitialize(int *priority);
+#if PKGMGR_CONSOLE_PS4
+extern int sceUserServiceGetInitialUser(int *user_id);
+#endif
 
 static pid_t find_pid(const char *name) {
     int mib[4] = {1, 14, 8, 0};
@@ -180,6 +184,32 @@ int main(int argc, char **argv) {
     }
     int user_prio = 256;
     int user_result = sceUserServiceInitialize(&user_prio);
+#if PKGMGR_CONSOLE_PS4
+    /* The process GoldHEN runs the payload in usually has the user service
+     * initialized already (0x80960003). That instance is usable; it is not
+     * ours to reset or terminate. Only other codes are real failures. */
+    ps4_user_service_state_t user_state = ps4_user_service_classify(user_result);
+    if (user_state == PS4_USER_SERVICE_READY) {
+        printf("[PKG Manager] User service initialized.\n");
+    } else if (user_state == PS4_USER_SERVICE_ALREADY_INITIALIZED) {
+        printf("[PKG Manager] User service already initialized by the host process (0x%08X); using it.\n",
+               user_result);
+    } else {
+        printf("[PKG Manager] sceUserServiceInitialize returned 0x%08X\n", user_result);
+        ps5_notify("PKG Manager: user service init returned 0x%08X", user_result);
+    }
+    if (user_state != PS4_USER_SERVICE_FAILED) {
+        /* Confirm the service answers before relying on it. */
+        int initial_user = -1;
+        int user_check = sceUserServiceGetInitialUser(&initial_user);
+        if (user_check == 0) {
+            printf("[PKG Manager] User service ready (initial user %d).\n", initial_user);
+        } else {
+            printf("[PKG Manager] sceUserServiceGetInitialUser returned 0x%08X\n", user_check);
+            ps5_notify("PKG Manager: user service unavailable (0x%08X)", user_check);
+        }
+    }
+#else
     if (user_result == 0) {
         printf("[PKG Manager] User service initialized.\n");
     } else {
@@ -187,9 +217,13 @@ int main(int argc, char **argv) {
         ps5_notify("PKG Manager: user service init returned 0x%08X", user_result);
     }
 #endif
+#endif
     static const char services_done[] = "[PKG Manager] service initialization complete\n";
     (void)write(STDOUT_FILENO, services_done, sizeof(services_done) - 1);
+#if !PKGMGR_CONSOLE_PS4
+    /* PS4: no startup popup; the scan-result popup below announces the start. */
     ps5_notify("PKG Manager X v%s starting...", PKGMGR_X_VERSION);
+#endif
 
     int port = DEFAULT_HTTP_PORT;
     char server_url[128];
@@ -236,6 +270,17 @@ int main(int argc, char **argv) {
         strcpy(current_ip, "unknown");
     }
 
+#if PKGMGR_CONSOLE_PS4
+    /* PS4: two-line popup (version + count), also when the IP is unknown.
+     * The address stays in the log and the web UI. */
+    {
+        char scan_msg[160];
+        ps4_format_scan_notification(scan_msg, sizeof(scan_msg), PKGMGR_X_VERSION, found_count);
+        ps5_notify("%s", scan_msg);
+        printf("[PKG Manager] Web UI: http://%s:%d/\n", current_ip, port);
+        install_log("[PKG Manager] Found %d package(s); web UI http://%s:%d/", found_count, current_ip, port);
+    }
+#else
     if (strcmp(current_ip, "unknown") != 0) {
         ps5_notify("PKG Manager X v%s\nFound %d package(s)\nhttp://%s:%d",
                    PKGMGR_X_VERSION, found_count, current_ip, port);
@@ -243,6 +288,7 @@ int main(int argc, char **argv) {
         ps5_notify("PKG Manager X v%s\nFound %d package(s)\nPort: %d",
                    PKGMGR_X_VERSION, found_count, port);
     }
+#endif
 
     printf("[PKG Manager] Running. Press Ctrl+C or kill process to terminate.\n");
 
