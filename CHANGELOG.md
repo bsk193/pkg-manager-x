@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.4.1
+
+- Fixed USB and disc installs failing when the console had no active network connection. Installation progress is not shown in PKG Manager in this mode due to a PS5 system limitation.
+
 ## v1.4.0
 
 ### SMB Network Shares

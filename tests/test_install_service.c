@@ -65,9 +65,14 @@ int sceAppInstUtilTerminate(void) {
 int sceAppInstUtilInstallByPackage(const pkg_metadata_t *meta, pkg_info_t *info,
                                   playgo_info_t *playgo) {
     assert(initialized && playgo);
-    assert(strcmp(meta->uri, "http://127.0.0.1/package.pkg") == 0);
-    assert(strcmp(meta->content_name, "Fixture") == 0);
-    assert(strcmp(meta->icon_url, "http://127.0.0.1/icon.png") == 0);
+    if (strcmp(meta->uri, "/mnt/usb0/game.pkg") == 0) {
+        assert(strcmp(meta->content_name, "USB Game") == 0);
+        assert(strcmp(meta->icon_url, "") == 0);
+    } else {
+        assert(strcmp(meta->uri, "http://127.0.0.1/package.pkg") == 0);
+        assert(strcmp(meta->content_name, "Fixture") == 0);
+        assert(strcmp(meta->icon_url, "http://127.0.0.1/icon.png") == 0);
+    }
     assert(meta->ex_uri[0] == 0 && meta->content_id[0] == 0);
     submitted_metadata = meta;
     if (++submissions > 1 || mode("slot_error")) return (int)0x80B2116Fu;
@@ -83,11 +88,30 @@ int sceAppInstUtilGetInstallStatus(const char *content_id, SceAppInstallStatusIn
     snprintf(expected, sizeof(expected), "TEST-%d", getpid());
     assert(strcmp(content_id, expected) == 0);
     assert(initialized && submissions == 1);
-    assert(strcmp(submitted_metadata->uri, "http://127.0.0.1/package.pkg") == 0);
-    assert(strcmp(submitted_metadata->content_name, "Fixture") == 0);
     if (mode("status_error")) return (int)0x80A30003u;
+    if (mode("status_nospace")) return (int)0x80A30002u;
+    if (mode("filesystem_handoff")) {
+        static int fs_handoff_calls = 0;
+        if (++fs_handoff_calls == 1) {
+            strcpy(status->status, "transferring");
+            status->downloaded_size = 3801088;
+            status->total_size = 900464640;
+            status->local_copy_percent = 0;
+            return 0;
+        }
+        return (int)0x80A30003u;
+    }
+    if (mode("filesystem_copying")) {
+        strcpy(status->status, "transferring");
+        status->downloaded_size = 50000000;
+        status->total_size = 100000000;
+        status->local_copy_percent = 50;
+        return 0;
+    }
     strcpy(status->status, "completed");
     status->downloaded_size = 123456789;
+    status->total_size = 123456789;
+    status->local_copy_percent = 100;
     if (mode("native_status_error")) {
         strcpy(status->status, "error");
         status->error_info.error_code = (int)0x80B2116Fu;
@@ -253,6 +277,51 @@ int main(int argc, char **argv) {
     close(pair[1]);
     assert(install_ipc_transfer(pair[0], bytes, sizeof(bytes), 0, 1000, NULL) == INSTALL_SERVICE_DISCONNECTED);
     close(pair[0]);
+
+    /* Test direct filesystem install: uri is path, icon_url is empty, status reports local copy percent */
+    {
+        install_service_t fs_service = INSTALL_SERVICE_INIT;
+        pkg_info_t fs_info;
+        SceAppInstallStatusInstalled fs_status;
+        setenv("PKGMGR_TEST_HELPER_MODE", "filesystem_copying", 1);
+        assert(install_service_start(&fs_service, "/mnt/usb0/game.pkg", "USB Game", "", &fs_info, NULL) == 0);
+        assert(install_service_status(&fs_service, &fs_status) == 0);
+        assert(strcmp(fs_status.status, "transferring") == 0);
+        assert(fs_status.local_copy_percent == 50);
+        assert(fs_status.downloaded_size == 50000000);
+        assert(fs_status.total_size == 100000000);
+        close_reaped(&fs_service);
+        unsetenv("PKGMGR_TEST_HELPER_MODE");
+    }
+
+    /* Test direct filesystem install handoff: initial poll returns 0.4% transferring, subsequent returns 0x80A30003 */
+    {
+        install_service_t fs_service = INSTALL_SERVICE_INIT;
+        pkg_info_t fs_info;
+        SceAppInstallStatusInstalled fs_status;
+        setenv("PKGMGR_TEST_HELPER_MODE", "filesystem_handoff", 1);
+        assert(install_service_start(&fs_service, "/mnt/usb0/game.pkg", "USB Game", "", &fs_info, NULL) == 0);
+        assert(install_service_status(&fs_service, &fs_status) == 0);
+        assert(strcmp(fs_status.status, "transferring") == 0);
+        assert(fs_status.downloaded_size == 3801088);
+        assert(fs_status.total_size == 900464640);
+        /* Second poll returns 0x80A30003 (APP_INSTALLER_ERROR_PARAM) */
+        assert(install_service_status(&fs_service, &fs_status) == (int)0x80A30003u);
+        close_reaped(&fs_service);
+        unsetenv("PKGMGR_TEST_HELPER_MODE");
+    }
+
+    /* Test unexpected status error e.g. 0x80A30002 (APP_INSTALLER_ERROR_NOSPACE) */
+    {
+        install_service_t ns_service = INSTALL_SERVICE_INIT;
+        pkg_info_t ns_info;
+        SceAppInstallStatusInstalled ns_status;
+        setenv("PKGMGR_TEST_HELPER_MODE", "status_nospace", 1);
+        assert(install_service_start(&ns_service, "/mnt/usb0/game.pkg", "USB Game", "", &ns_info, NULL) == 0);
+        assert(install_service_status(&ns_service, &ns_status) == (int)0x80A30002u);
+        close_reaped(&ns_service);
+        unsetenv("PKGMGR_TEST_HELPER_MODE");
+    }
 
     assert(strstr(diagnostics, "[HELPER] spawning parent_pid="));
     assert(strstr(diagnostics, "helper_build="));

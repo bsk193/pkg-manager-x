@@ -26,3 +26,9 @@ export async function cancelInstall() {
   if (!res.ok) throw new Error(`Cancel failed: ${res.status}`);
   return res.json();
 }
+
+export async function detachDirectInstall() {
+  const res = await fetch('/api/detach', { method: 'POST' });
+  if (!res.ok) throw new Error(`Detach failed: ${res.status}`);
+  return res.json();
+}

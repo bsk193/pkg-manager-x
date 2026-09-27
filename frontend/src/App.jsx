@@ -89,6 +89,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState('date-desc');
   const [selectedTitleId, setSelectedTitleId] = useState(null);
+  const [directInstallScreenDismissed, setDirectInstallScreenDismissed] = useState(false);
   const [showDirectInstall, setShowDirectInstall] = useState(false);
   const directTabId = useRef(Math.random().toString(36).slice(2) + Date.now());
   const directUpload = useDirectUpload(directTabId.current);
@@ -516,7 +517,8 @@ export default function App() {
   const {
     installerStatus, setInstallerStatus, batchInstall, setBatchInstall, initialStatusLoaded, setInitialStatusLoaded,
     etaInfo, isWaitingForPart, isBatchActive, isInstalling, isDiscSource, speedCalcRef, wasInstallingRef, batchInstallRef,
-    installerStatusRef, fetchStatus, handleInstall, handleInstallBaseAndUpdate, handleCancel
+    installerStatusRef, fetchStatus, handleInstall, handleInstallBaseAndUpdate, handleCancel,
+    handleDetachDirectStorage
   } = useInstaller({
     showToast,
     fetchStorage,
@@ -603,6 +605,7 @@ export default function App() {
     triggerQuickScan,
     installerStatus,
     isBatchActive,
+    directInstallScreenDismissed,
     showDonateModal,
     handleCloseDonateModal,
     showClearCacheModal,
@@ -804,6 +807,12 @@ export default function App() {
   }, [installerStatus.is_installing, installerStatus.waiting_for_disc, isOffline]);
 
   useEffect(() => {
+    if (!installerStatus.is_installing && !isBatchActive) {
+      setDirectInstallScreenDismissed(false);
+    }
+  }, [installerStatus.is_installing, isBatchActive]);
+
+  useEffect(() => {
     if (isOffline) return;
     // Poll individual local drives; network discovery runs on explicit navigation/rescan.
     const interval = setInterval(() => {
@@ -888,7 +897,7 @@ export default function App() {
   }
 
   // Active installation overlay.
-  if (isInstalling) {
+  if (isInstalling && !directInstallScreenDismissed) {
     return <InstallingScreen
       installerStatus={installerStatus}
       batchInstall={batchInstall}
@@ -902,6 +911,9 @@ export default function App() {
       onCancel={() => {
         handleCancel();
         if (installerStatus?.pkg_path?.startsWith('live:')) directUpload.cancel();
+      }}
+      onDismiss={async () => {
+        if (await handleDetachDirectStorage()) setDirectInstallScreenDismissed(true);
       }}
       packages={packages}
       directIconUrl={directUpload.iconUrl}

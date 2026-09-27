@@ -1,7 +1,7 @@
 /*
  * PKG Manager - Package and Storage Drive Scanner
  *
- * Discovers USB drives, Blu-ray discs, internal storage, and SMB shares.
+ * Discovers USB drives, Blu-ray discs, and SMB shares.
  * Manages manifest caching, quick rescans, and multi-part package indexing.
  */
 
@@ -658,12 +658,6 @@ void pkg_scanner_init(void) {
     }
     g_scanner_initialized = 1;
     pthread_mutex_unlock(&g_scanner_mutex);
-
-    /* Ensure default directory exists */
-    struct stat st;
-    if (stat(PKG_DEFAULT_DIR, &st) != 0) {
-        mkdir(PKG_DEFAULT_DIR, 0777);
-    }
 }
 
 size_t pkg_scanner_get_count(void) {
@@ -1094,9 +1088,6 @@ static int scan_full_owned(void) {
             snprintf(disc_pkg_dir, sizeof(disc_pkg_dir), "%s/pkg", disc_dir);
             total_expected += count_pkg_files(disc_pkg_dir, 1, 0);
         }
-        if (is_drive_mounted(PKG_DEFAULT_DIR)) {
-            total_expected += count_pkg_files(PKG_DEFAULT_DIR, 1, 0);
-        }
     }
 
     /* Pre-count .pkg files across all enabled SMB shares (readdir only,
@@ -1177,19 +1168,9 @@ static int scan_full_owned(void) {
             size_t count = g_package_count - prev_pkg;
             add_full_scan_drive("disc", "Blu-ray Disc", disc_dir, "disc", 1, count);
         }
-
-        /* 3. Check /data/pkg (Internal Storage) if packages are present */
-        if (is_drive_mounted(PKG_DEFAULT_DIR)) {
-            size_t prev_pkg = g_package_count;
-            scan_dir_recursive(PKG_DEFAULT_DIR, 0, "Internal Storage");
-            size_t count = g_package_count - prev_pkg;
-            if (count > 0) {
-                add_full_scan_drive("internal", "Internal Storage", PKG_DEFAULT_DIR, "internal", 1, count);
-            }
-        }
     }
 
-    /* 4. Check configured SMB shares */
+    /* 3. Check configured SMB shares */
     app_settings_t smb_settings;
     pkg_cache_get_settings(&smb_settings);
     for (int i = 0; i < smb_settings.smb_share_count; i++) {
@@ -1408,8 +1389,6 @@ static int scan_quick_single_source(const char *drive_id, const char *drive_labe
         const char *env_dir = getenv("PKG_SCAN_DIR");
         if (env_dir && strcmp(drive_path, env_dir) == 0) {
             collect_local_files_quick(env_dir, 1, 0, &cur_files);
-        } else if (strcmp(drive_type, "internal") == 0) {
-            collect_local_files_quick(drive_path, 1, 0, &cur_files);
         } else {
             /* Root non-recursive */
             collect_local_files_quick(drive_path, 0, 0, &cur_files);
@@ -1678,9 +1657,7 @@ static int scan_quick_single_source(const char *drive_id, const char *drive_labe
         }
     }
     if (!found_drive && g_drive_count < MAX_DRIVES) {
-        if (strcmp(drive_type, "internal") != 0 || updated_count > 0) {
-            add_drive_entry(drive_id, drive_label, drive_path, drive_type, 1, updated_count);
-        }
+        add_drive_entry(drive_id, drive_label, drive_path, drive_type, 1, updated_count);
     }
 
     pthread_mutex_unlock(&g_scanner_mutex);
@@ -1735,11 +1712,6 @@ int pkg_scanner_scan_quick(const char *drive_id_or_path, int *out_changed) {
         if (!drive_id_or_path || drive_id_or_path[0] == '\0' || strcmp(drive_id_or_path, "__all__") == 0 ||
             strcmp(drive_id_or_path, "disc") == 0 || strcmp(drive_id_or_path, disc_dir) == 0) {
             total_changed += scan_quick_single_source("disc", "Blu-ray Disc", disc_dir, "disc", 0, NULL);
-        }
-
-        if (!drive_id_or_path || drive_id_or_path[0] == '\0' || strcmp(drive_id_or_path, "__all__") == 0 ||
-            strcmp(drive_id_or_path, "internal") == 0 || strcmp(drive_id_or_path, PKG_DEFAULT_DIR) == 0) {
-            total_changed += scan_quick_single_source("internal", "Internal Storage", PKG_DEFAULT_DIR, "internal", 0, NULL);
         }
     }
 
@@ -1959,7 +1931,7 @@ int pkg_scanner_find_part_ex(const uint8_t *package_uuid, const char *pkg_filena
     }
 
     /* Disc location first (most common for disc swap multi-part): root files,
-       then recursive inside its pkg/ subfolder. Then USBs, then internal. */
+       then recursive inside its pkg/ subfolder. Then USBs. */
     if (scan_find_part_in_location("/mnt/disc", package_uuid, pkg_filename, part_index, out_path, out_max, out_detected_part) == 0) {
         return 0;
     }
@@ -1972,11 +1944,6 @@ int pkg_scanner_find_part_ex(const uint8_t *package_uuid, const char *pkg_filena
                 return 0;
             }
         }
-    }
-
-    /* Internal storage lives inside the pkg folder already: same rules. */
-    if (scan_find_part_in_location(PKG_DEFAULT_DIR, package_uuid, pkg_filename, part_index, out_path, out_max, out_detected_part) == 0) {
-        return 0;
     }
 
     return -1;

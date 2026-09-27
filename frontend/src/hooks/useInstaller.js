@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { pollStatus, installPackage, cancelInstall } from '../api/installer';
+import { pollStatus, installPackage, cancelInstall, detachDirectInstall } from '../api/installer';
 import { formatBytes, formatEta } from '../utils/formatters';
 import { getInstallStorageOptions } from '../utils/installStorage';
 
@@ -40,7 +40,8 @@ export function useInstaller(props) {
     current_part: 0,
     total_parts: 0,
     waiting_for_disc: false,
-    prompt_message: ''
+    prompt_message: '',
+    is_direct_storage: false
   });
 
   const [initialStatusLoaded, setInitialStatusLoaded] = useState(false);
@@ -66,7 +67,7 @@ export function useInstaller(props) {
   const isWaitingForPart =
     installerStatus.is_installing &&
     (installerStatus.waiting_for_disc || installerStatus.status === 'waiting_disc');
-  const isBatchActive = !!(batchInstall && (installerStatus.is_installing || batchInstall.stage === 'update'));
+  const isBatchActive = !!(batchInstall && !installerStatus.failed);
   const isInstalling = (installerStatus.is_installing || isBatchActive) && !isWaitingForPart;
 
   const isDiscSource =
@@ -115,15 +116,13 @@ export function useInstaller(props) {
         const currentBatch = batchInstallRef.current;
         const isBatchUpdate = currentBatch && currentBatch.stage === 'base' &&
           (data.pkg_path === currentBatch.updatePkg.path || data.pkg_kind === 'update');
-        if (isBatchUpdate && data.is_installing) {
+        if (isBatchUpdate && (data.is_installing || !data.failed)) {
           const nextBatch = { ...currentBatch, stage: 'update' };
           try {
             localStorage.setItem('pkg_batch_install', JSON.stringify(nextBatch));
           } catch (e) {}
           setBatchInstall(nextBatch);
-        } else if (isBatchUpdate && !data.is_installing && (data.completed || data.failed)) {
-          /* The page may be reopened after the native batch already
-           * finished, so do not rely on a prior in-page poll transition. */
+        } else if (isBatchUpdate && !data.is_installing && data.failed) {
           try { localStorage.removeItem('pkg_batch_install'); } catch (e) {}
           setBatchInstall(null);
         }
@@ -168,15 +167,14 @@ export function useInstaller(props) {
 
         const currentBatchAfterStatus = batchInstallRef.current;
         if (currentBatchAfterStatus) {
-          if (currentBatchAfterStatus.stage === 'update' && wasInstallingRef.current && !data.is_installing && (data.completed || data.failed)) {
-            try { localStorage.removeItem('pkg_batch_install'); } catch (e) {}
-            setBatchInstall(null);
-            if (data.completed) {
-              if (showToast) showToast(`Base + Update installed for ${currentBatchAfterStatus.titleName}!`, 'success');
+          if (!data.is_installing && (data.completed || data.failed)) {
+            if (currentBatchAfterStatus.stage === 'update' || data.failed) {
+              try { localStorage.removeItem('pkg_batch_install'); } catch (e) {}
+              setBatchInstall(null);
+              if (data.completed && wasInstallingRef.current) {
+                if (showToast) showToast(`Base + Update installed for ${currentBatchAfterStatus.titleName}!`, 'success');
+              }
             }
-          } else if (data.failed && !data.is_installing) {
-            try { localStorage.removeItem('pkg_batch_install'); } catch (e) {}
-            setBatchInstall(null);
           }
         }
 
@@ -304,6 +302,10 @@ export function useInstaller(props) {
   };
 
   const handleCancel = async () => {
+    if (installerStatus?.is_direct_storage) {
+      if (showToast) showToast('Direct storage installations cannot be canceled (managed by PS5 system)', 'warning');
+      return;
+    }
     try {
       localStorage.removeItem('pkg_batch_install');
     } catch (e) {}
@@ -322,6 +324,40 @@ export function useInstaller(props) {
     }
   };
 
+  const handleDetachDirectStorage = async () => {
+    try {
+      const data = await detachDirectInstall();
+      if (!data || !data.success) {
+        if (showToast) showToast((data && data.error) || 'Could not close this install screen', 'error');
+        return false;
+      }
+
+      try { localStorage.removeItem('pkg_batch_install'); } catch (e) {}
+      setBatchInstall(null);
+      setInstallerStatus((current) => ({
+        ...current,
+        is_installing: false,
+        completed: false,
+        failed: false,
+        status: 'background',
+        prompt_message: 'PKG Manager stopped tracking. The PS5 installation will continue.'
+      }));
+      fetchStatus();
+      if (showToast) {
+        showToast(
+          data.update_skipped
+            ? 'PS5 installation will continue. The queued update was skipped.'
+            : 'PS5 installation will continue in the background.',
+          'info'
+        );
+      }
+      return true;
+    } catch (err) {
+      if (showToast) showToast('Could not close this install screen: ' + err.message, 'error');
+      return false;
+    }
+  };
+
   return {
     installerStatus,
     setInstallerStatus,
@@ -336,6 +372,7 @@ export function useInstaller(props) {
     isDiscSource,
     speedCalcRef,
     wasInstallingRef,
+    handleDetachDirectStorage,
     batchInstallRef,
     installerStatusRef,
     fetchStatus,

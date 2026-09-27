@@ -199,7 +199,7 @@ int main(int argc, char **argv) {
     install_log("[PKG Manager] Starting PKG Manager v%s (%s, %s)...",
                 PKGMGR_VERSION, PKGMGR_BUILD_COMMIT, PKGMGR_BUILD_DATE);
 
-    printf("[PKG Manager] Initializing package scanner (%s & %s)...\n", PKG_DEFAULT_DIR, PKG_DISC_DIR);
+    printf("[PKG Manager] Initializing package scanner...\n");
     pkg_scanner_init();
 
     printf("[PKG Manager] Starting HTTP server on port %d...\n", port);

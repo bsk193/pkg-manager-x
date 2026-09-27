@@ -1424,9 +1424,37 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
         if (res == 0) {
             snprintf(response_buf, sizeof(response_buf),
                      "{\"success\":true,\"message\":\"Installation canceled\"}");
+        } else if (res == -2) {
+            snprintf(response_buf, sizeof(response_buf),
+                     "{\"success\":false,\"error\":\"Direct storage installations cannot be canceled from PKG Manager (managed by PS5 system)\"}");
         } else {
             snprintf(response_buf, sizeof(response_buf),
                      "{\"success\":false,\"error\":\"No active installation to cancel\"}");
+        }
+        struct MHD_Response *resp = MHD_create_response_from_buffer(
+            strlen(response_buf), (void *)response_buf, MHD_RESPMEM_MUST_COPY);
+        add_cors_headers(resp);
+        MHD_add_response_header(resp, "Content-Type", "application/json");
+        enum MHD_Result ret = MHD_queue_response(conn, MHD_HTTP_OK, resp);
+        MHD_destroy_response(resp);
+        return ret;
+    }
+
+    /* ── POST /api/detach ──────────────────────────────────────── */
+    if (strcmp(method, "POST") == 0 && strcmp(url, "/api/detach") == 0) {
+        int update_skipped = 0;
+        int res = installer_detach_direct_storage(&update_skipped);
+        char response_buf[256];
+        if (res == 0) {
+            snprintf(response_buf, sizeof(response_buf),
+                     "{\"success\":true,\"update_skipped\":%s}",
+                     update_skipped ? "true" : "false");
+        } else if (res == -2) {
+            snprintf(response_buf, sizeof(response_buf),
+                     "{\"success\":false,\"error\":\"Only direct storage installs can be closed this way\"}");
+        } else {
+            snprintf(response_buf, sizeof(response_buf),
+                     "{\"success\":false,\"error\":\"No active installation to detach from\"}");
         }
         struct MHD_Response *resp = MHD_create_response_from_buffer(
             strlen(response_buf), (void *)response_buf, MHD_RESPMEM_MUST_COPY);

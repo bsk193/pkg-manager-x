@@ -192,6 +192,7 @@ export function useHistoryNavigation(props) {
     triggerQuickScan,
     installerStatus,
     isBatchActive,
+    directInstallScreenDismissed,
     showDonateModal,
     handleCloseDonateModal,
     showClearCacheModal,
@@ -259,18 +260,21 @@ export function useHistoryNavigation(props) {
   }, [showDirectInstall]);
 
   const isInstallingRef = useRef(false);
-  isInstallingRef.current = Boolean(
+  const activeDirectInstallScreenDismissed = Boolean(
+    (installerStatus?.is_direct_storage || installerStatus?.progress < 0) && directInstallScreenDismissed
+  );
+  isInstallingRef.current = !activeDirectInstallScreenDismissed && Boolean(
     installerStatus?.is_installing ||
     installerStatus?.waiting_for_disc ||
     isBatchActive
   );
   useEffect(() => {
-    isInstallingRef.current = Boolean(
+    isInstallingRef.current = !activeDirectInstallScreenDismissed && Boolean(
       installerStatus?.is_installing ||
       installerStatus?.waiting_for_disc ||
       isBatchActive
     );
-  }, [installerStatus?.is_installing, installerStatus?.waiting_for_disc, isBatchActive]);
+  }, [installerStatus?.is_installing, installerStatus?.waiting_for_disc, isBatchActive, activeDirectInstallScreenDismissed]);
 
   const modalStateRef = useRef({});
   modalStateRef.current = {

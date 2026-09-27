@@ -4,7 +4,6 @@
 #include <stddef.h>
 #include "pkg_parser.h"
 
-#define PKG_DEFAULT_DIR "/data/pkg"
 #define PKG_DISC_DIR    "/mnt/disc/pkg"
 
 #ifdef __cplusplus
@@ -17,7 +16,7 @@ extern "C" {
 void pkg_scanner_init(void);
 
 /**
- * Scans the package directories (/data/pkg and /mnt/disc/pkg) for .pkg files.
+ * Scans the package directories (/mnt/usb* and /mnt/disc/pkg) for .pkg files.
  * Returns the number of valid packages found.
  */
 int pkg_scanner_scan(void);
@@ -75,10 +74,10 @@ int pkg_scanner_find_part_ex(const uint8_t *package_uuid, const char *pkg_filena
                             uint32_t *out_detected_part);
 
 typedef struct {
-    char id[32];          /* "usb0", "usb1", ..., "disc", "internal" */
-    char label[64];       /* "USB Drive 0", "Blu-ray Disc", "Internal Storage" */
-    char path[256];       /* "/mnt/usb0", "/mnt/disc", "/data/pkg" */
-    char type[16];        /* "usb", "disc", "internal" */
+    char id[32];          /* "usb0", "usb1", ..., "disc" */
+    char label[64];       /* "USB Drive 0", "Blu-ray Disc" */
+    char path[256];       /* "/mnt/usb0", "/mnt/disc" */
+    char type[16];        /* "usb", "disc" */
     int mounted;          /* 1 if mounted, 0 otherwise */
     size_t pkg_count;     /* Number of packages in root */
     int clickable;        /* 1 if pkg_count > 0, 0 otherwise */

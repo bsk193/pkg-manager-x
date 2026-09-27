@@ -32,6 +32,7 @@ typedef struct {
     uint32_t current_part;
     uint32_t total_parts;
     int waiting_for_disc;
+    int is_direct_storage;
     char prompt_message[256];
 } installer_status_t;
 
@@ -41,13 +42,13 @@ extern "C" {
 
 int installer_init(const char *server_url);
 int installer_start(const char *pkg_path);
-/* Start a base package and queue its update in the native installer. The
- * update is started after the base is fully finalized, even if the browser
- * closes in the meantime. */
+/* Start a base package and queue its update. Closing a direct-storage install
+ * screen detaches tracking and discards the queued update. */
 int installer_start_batch(const char *base_pkg_path, const char *update_pkg_path);
 /* NEW: start from a live RAM session ("live:<id>"); see installer.c. */
 int installer_start_live(const char *live_uri);
 int installer_cancel(void);
+int installer_detach_direct_storage(int *out_update_skipped);
 void installer_record_poll(void);
 void installer_get_status(installer_status_t *out);
 char *installer_status_to_json(void);
@@ -57,6 +58,9 @@ char *install_log_get_text(size_t *out_len);
 void install_log_clear(void);
 void install_log_set_file_path(const char *path);
 void installer_shutdown(void);
+int installer_is_filesystem_install(const char *pkg_path, int is_multipart);
+int installer_is_network_connected(void);
+void installer_set_network_offline_cached(int offline);
 int system_get_storage_info(uint64_t *out_free, uint64_t *out_total, uint64_t *out_used);
 int system_get_nvme_storage_info(uint64_t *out_free, uint64_t *out_total, uint64_t *out_used);
 int system_get_usb_storage_info(uint64_t *out_free, uint64_t *out_total, uint64_t *out_used);
