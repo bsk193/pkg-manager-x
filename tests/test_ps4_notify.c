@@ -115,8 +115,9 @@ static void test_installer_popups(void) {
     install_and_wait(PN_DIR "/tile.pkg");
     assert(!notified("Installing PKG Manager X"));
     assert(!notified("is ready to play"));
+    /* Completion is still reported through the status API / web UI. */
     char *json = installer_status_to_json();
-    assert(json && strstr(json, "PKG Manager X is ready to play!")); /* web UI still says it */
+    assert(json && strstr(json, "\"completed\":true") && strstr(json, PKGMGR_TILE_TITLE_ID));
     free(json);
 
     /* Any other title keeps both popups. */
