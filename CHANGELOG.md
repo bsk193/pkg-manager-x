@@ -33,7 +33,41 @@
 - Install refusals now show their real reason in the browser
 
 ### Upstream
+- Merged PKG Manager v1.4.1 (offline USB/disc direct-storage installs on PS5, SMB guest login and faster signing, package icons on install cards, Close PKG Manager, quick Rescan)
 - Merged PKG Manager v1.3.0 (PS5 install helper process, SMB browse-only shares, paged catalog)
+
+---
+
+## v1.4.1
+
+- Fixed USB and disc installs failing when the console had no active network connection. Installation progress is not shown in PKG Manager in this mode due to a PS5 system limitation.
+
+## v1.4.0
+
+### SMB Network Shares
+
+- Fixed package scanning from the share root so an unreadable subfolder does not prevent scanning accessible folders
+- Fixed guest authentication to try an empty-password Guest login, with anonymous fallback when no credentials are supplied
+- Fixed page reloads on a Samba share package list showing an internal share ID instead of the share name
+- Added clearer errors for disabled accounts and allowed entering share names when the server blocks share listing
+- Reduced SMB signing overhead with hardware AES acceleration and reused encryption setup, while preserving signature verification
+- Build the pinned, patched SMB library with matching headers instead of using an older SDK copy
+- Added Windows 11 guest-sharing setup instructions and a host diagnostic tool for authentication, read verification and transfer benchmarks
+
+### Settings
+- Fixed cache statistics showing zero after reloading the Settings page
+- Added a Close PKG Manager action that stops the server process gracefully
+- Reorganized Settings cards
+
+### Installation
+- Fail fast and show a clear error if trying to install a package that no longer exists on storage or Samba
+- Show the game title, update version, or DLC label instead of raw title IDs in console install notifications and download cards
+- Show the package icon on the console's download cards and notifications during installation
+
+### Cache and Scanning
+- Preserve the metadata and icon cache across routine ELF updates; clear and rescan only when the cache schema changes
+- Switched the Rescan button to run a fast quick rescan instead of rebuilding the full cache
+- Fixed quick rescan dropping unchanged SMB packages when a package was renamed or modified, and added catalog self-healing
 
 ---
 

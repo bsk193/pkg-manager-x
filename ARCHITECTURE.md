@@ -19,7 +19,6 @@ flowchart TB
         USB["<b>USB Storage</b><br/><code>/mnt/usb0-7</code>"]
         DISC["<b>Optical Disc</b><br/><code>/mnt/disc</code>"]
         SMB["<b>Network Shares</b><br/>Samba / SMB (libsmb2)"]
-        DATA["<b>Internal Storage</b><br/><code>/data/pkg</code>"]
     end
 
     subgraph CTRL ["PKG Manager Control Subsystem (Port 8844)"]
@@ -85,7 +84,7 @@ flowchart TB
 
     class BROWSER client;
     class HTTP8844,APPINFO,INSTALLER,SCANNER ctrl;
-    class USB,DISC,SMB,DATA stor;
+    class USB,DISC,SMB stor;
     class SOCKET,WS,VSTREAM strm;
     class ELFLDR,HELPER,SCE,RECEIVER,APPDB,NOTIF ps5;
 ```
@@ -125,30 +124,38 @@ The dedicated stream server (`stream_server.c`) handles package delivery to the 
 
 ---
 
-## 3. Storage Model & Virtual Range Streaming
+## 3. Storage Model & Installation Execution
 
-Instead of copying package files to the console's internal storage before installing, PKG Manager exposes packages via a virtual HTTP range-streaming endpoint on port 18841:
+PKG Manager defaults to using its virtual HTTP range-streaming endpoint on port 18841 for all package sources (USB, optical disc, SMB network shares, and browser WebSocket uploads):
 
 ```text
 http://127.0.0.1:18841/stream/install/package-<unixtime>-<seq>.pkg
 ```
 
+### Streaming and Offline Installs
+
+When the console has an active network connection, PKG Manager streams packages and shows installation progress in the app.
+
+USB and disc packages can also be installed without a network connection. In that case, the PS5 system installer handles the package directly from storage. It does not provide progress to PKG Manager, so the app shows a status message and progress can be followed in PS5 Notifications. Cancellation is unavailable while the system installer handles the install.
+
+If the network connection is lost during a stream install, PKG Manager can switch USB and disc installs to direct storage mode.
+
 ### Key Advantages
 
 1. **No 2x Storage Requirement**:
-   Packages do not need to be staged on internal storage (`/data`) before installation. The console installer streams and extracts data directly to its target location, requiring only the space needed for the installed application itself (1x space) rather than keeping both the raw package and the installed files on disk (2x space).
+   Packages do not need to be staged on internal storage before installation. The console installer extracts data directly to its target location, requiring only the space needed for the installed application itself (1x space) rather than keeping both the raw package and the installed files on disk (2x space).
 
-2. **Direct Installation from Network Shares (SMB)**:
+2. **Full Offline Support**:
+   Consoles without any network connection can still install USB and optical disc packages without failure via the automatic fallback mechanism.
+
+3. **Direct Installation from Network Shares (SMB)**:
    The native PS5 package installer cannot access Samba/SMB network shares directly. The virtual stream engine bridges network reads into standard HTTP range responses, enabling direct network installation without mounting shares in the OS or copying packages locally first.
 
-3. **Direct Install from a LAN Device**:
+4. **Direct Install from a LAN Device**:
    A browser on a PC or other LAN device uploads a local PKG over WebSocket port 18842. The daemon keeps the upload in a bounded RAM-backed live session and exposes it through the same range-streaming path used by regular installs.
 
-4. **Multi-Part & Optical Disc Swapping**:
+5. **Multi-Part & Optical Disc Swapping**:
    For packages split across multiple files or optical discs (BD-R, DVD), the virtual stream translates byte offsets across parts on the fly using `pread()`, allowing multi-part installations without pre-reassembling the files.
-
-5. **Accurate Transfer Progress**:
-   Streaming byte ranges through our own socket server allows the daemon to track delivery progress and stream metrics independently of system installer status polls.
 
 ---
 
@@ -258,10 +265,11 @@ DLC queries and leftover removal retain their independent AppInstUtil client
 in the daemon.
 
 When invoking `sceAppInstUtilInstallByPackage`, `pkg_metadata_t` is populated as follows:
-- **`uri`**: Unique per-install streaming URL (`http://127.0.0.1:18841/stream/install/package-<unixtime>-<seq>.pkg`). Timestamping prevents URI collisions across successive installations.
+- **`uri`**: Defaults to a unique per-install streaming URL (`http://127.0.0.1:18841/stream/install/package-<unixtime>-<seq>.pkg`) for all sources. If an offline fallback occurs for a USB or disc package (`0x80B21121`), the direct filesystem path (e.g. `/mnt/usb0/pkg/game.pkg`) is passed instead. Timestamping prevents URI collisions across successive stream installations.
 - **`content_name`**: Formatted as `"<Title ID> (<Kind>)"` (e.g. `"CUSA00000 (Base)"` or `"CUSA00000 (Update)"`).
-- **`content_id`**: Passed as an empty string `""`; the system installer reads the initial package header from the stream to populate `pkg_info.content_id`.
-- **`ex_uri`**, **`playgo_scenario_id`**, **`icon_url`**: Passed as empty strings `""`.
+- **`content_id`**: Passed as an empty string `""`; the system installer reads the initial package header to populate `pkg_info.content_id`.
+- **`ex_uri`**, **`playgo_scenario_id`**: Passed as empty strings `""`.
+- **`icon_url`**: The HTTP icon URL `http://127.0.0.1:18841/stream/install/icon-<unixtime>-<seq>.png` for stream installs when an icon is extracted, or `""` for direct storage installs (preventing offline `0x80B21121` PlayGo network errors and using the internal `icon0.png`).
 
 ### Host-Side PS5 Stream Simulator
 
@@ -369,7 +377,6 @@ The scanner monitors all mount points and builds the unified catalog:
 1. **Drive Discovery**:
    - Checks USB mount points `/mnt/usb0` through `/mnt/usb7`.
    - Checks optical disc mount point `/mnt/disc`.
-   - Checks internal storage `/data/pkg`.
    - Scans configured SMB network shares via `smb_client.c`.
 2. **Scan Scope**:
    - Regular files directly in the drive root (`/mnt/usbX/*.pkg`).

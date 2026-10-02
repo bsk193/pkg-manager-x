@@ -1,7 +1,7 @@
 /*
  * PKG Manager - Package and Storage Drive Scanner
  *
- * Discovers USB drives, Blu-ray discs, internal storage, and SMB shares.
+ * Discovers USB drives, Blu-ray discs, and SMB shares.
  * Manages manifest caching, quick rescans, and multi-part package indexing.
  */
 
@@ -686,12 +686,6 @@ void pkg_scanner_init(void) {
     }
     g_scanner_initialized = 1;
     pthread_mutex_unlock(&g_scanner_mutex);
-
-    /* Ensure default directory exists */
-    struct stat st;
-    if (stat(PKG_DEFAULT_DIR, &st) != 0) {
-        mkdir(PKG_DEFAULT_DIR, 0777);
-    }
 }
 
 size_t pkg_scanner_get_count(void) {
@@ -914,6 +908,15 @@ static int parse_pkg_entry(const char *full_path, const char *filename,
     if (!parsed) {
         if (pkg_parser_parse(full_path, out_detail) == 0) {
             parsed = 1;
+            if (out_detail->file_size == 0) {
+                out_detail->file_size = file_size;
+            }
+            if (out_detail->total_pkg_size == 0) {
+                out_detail->total_pkg_size = out_detail->file_size;
+            }
+            if (out_detail->mtime == 0) {
+                out_detail->mtime = mtime;
+            }
             if (checksum[0] != '\0') {
                 pkg_cache_save(checksum, out_detail);
             }
@@ -1159,9 +1162,6 @@ static int scan_full_owned(void) {
             total_expected += count_pkg_files(disc_dir, 0, 0);
             total_expected += count_scan_subdirs(disc_dir);
         }
-        if (is_drive_mounted(PKG_DEFAULT_DIR)) {
-            total_expected += count_pkg_files(PKG_DEFAULT_DIR, 1, 0);
-        }
     }
 
     /* Pre-count .pkg files across all enabled SMB shares (readdir only,
@@ -1247,19 +1247,9 @@ static int scan_full_owned(void) {
             size_t count = g_package_count - prev_pkg;
             add_full_scan_drive("disc", "Blu-ray Disc", disc_dir, "disc", 1, count);
         }
-
-        /* 3. Check /data/pkg (Internal Storage) if packages are present */
-        if (is_drive_mounted(PKG_DEFAULT_DIR)) {
-            size_t prev_pkg = g_package_count;
-            scan_dir_recursive(PKG_DEFAULT_DIR, 0, "Internal Storage");
-            size_t count = g_package_count - prev_pkg;
-            if (count > 0) {
-                add_full_scan_drive("internal", "Internal Storage", PKG_DEFAULT_DIR, "internal", 1, count);
-            }
-        }
     }
 
-    /* 4. Check configured SMB shares */
+    /* 3. Check configured SMB shares */
     app_settings_t smb_settings;
     pkg_cache_get_settings(&smb_settings);
     for (int i = 0; i < smb_settings.smb_share_count; i++) {
@@ -1540,8 +1530,6 @@ static int scan_quick_single_source(const char *drive_id, const char *drive_labe
         const char *env_dir = getenv("PKG_SCAN_DIR");
         if (env_dir && strcmp(drive_path, env_dir) == 0) {
             collect_local_files_quick(env_dir, 1, 0, &cur_files);
-        } else if (strcmp(drive_type, "internal") == 0) {
-            collect_local_files_quick(drive_path, 1, 0, &cur_files);
         } else {
             /* Root non-recursive */
             collect_local_files_quick(drive_path, 0, 0, &cur_files);
@@ -1583,25 +1571,74 @@ static int scan_quick_single_source(const char *drive_id, const char *drive_labe
     int identical = 0;
     if (cur_files.count == prev_file_count) {
         if (cur_files.count == 0) {
-            if (drive_was_mounted) {
+            if (drive_was_mounted && exist_pkg_count == 0) {
                 identical = 1;
             }
-        } else {
+        } else if (exist_pkg_count > 0 && exist_pkg_count <= cur_files.count) {
             identical = 1;
-            for (size_t f = 0; f < cur_files.count; f++) {
-                int found = 0;
-                for (size_t i = 0; i < g_scanned_file_count; i++) {
-                    if (pkg_matches_drive_path(g_scanned_files[i].path, drive_path) &&
-                        strcmp(cur_files.entries[f].path, g_scanned_files[i].path) == 0 &&
-                        cur_files.entries[f].file_size == g_scanned_files[i].file_size &&
-                        cur_files.entries[f].mtime == g_scanned_files[i].mtime) {
-                        found = 1;
+            /* Verify all packages in g_packages for this drive are still in cur_files */
+            for (size_t i = 0; i < g_package_count; i++) {
+                if (pkg_matches_drive_path(g_packages[i].path, drive_path)) {
+                    if (g_packages[i].mtime == 0) {
+                        identical = 0;
+                        break;
+                    }
+                    int found_cur = 0;
+                    for (size_t f = 0; f < cur_files.count; f++) {
+                        if (strcmp(cur_files.entries[f].path, g_packages[i].path) == 0 &&
+                            cur_files.entries[f].file_size == g_packages[i].file_size) {
+                            int64_t diff = (int64_t)cur_files.entries[f].mtime - (int64_t)g_packages[i].mtime;
+                            if (diff < 0) diff = -diff;
+                            if (diff <= 2 || cur_files.entries[f].mtime == 0) {
+                                found_cur = 1;
+                                break;
+                            }
+                        }
+                    }
+                    if (!found_cur) {
+                        identical = 0;
                         break;
                     }
                 }
-                if (!found) {
-                    identical = 0;
-                    break;
+            }
+
+            /* Verify all cur_files match recorded scanned files and exist in catalog or are multipart secondary parts */
+            if (identical) {
+                for (size_t f = 0; f < cur_files.count; f++) {
+                    int found_scanned = 0;
+                    for (size_t i = 0; i < g_scanned_file_count; i++) {
+                        if (pkg_matches_drive_path(g_scanned_files[i].path, drive_path) &&
+                            strcmp(cur_files.entries[f].path, g_scanned_files[i].path) == 0 &&
+                            cur_files.entries[f].file_size == g_scanned_files[i].file_size) {
+                            int64_t diff = (int64_t)cur_files.entries[f].mtime - (int64_t)g_scanned_files[i].mtime;
+                            if (diff < 0) diff = -diff;
+                            if (diff <= 2 || cur_files.entries[f].mtime == 0 || g_scanned_files[i].mtime == 0) {
+                                found_scanned = 1;
+                                break;
+                            }
+                        }
+                    }
+                    if (!found_scanned) {
+                        identical = 0;
+                        break;
+                    }
+
+                    int found_pkg = 0;
+                    for (size_t i = 0; i < g_package_count; i++) {
+                        if (pkg_matches_drive_path(g_packages[i].path, drive_path) &&
+                            strcmp(cur_files.entries[f].path, g_packages[i].path) == 0) {
+                            found_pkg = 1;
+                            break;
+                        }
+                    }
+                    if (!found_pkg) {
+                        uint32_t part_num = 0;
+                        int is_part = multipart_is_part_filename(cur_files.entries[f].path, 0, &part_num) && part_num > 1;
+                        if (!is_part) {
+                            identical = 0;
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -1658,29 +1695,30 @@ static int scan_quick_single_source(const char *drive_id, const char *drive_labe
         for (size_t i = 0; i < g_package_count; i++) {
             if (pkg_matches_drive_path(g_packages[i].path, drive_path) &&
                 strcmp(file->path, g_packages[i].path) == 0 &&
-                file->file_size == g_packages[i].file_size &&
-                file->mtime == g_packages[i].mtime) {
-                if (updated_pkgs && updated_count < cur_files.count) {
-                    memcpy(&updated_pkgs[updated_count++], &g_packages[i], sizeof(pkg_detail_t));
-                }
-                matched = 1;
-                break;
-            }
-        }
-        if (!matched) {
-            int already_scanned_and_skipped = 0;
-            for (size_t i = 0; i < g_scanned_file_count; i++) {
-                if (pkg_matches_drive_path(g_scanned_files[i].path, drive_path) &&
-                    strcmp(file->path, g_scanned_files[i].path) == 0 &&
-                    file->file_size == g_scanned_files[i].file_size &&
-                    file->mtime == g_scanned_files[i].mtime) {
-                    already_scanned_and_skipped = 1;
+                file->file_size == g_packages[i].file_size) {
+                
+                int64_t diff = (int64_t)file->mtime - (int64_t)g_packages[i].mtime;
+                if (diff < 0) diff = -diff;
+                int mtime_matches = (file->mtime == 0 || g_packages[i].mtime == 0 || diff <= 2);
+
+                if (mtime_matches) {
+                    if (updated_pkgs && updated_count < cur_files.count) {
+                        memcpy(&updated_pkgs[updated_count], &g_packages[i], sizeof(pkg_detail_t));
+                        if (updated_pkgs[updated_count].mtime == 0 && file->mtime != 0) {
+                            updated_pkgs[updated_count].mtime = file->mtime;
+                        }
+                        if (g_packages[i].mtime == 0 && file->mtime != 0) {
+                            g_packages[i].mtime = file->mtime;
+                        }
+                        updated_count++;
+                    }
+                    matched = 1;
                     break;
                 }
             }
-            if (!already_scanned_and_skipped && needs_parsing) {
-                needs_parsing[f] = 1;
-            }
+        }
+        if (!matched && needs_parsing) {
+            needs_parsing[f] = 1;
         }
     }
 
@@ -1758,9 +1796,7 @@ static int scan_quick_single_source(const char *drive_id, const char *drive_labe
         }
     }
     if (!found_drive && g_drive_count < MAX_DRIVES) {
-        if (strcmp(drive_type, "internal") != 0 || updated_count > 0) {
-            add_drive_entry(drive_id, drive_label, drive_path, drive_type, 1, updated_count);
-        }
+        add_drive_entry(drive_id, drive_label, drive_path, drive_type, 1, updated_count);
     }
 
     pthread_mutex_unlock(&g_scanner_mutex);
@@ -1815,11 +1851,6 @@ int pkg_scanner_scan_quick(const char *drive_id_or_path, int *out_changed) {
         if (!drive_id_or_path || drive_id_or_path[0] == '\0' || strcmp(drive_id_or_path, "__all__") == 0 ||
             strcmp(drive_id_or_path, "disc") == 0 || strcmp(drive_id_or_path, disc_dir) == 0) {
             total_changed += scan_quick_single_source("disc", "Blu-ray Disc", disc_dir, "disc", 0, NULL, NULL);
-        }
-
-        if (!drive_id_or_path || drive_id_or_path[0] == '\0' || strcmp(drive_id_or_path, "__all__") == 0 ||
-            strcmp(drive_id_or_path, "internal") == 0 || strcmp(drive_id_or_path, PKG_DEFAULT_DIR) == 0) {
-            total_changed += scan_quick_single_source("internal", "Internal Storage", PKG_DEFAULT_DIR, "internal", 0, NULL, NULL);
         }
     }
 
@@ -2052,7 +2083,7 @@ int pkg_scanner_find_part_ex(const uint8_t *package_uuid, const char *pkg_filena
     }
 
     /* Disc location first (most common for disc swap multi-part): root files,
-       then recursive inside its pkg/ subfolder. Then USBs, then internal. */
+       then recursive inside its pkg/ subfolder. Then USBs. */
     if (scan_find_part_in_location("/mnt/disc", package_uuid, pkg_filename, part_index, out_path, out_max, out_detected_part) == 0) {
         return 0;
     }
@@ -2065,11 +2096,6 @@ int pkg_scanner_find_part_ex(const uint8_t *package_uuid, const char *pkg_filena
                 return 0;
             }
         }
-    }
-
-    /* Internal storage lives inside the pkg folder already: same rules. */
-    if (scan_find_part_in_location(PKG_DEFAULT_DIR, package_uuid, pkg_filename, part_index, out_path, out_max, out_detected_part) == 0) {
-        return 0;
     }
 
     return -1;

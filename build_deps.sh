@@ -8,6 +8,8 @@
 # The Makefile's DEPS_ROOT points at the matching install root.
 # libmicrohttpd 1.0.1 and mbedTLS 3.6.2 are pinned. libsmb2 tracks upstream
 # master shallowly; set LIBSMB2_REF to a commit SHA to pin (see Dockerfile.sdk).
+# This warms an SDK copy for other consumers. PKG Manager builds its pinned
+# submodule plus patches into build/libsmb2 and does not link this SDK copy.
 set -euo pipefail
 
 PLATFORM="${PLATFORM:-ps5}"

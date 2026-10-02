@@ -11,7 +11,7 @@ import { getStorage } from './api/storage';
 import { getDrives } from './api/drives';
 import { getPackages, refreshPackages, getScanStatus, waitForScan, quickScan, shouldAutoScanDrive } from './api/packages';
 import { pollStatus, installPackage, cancelInstall } from './api/installer';
-import { getSettings, saveSettings } from './api/settings';
+import { getSettings, saveSettings, closeManager } from './api/settings';
 import { installShortcut as apiInstallShortcut } from './api/settings';
 import { getCacheStats, clearCache } from './api/cache';
 import { scanLeftovers as apiScanLeftovers, deleteLeftover } from './api/leftovers';
@@ -30,7 +30,7 @@ import { useSmb } from './hooks/useSmb';
 import { useHttpSources } from './hooks/useHttpSources';
 import { useInstaller } from './hooks/useInstaller';
 import { useDonation } from './hooks/useDonation';
-import { useHistoryNavigation } from './hooks/useHistoryNavigation';
+import { useHistoryNavigation, getRouteFromHash, resolveDrive } from './hooks/useHistoryNavigation';
 import { useModalInert } from './hooks/useModalInert';
 import { useDirectUpload } from './hooks/useDirectUpload';
 import { uploadStatus } from './api/directInstall';
@@ -59,14 +59,25 @@ import SmbShareModal from './components/modals/SmbShareModal';
 import HttpSourceModal from './components/modals/HttpSourceModal';
 import DeleteLeftoverModal from './components/modals/DeleteLeftoverModal';
 
-const CACHE_VERSION_STORAGE_KEY = 'pkgmgr_cache_version';
+const CACHE_SCHEMA_STORAGE_KEY = 'pkgmgr_cache_schema_version';
+// Increment only when persisted package metadata or icon cache must be rebuilt.
+// Ordinary ELF releases must leave this unchanged to avoid needless full scans.
+const CACHE_SCHEMA_VERSION = '1';
 
 export default function App() {
   const [isOffline, setIsOffline] = useState(false);
+  const [isClosing, setIsClosing] = useState(false);
   const [appVersion, setAppVersion] = useState('');
   
   const [drives, setDrives] = useState([]);
   const [selectedDrive, setSelectedDrive] = useState(() => {
+    if (typeof window !== 'undefined' && window.location?.hash) {
+      const route = getRouteFromHash(window.location.hash);
+      if (route.type === 'drive' || route.type === 'title') {
+        const driveId = route.driveId || '__all__';
+        return resolveDrive(driveId, []);
+      }
+    }
     try {
       const saved = localStorage.getItem('pkgmgr_settings');
       if (saved) {
@@ -116,6 +127,7 @@ export default function App() {
     try { localStorage.setItem(HIDE_GREYED_STORAGE_KEY, value ? '1' : '0'); } catch (e) {}
   }, []);
   const [selectedTitleId, setSelectedTitleId] = useState(null);
+  const [directInstallScreenDismissed, setDirectInstallScreenDismissed] = useState(false);
   const [showDirectInstall, setShowDirectInstall] = useState(false);
   const directTabId = useRef(Math.random().toString(36).slice(2) + Date.now());
   const directUpload = useDirectUpload(directTabId.current);
@@ -259,6 +271,43 @@ export default function App() {
     } finally {
       refreshingRef.current = false;
       setScanStatus((prev) => ({ ...prev, is_scanning: false }));
+      setTimeout(() => {
+        setRefreshing(false);
+      }, 400);
+    }
+  };
+
+  const handleQuickRescan = async (forced = false) => {
+    if (refreshingRef.current) return false;
+    if (quickScanInProgressRef.current) {
+      let waitCount = 0;
+      while (quickScanInProgressRef.current && waitCount++ < 30) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    }
+    refreshingRef.current = true;
+    setRefreshing(true);
+
+    try {
+      const targetDrive = selectedDriveRef.current;
+      const targetId = targetDrive && targetDrive.id && targetDrive.id !== '__all__' ? targetDrive.id : null;
+      const data = await quickScan(targetId);
+      await Promise.all([
+        fetchDrives(),
+        fetchStorage(),
+        fetchPackagesForDrive(selectedDriveRef.current, true)
+      ]);
+      if (data && data.changed) {
+        showToast('Catalog updated', 'success');
+      } else if (!forced) {
+        showToast('No changes found', 'info');
+      }
+      return true;
+    } catch (err) {
+      showToast('Error during rescan: ' + err.message, 'error');
+      return false;
+    } finally {
+      refreshingRef.current = false;
       setTimeout(() => {
         setRefreshing(false);
       }, 400);
@@ -536,9 +585,18 @@ export default function App() {
   const {
     installerStatus, setInstallerStatus, batchInstall, setBatchInstall, initialStatusLoaded, setInitialStatusLoaded,
     etaInfo, isWaitingForPart, isBatchActive, isInstalling, isDiscSource, speedCalcRef, wasInstallingRef, batchInstallRef,
-    installerStatusRef, fetchStatus, handleInstall, handleInstallBaseAndUpdate, handleCancel
+    installerStatusRef, fetchStatus, handleInstall, handleInstallBaseAndUpdate, handleCancel,
+    handleDetachDirectStorage
   } = useInstaller({
-    showToast, fetchStorage, fetchPackagesForDrive, selectedDriveRef, selectedTitleIdRef, detailScrollPositionRef, shouldRestoreDetailScrollRef, storage, selectedTitle
+    showToast,
+    fetchStorage,
+    fetchPackagesForDrive,
+    selectedDriveRef,
+    selectedTitleIdRef,
+    detailScrollPositionRef,
+    shouldRestoreDetailScrollRef,
+    storage,
+    selectedTitle,
   });
 
   const {
@@ -615,6 +673,7 @@ export default function App() {
     triggerQuickScan,
     installerStatus,
     isBatchActive,
+    directInstallScreenDismissed,
     showDonateModal,
     handleCloseDonateModal,
     showClearCacheModal,
@@ -723,7 +782,7 @@ export default function App() {
 
     const checkOnline = async () => {
       let offline = false;
-      let versionRescanCompleted = false;
+      let cacheSchemaRescanCompleted = false;
       try {
         const v = await checkVersion();
         if (!unmounted) {
@@ -732,31 +791,34 @@ export default function App() {
           document.title = getBrowserTitle(v);
         }
 
-        let previousVersion = null;
+        let previousCacheSchema = null;
         try {
-          previousVersion = localStorage.getItem(CACHE_VERSION_STORAGE_KEY);
+          previousCacheSchema = localStorage.getItem(CACHE_SCHEMA_STORAGE_KEY);
         } catch (e) {}
 
-        // A missing marker is the first launch for this browser; establish a
-        // baseline without discarding a cache whose version is unknown.
-        const versionChanged = Boolean(previousVersion && previousVersion !== v);
-        if (versionChanged && !unmounted) {
+        // A missing marker is the first launch for this browser (including
+        // upgrades from the old app-version marker); preserve its existing cache.
+        const cacheSchemaChanged = Boolean(
+          previousCacheSchema && previousCacheSchema !== CACHE_SCHEMA_VERSION
+        );
+        if (cacheSchemaChanged && !unmounted) {
           try {
             const data = await clearCache();
             if (!data || data.success !== true) {
               throw new Error((data && data.error) || 'Cache clear failed');
             }
-            // Invalidation succeeded even if the browser later loses its scan connection.
-            try { localStorage.setItem(CACHE_VERSION_STORAGE_KEY, v); } catch (e) {}
-            versionRescanCompleted = await refreshAll();
+            // The cache is gone, so record the schema even if the scan request
+            // later disconnects; startup will rebuild the missing manifest.
+            try { localStorage.setItem(CACHE_SCHEMA_STORAGE_KEY, CACHE_SCHEMA_VERSION); } catch (e) {}
+            cacheSchemaRescanCompleted = await refreshAll();
           } catch (err) {
-            showToast('Failed to refresh cache after update: ' + err.message, 'error');
+            showToast('Failed to refresh cache after cache format change: ' + err.message, 'error');
           }
         }
 
         // If invalidation failed, retain the previous marker and retry next startup.
-        if (!versionChanged || versionRescanCompleted) {
-          try { localStorage.setItem(CACHE_VERSION_STORAGE_KEY, v); } catch (e) {}
+        if (!cacheSchemaChanged || cacheSchemaRescanCompleted) {
+          try { localStorage.setItem(CACHE_SCHEMA_STORAGE_KEY, CACHE_SCHEMA_VERSION); } catch (e) {}
         }
       } catch (err) {
         offline = true;
@@ -771,10 +833,10 @@ export default function App() {
       }
 
       // Reattach after a browser reload without starting another scan.
-      if (!versionRescanCompleted) {
+      if (!cacheSchemaRescanCompleted) {
         try {
           const status = await getScanStatus();
-          if (status.is_scanning) versionRescanCompleted = await refreshAll(true);
+          if (status.is_scanning) cacheSchemaRescanCompleted = await refreshAll(true);
         } catch (e) {}
       }
       fetchDrives();
@@ -786,7 +848,7 @@ export default function App() {
         if (!unmounted) setPlatformInfo(info);
       });
 
-      if (!versionRescanCompleted) {
+      if (!cacheSchemaRescanCompleted) {
         if (selectedDriveRef.current) {
           fetchPackagesForDrive(selectedDriveRef.current);
         } else if (settings.all_sources_mode) {
@@ -816,6 +878,12 @@ export default function App() {
     }, intervalTime);
     return () => clearInterval(interval);
   }, [installerStatus.is_installing, installerStatus.waiting_for_disc, isOffline]);
+
+  useEffect(() => {
+    if (!installerStatus.is_installing && !isBatchActive) {
+      setDirectInstallScreenDismissed(false);
+    }
+  }, [installerStatus.is_installing, isBatchActive]);
 
   useEffect(() => {
     if (isOffline) return;
@@ -864,6 +932,22 @@ export default function App() {
       });
     }
   }, [isInstalling, isWaitingForPart, batchInstall, selectedTitleId]);
+  if (isClosing) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0f] text-white flex items-center justify-center px-4 font-ps5">
+        <div className="max-w-lg w-full rounded-[2px] bg-[#141520] border border-white/10 p-8 text-center space-y-4">
+          <div className="mx-auto w-14 h-14 rounded-full bg-emerald-600/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+            <svg className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <path d="M5 12l4 4L19 6" />
+            </svg>
+          </div>
+          <h1 className="text-2xl font-bold">PKG Manager is closed</h1>
+          <p className="text-sm text-zinc-300">The server process has stopped. You can close this tab.</p>
+        </div>
+      </div>
+    );
+  }
+
   if (isOffline) {
     return <OfflineScreen onRetry={() => {
       if (checkOnlineRef.current) checkOnlineRef.current();
@@ -886,7 +970,7 @@ export default function App() {
   }
 
   // Active installation overlay.
-  if (isInstalling) {
+  if (isInstalling && !directInstallScreenDismissed) {
     return <InstallingScreen
       installerStatus={installerStatus}
       batchInstall={batchInstall}
@@ -901,13 +985,16 @@ export default function App() {
         handleCancel();
         if (installerStatus?.pkg_path?.startsWith('live:')) directUpload.cancel();
       }}
+      onDismiss={async () => {
+        if (await handleDetachDirectStorage()) setDirectInstallScreenDismissed(true);
+      }}
       packages={packages}
       directIconUrl={directUpload.iconUrl}
     />;
   }
 
-  // Refresh and scan progress overlay.
-  if (refreshing || scanStatus.is_scanning) {
+  // Refresh and scan progress overlay (for full catalog rebuilds).
+  if (scanStatus.is_scanning) {
     return <ScanningScreen scanStatus={scanStatus} />;
   }
 
@@ -943,7 +1030,7 @@ export default function App() {
           }
           handleOpenSettings();
         }}
-        onRescan={refreshAll}
+        onRescan={handleQuickRescan}
         refreshing={refreshing}
         selectedDrive={selectedDrive}
         onBackToDrives={handleBackToDrives}
@@ -1011,6 +1098,16 @@ export default function App() {
             onClose={handleCloseSettings}
             onOpenSmb={handleOpenSmb}
             onInstallShortcut={handleInstallShortcut}
+            onCloseApp={async () => {
+              if (!window.confirm('Close PKG Manager? This will stop its server process.')) return;
+              try {
+                const result = await closeManager();
+                if (result?.success) setIsClosing(true);
+                else showToast('PKG Manager did not accept the close request.', 'error');
+              } catch (err) {
+                showToast('Failed to close PKG Manager: ' + err.message, 'error');
+              }
+            }}
             installingShortcut={installingShortcut}
             cacheStats={cacheStats}
             loadingStats={loadingStats}
@@ -1075,7 +1172,8 @@ export default function App() {
             onDirectInstall={openDirectInstall}
             showDirectInstall={!isPlayStation}
             loadingDrives={loadingDrives}
-            refreshAll={refreshAll}
+            refreshAll={handleQuickRescan}
+            onRescan={handleQuickRescan}
           />
         )}
       </main>

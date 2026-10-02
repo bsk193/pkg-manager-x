@@ -45,7 +45,8 @@ int platform_install_start(const platform_install_request_t *req,
     platform_install_close();
     pkg_info_t info;
     memset(&info, 0, sizeof(info));
-    int ret = install_service_start(&g_service, req->uri, req->display_name, &info, canceled);
+    int ret = install_service_start(&g_service, req->uri, req->display_name,
+                                    req->icon_uri ? req->icon_uri : "", &info, canceled);
     if (out_content_id && content_id_size > 0) {
         snprintf(out_content_id, content_id_size, "%.*s", (int)sizeof(info.content_id), info.content_id);
     }
@@ -68,6 +69,7 @@ int platform_install_poll(const char *content_id, platform_install_progress_t *o
     snprintf(out->status, sizeof(out->status), "%.*s", (int)sizeof(st.status), st.status);
     out->error_code = st.error_info.error_code;
     out->downloaded_size = st.downloaded_size;
+    out->total_size = st.total_size;
     return 0;
 }
 
@@ -91,6 +93,7 @@ const char *platform_install_strerror(int code) {
     case 0x80A30001u: return "APP_INSTALLER_ERROR_UNKNOWN";
     case 0x80A30002u: return "APP_INSTALLER_ERROR_NOSPACE";
     case 0x80A30003u: return "APP_INSTALLER_ERROR_PARAM";
+    case 0x80B21121u: return "SCE_PLAYGO_ERROR_CORE_NET_NOT_CONNECTED";
     case 0x80B21164u: return "PLAYGO_ERROR_CORE_INVALID_CONTENT_ID";
     case 0x80B21167u: return "PLAYGO_ERROR_CORE_CONTENT_ID_MISMATCH";
     case 0x80B2116Au: return "PLAYGO_ERROR_CORE_REQUIRE_FULLY_INSTALLED_APPLICATION";

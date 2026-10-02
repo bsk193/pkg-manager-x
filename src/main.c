@@ -238,7 +238,7 @@ int main(int argc, char **argv) {
     install_log("[PKG Manager] Starting PKG Manager X v%s (based on PKG Manager v%s) (%s, %s)...",
                 PKGMGR_X_VERSION, PKGMGR_UPSTREAM_VERSION, PKGMGR_BUILD_COMMIT, PKGMGR_BUILD_DATE);
 
-    printf("[PKG Manager] Initializing package scanner (%s & %s)...\n", PKG_DEFAULT_DIR, PKG_DISC_DIR);
+    printf("[PKG Manager] Initializing package scanner...\n");
     pkg_scanner_init();
     http_sources_init();
 
@@ -296,6 +296,12 @@ int main(int argc, char **argv) {
     int network_check_timer = 0;
     while (g_running) {
         usleep(100000); /* 100ms sleep */
+
+        if (http_server_exit_requested()) {
+            printf("[PKG Manager] Shutdown requested from Settings.\n");
+            g_running = 0;
+            break;
+        }
 
         /* Immediate Wake-up Recovery */
         if (g_resumed) {

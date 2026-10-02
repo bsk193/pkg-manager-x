@@ -124,6 +124,18 @@ Fork additions live mostly in new files (`http_source*`, `pkg_platform*`,
 `pkg_parse_reader*`, `platform*`, `tests/test_http_source.c`,
 `tests/test_pkg_platform.c`) to keep merge conflicts small.
 
+### Cache invalidation
+Routine ELF version changes preserve the on-console metadata and icon cache. If
+a change makes those persisted entries incompatible, increment
+`CACHE_SCHEMA_VERSION` in `frontend/src/App.jsx`; that triggers one cache clear
+and catalog scan for each browser profile. The package manifest has its own
+`PKG_MANIFEST_VERSION` in `src/pkg_scanner.c`, which should be incremented when
+the saved catalog format or classification rules require a rescan without
+discarding cached metadata and icons.
+PKG Manager X keeps its own counters next to upstream's so the two never
+collide: `PKG_MANIFEST_X_VERSION` (`src/pkg_scanner.c`) and `PKG_CACHE_X_RULES`
+(`include/pkg_cache.h`). Bump those for fork-side classification changes.
+
 ## Running Unit Tests
 
 You can run the full host test suite locally without Docker:
@@ -184,6 +196,10 @@ This compiles and runs tests for:
 - Legacy CSS syntax transformer (`test_fix_legacy_css.py`)
 
 ### Large SMB share regressions
+
+For live authentication and throughput testing against Windows or Samba, see
+[SMB diagnostics](docs/SMB_DIAGNOSTICS.md). The host probe uses the production
+SMB reader and the patched library without running the installer.
 
 `make test TESTS=test_smb_scan` generates 3,000 small synthetic PKGs in separate
 games, updates and DLC folders, using the real scanner/parser over the local SMB

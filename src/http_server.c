@@ -41,10 +41,12 @@ typedef struct {
     char *data;
     size_t size;
     int oversize;
+    int shutdown_after_response;
 } post_state_t;
 
 static struct MHD_Daemon *g_daemon = NULL;
 static volatile int g_server_running = 0;
+static volatile int g_shutdown_requested = 0;
 
 static void add_cors_headers(struct MHD_Response *resp) {
     MHD_add_response_header(resp, "Access-Control-Allow-Origin", "*");
@@ -83,6 +85,7 @@ static void http_request_completed(void *cls, struct MHD_Connection *conn,
     (void)cls; (void)conn; (void)toe;
     if (*con_cls != NULL) {
         post_state_t *ps = (post_state_t *)*con_cls;
+        if (ps->shutdown_after_response) g_shutdown_requested = 1;
         if (ps->data) {
             free(ps->data);
         }
@@ -819,6 +822,21 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
         return ret;
     }
 
+    /* ── POST /api/shutdown ───────────────────────────────────── */
+    if (strcmp(method, "POST") == 0 && strcmp(url, "/api/shutdown") == 0) {
+        post_state_t *ps = (post_state_t *)*con_cls;
+        if (ps) ps->shutdown_after_response = 1;
+
+        static const char response_json[] = "{\"success\":true,\"message\":\"Closing PKG Manager\"}";
+        struct MHD_Response *resp = MHD_create_response_from_buffer(
+            sizeof(response_json) - 1, (void *)response_json, MHD_RESPMEM_PERSISTENT);
+        add_cors_headers(resp);
+        MHD_add_response_header(resp, "Content-Type", "application/json");
+        enum MHD_Result ret = MHD_queue_response(conn, MHD_HTTP_OK, resp);
+        MHD_destroy_response(resp);
+        return ret;
+    }
+
     /* ── GET /api/settings ─────────────────────────────────────── */
     if (strcmp(method, "GET") == 0 && strcmp(url, "/api/settings") == 0) {
         app_settings_t s;
@@ -1397,6 +1415,10 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
                 snprintf(response_buf, sizeof(response_buf),
                          "{\"success\":false,\"error\":\"Another package is currently installing\"}");
                 status_code = MHD_HTTP_CONFLICT;
+            } else if (res == -4) {
+                snprintf(response_buf, sizeof(response_buf),
+                         "{\"success\":false,\"error\":\"Package file not found or cannot be opened\"}");
+                status_code = MHD_HTTP_OK;
             } else if (res == -10) {
                 snprintf(response_buf, sizeof(response_buf),
                          "{\"success\":false,\"error\":\"Insufficient storage space to install package\"}");
@@ -1412,7 +1434,8 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
             } else if (res == -13) {
                 snprintf(response_buf, sizeof(response_buf),
                          "{\"success\":false,\"error\":\"Multi-part packages are only supported on USB/Disc\"}");
-                status_code = MHD_HTTP_BAD_REQUEST;            } else if (res == INSTALLER_UNAVAILABLE) {
+                status_code = MHD_HTTP_BAD_REQUEST;
+            } else if (res == INSTALLER_UNAVAILABLE) {
                 /* Not an error: the source simply no longer has this file. */
                 snprintf(response_buf, sizeof(response_buf),
                          "{\"success\":false,\"unavailable\":true,\"error\":\"%s\"}", HTTP_SOURCE_UNAVAILABLE_REASON);
@@ -1443,9 +1466,37 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
         if (res == 0) {
             snprintf(response_buf, sizeof(response_buf),
                      "{\"success\":true,\"message\":\"Installation canceled\"}");
+        } else if (res == -2) {
+            snprintf(response_buf, sizeof(response_buf),
+                     "{\"success\":false,\"error\":\"Direct storage installations cannot be canceled from PKG Manager (managed by PS5 system)\"}");
         } else {
             snprintf(response_buf, sizeof(response_buf),
                      "{\"success\":false,\"error\":\"No active installation to cancel\"}");
+        }
+        struct MHD_Response *resp = MHD_create_response_from_buffer(
+            strlen(response_buf), (void *)response_buf, MHD_RESPMEM_MUST_COPY);
+        add_cors_headers(resp);
+        MHD_add_response_header(resp, "Content-Type", "application/json");
+        enum MHD_Result ret = MHD_queue_response(conn, MHD_HTTP_OK, resp);
+        MHD_destroy_response(resp);
+        return ret;
+    }
+
+    /* ── POST /api/detach ──────────────────────────────────────── */
+    if (strcmp(method, "POST") == 0 && strcmp(url, "/api/detach") == 0) {
+        int update_skipped = 0;
+        int res = installer_detach_direct_storage(&update_skipped);
+        char response_buf[256];
+        if (res == 0) {
+            snprintf(response_buf, sizeof(response_buf),
+                     "{\"success\":true,\"update_skipped\":%s}",
+                     update_skipped ? "true" : "false");
+        } else if (res == -2) {
+            snprintf(response_buf, sizeof(response_buf),
+                     "{\"success\":false,\"error\":\"Only direct storage installs can be closed this way\"}");
+        } else {
+            snprintf(response_buf, sizeof(response_buf),
+                     "{\"success\":false,\"error\":\"No active installation to detach from\"}");
         }
         struct MHD_Response *resp = MHD_create_response_from_buffer(
             strlen(response_buf), (void *)response_buf, MHD_RESPMEM_MUST_COPY);
@@ -1576,6 +1627,10 @@ void http_server_stop(void) {
 
 int http_server_is_running(void) {
     return g_server_running;
+}
+
+int http_server_exit_requested(void) {
+    return g_shutdown_requested;
 }
 
 int http_server_restart_with_delay(int port, unsigned int delay_us) {

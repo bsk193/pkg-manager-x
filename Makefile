@@ -15,7 +15,6 @@ TOOL     := $(SDK)/bin/orbis
 # No _BSD_SOURCE: with it sqlite3 calls getpagesize(), hidden in the SDK's FreeBSD 9 headers.
 PLATFORM_CFLAGS := -DPS4_BUILD
 PLATFORM_LIBS   := -lSceNetCtl -lSceUserService -lSceSystemService -lSceAppInstUtil -lSceNet
-LIBSMB2_LOCAL   := deps/libsmb2/build-ps4/lib/libsmb2.a
 CMAKE_WRAPPER   := $(SDK)/bin/orbis-cmake
 ELF             := pkgmgr-ps4.elf
 else ifeq ($(PLATFORM),ps5)
@@ -23,7 +22,6 @@ SDK      := /opt/ps5-payload-sdk
 TOOL     := $(SDK)/bin/prospero
 PLATFORM_CFLAGS := -DPS5_BUILD -D_BSD_SOURCE
 PLATFORM_LIBS   := -lSceNetCtl -lSceUserService -lSceSystemService -lSceAppInstUtil -lSceNet
-LIBSMB2_LOCAL   := deps/libsmb2/build/lib/libsmb2.a
 CMAKE_WRAPPER   := $(SDK)/bin/prospero-cmake
 ELF             := pkgmgr.elf
 else
@@ -36,18 +34,20 @@ RANLIB := $(TOOL)-ranlib
 STRIP  := $(TOOL)-strip
 
 TARGET   := $(SDK)/target
-# Where build_deps.sh installed libmicrohttpd / libsmb2 / mbedTLS.
+# Where build_deps.sh installed libmicrohttpd / mbedTLS.
 ifeq ($(PLATFORM),ps4)
 DEPS_ROOT := $(TARGET)/user/homebrew
 else
 DEPS_ROOT := $(TARGET)
 endif
-ifneq ($(wildcard $(DEPS_ROOT)/lib/libsmb2.a),)
-LIBSMB2  ?= $(DEPS_ROOT)/lib/libsmb2.a
-else
-LIBSMB2  ?= $(LIBSMB2_LOCAL)
-endif
-INCLUDES := -Iinclude -I$(DEPS_ROOT)/include -I$(TARGET)/include -Ideps/libsmb2/include -Ideps/libsmb2/include/smb2
+# libsmb2: always the checked-in revision plus patches/libsmb2 (upstream),
+# built per console. The SDK copy may be an older library with different
+# private structs and unaccelerated signing.
+LIBSMB2  ?= build/libsmb2-$(PLATFORM)/lib/libsmb2.a
+SMB2_CMAKE ?= $(CMAKE_WRAPPER)
+SMB2_INPUTS := $(wildcard deps/libsmb2/lib/*.[ch] deps/libsmb2/include/*.h deps/libsmb2/include/smb2/*.h deps/libsmb2/libdcerpc/*.[ch] deps/libsmb2/cmake/* deps/libsmb2/cmake/Modules/*) deps/libsmb2/CMakeLists.txt deps/libsmb2/lib/CMakeLists.txt
+# Submodule headers first so they win over any SDK copy.
+INCLUDES := -Iinclude -Ideps/libsmb2/include -Ideps/libsmb2/include/smb2 -I$(DEPS_ROOT)/include -I$(TARGET)/include
 
 ifeq ($(HTTPS),1)
 TLS_CFLAGS := -DPKGMGR_HAVE_TLS
@@ -70,9 +70,6 @@ SRCS_WS := src/ws_upload.c src/ws_stream.c
 SRCS_X := src/pkg_platform.c src/pkg_parse_reader.c src/http_source.c src/http_sources_api.c \
           src/platform_install_ps5.c src/platform_install_ps4.c src/compat_ps4.c src/ps4_notify.c
 INSTALL_HELPER := build/install-helper.elf
-INSTALL_HELPER_SMOKE := build/install-helper-smoke.elf
-INSTALL_HELPER_SMOKE_NET := build/install-helper-smoke-net.elf
-INSTALL_HELPER_SMOKE_APPINST := build/install-helper-smoke-appinst.elf
 # Upstream's PS5 install service: each install runs in a fresh helper ELF
 # (embedded, launched through elfldr). PS4 installs in-process via BGFT.
 ifeq ($(PLATFORM),ps5)
@@ -123,7 +120,7 @@ LDFLAGS := -Wl,--gc-sections
 TEST_CFLAGS := -g -O0 -Wall -Wextra -D_GNU_SOURCE -Iinclude -Ideps/libsmb2/include -Ideps/libsmb2/include/smb2 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_WAL -DPKGMGR_BUILD_COMMIT=\"$(BUILD_COMMIT)\" -DPKGMGR_BUILD_DATE=\"$(BUILD_DATE)\"
 TEST_SRCS := src/multipart.c src/pkg_parser.c src/pkg_scanner.c src/pkg_cache.c src/miniz.c src/smb_client.c src/smb_debug_log.c src/debug_log_retention.c src/installer.c src/stream_server.c src/stream_debug_log.c src/notification.c src/app_info.c src/icon_blurhash.c src/leftovers.c src/app_diag.c src/app_installer.c src/sqlite3.c tests/mock_smb.c tests/ps5_sim.c src/ws_upload.c src/ws_stream.c tests/ws_test_client.c \
              src/pkg_platform.c src/pkg_parse_reader.c src/http_source.c tests/http_test_server.c src/ps4_notify.c
-TESTS := test_smb_scan test_pkg_parser test_pkg_scanner test_pkg_cache test_installer test_leftovers test_edge_cases test_multipart test_stream_sim test_ws_upload test_direct_install_e2e test_ws_stream test_ws_stream_far test_parse_mem \
+TESTS := test_smb_auth test_smb_scan test_pkg_parser test_pkg_scanner test_pkg_cache test_installer test_leftovers test_edge_cases test_multipart test_stream_sim test_ws_upload test_direct_install_e2e test_ws_stream test_ws_stream_far test_parse_mem \
          test_pkg_platform test_http_source test_ps4_notify
 
 all: $(ELF)
@@ -183,37 +180,18 @@ $(FRONTEND_DIST):
 	@echo "ERROR: frontend/dist/index.html not found! Run 'make frontend-build' first."
 	@exit 1
 
-$(LIBSMB2_LOCAL):
-	@echo "Building libsmb2 for $(PLATFORM)..."
-	mkdir -p $(dir $(LIBSMB2_LOCAL))/.. && cd $(dir $(LIBSMB2_LOCAL))/.. && \
-	$(CMAKE_WRAPPER) $(CURDIR)/deps/libsmb2 -DBUILD_SHARED_LIBS=OFF && \
-	$(MAKE) -j$$(nproc)
+build/libsmb2-src/.prepared: tools/prepare_libsmb2.py $(wildcard patches/libsmb2/*) $(SMB2_INPUTS)
+	$(PYTHON) tools/prepare_libsmb2.py build/libsmb2-src
+
+$(LIBSMB2): build/libsmb2-src/.prepared
+	$(SMB2_CMAKE) -S build/libsmb2-src -B build/libsmb2-$(PLATFORM) -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release -DENABLE_LIBKRB5=OFF -DENABLE_GSSAPI=OFF -DENABLE_LIBDCERPC=OFF
+	$(MAKE) -C build/libsmb2-$(PLATFORM) -j$$(getconf _NPROCESSORS_ONLN)
 
 $(INSTALL_HELPER): Makefile src/install_helper.c src/install_ipc.c include/install_ipc.h include/install_service.h include/install_appinst.h include/version.h
 	mkdir -p build
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ src/install_helper.c src/install_ipc.c -lpthread \
 		-lSceNetCtl -lSceUserService -lSceSystemService -lSceAppInstUtil -lSceNet
 	$(STRIP) $@
-
-$(INSTALL_HELPER_SMOKE): Makefile src/install_helper_smoke.c
-	mkdir -p build
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ src/install_helper_smoke.c -lpthread
-	$(STRIP) $@
-
-$(INSTALL_HELPER_SMOKE_NET): Makefile src/install_helper_smoke.c
-	mkdir -p build
-	$(CC) $(CFLAGS) $(LDFLAGS) -DINSTALL_HELPER_SMOKE_NET -o $@ src/install_helper_smoke.c -lpthread -lSceNet
-	$(STRIP) $@
-
-$(INSTALL_HELPER_SMOKE_APPINST): Makefile src/install_helper_smoke.c
-	mkdir -p build
-	$(CC) $(CFLAGS) $(LDFLAGS) -DINSTALL_HELPER_SMOKE_APPINST -o $@ src/install_helper_smoke.c -lpthread -lSceAppInstUtil
-	$(STRIP) $@
-
-.PHONY: install-helper-smoke install-helper-smoke-net install-helper-smoke-appinst
-install-helper-smoke: $(INSTALL_HELPER_SMOKE)
-install-helper-smoke-net: $(INSTALL_HELPER_SMOKE_NET)
-install-helper-smoke-appinst: $(INSTALL_HELPER_SMOKE_APPINST)
 
 $(ELF): $(ASSET_HEADERS) $(LIBSMB2) $(SRCS) $(SRCS_WS) $(SRCS_X) $(SRCS_INSTALL_SERVICE) $(INSTALL_HELPER_DEP) $(wildcard include/*.h)
 	@echo "Building $(ELF) for $(PLATFORM) (HTTPS=$(HTTPS))..."
@@ -222,7 +200,7 @@ $(ELF): $(ASSET_HEADERS) $(LIBSMB2) $(SRCS) $(SRCS_WS) $(SRCS_X) $(SRCS_INSTALL_
 	$(STRIP) $(ELF)
 
 clean:
-	rm -f pkgmgr.elf pkgmgr-ps4.elf $(INSTALL_HELPER) $(INSTALL_HELPER_SMOKE) $(INSTALL_HELPER_SMOKE_NET) $(INSTALL_HELPER_SMOKE_APPINST) pkgmgr_v*.elf pkg-manager_v*.elf pkg-manager-x_v*.elf $(ASSET_HEADERS) src/*.o $(addprefix tests/,$(TESTS))
+	rm -f pkgmgr.elf pkgmgr-ps4.elf $(INSTALL_HELPER) pkgmgr_v*.elf pkg-manager_v*.elf pkg-manager-x_v*.elf $(ASSET_HEADERS) src/*.o $(addprefix tests/,$(TESTS))
 	rm -rf $(addprefix tests/,$(addsuffix .dSYM,$(TESTS)))
 
 test-install-service:

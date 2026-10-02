@@ -23,7 +23,9 @@ extern "C" {
 #endif
 
 typedef struct {
-    const char *uri;           /* stream URL served by stream_server.c */
+    const char *uri;           /* stream URL served by stream_server.c, or a local
+                                  path for a PS5 direct-storage install */
+    const char *icon_uri;      /* package icon URL for the system UI, may be "" */
     const char *display_name;  /* "<TITLE_ID> (Base)" etc. (static storage) */
     const char *title_name;    /* package title, may be "" */
     const char *title_id;
@@ -37,6 +39,7 @@ typedef struct {
     char status[16];           /* "playable", "completed", "error", "none", "downloading" */
     int32_t error_code;
     uint64_t downloaded_size;
+    uint64_t total_size;       /* 0 when unknown */
 } platform_install_progress_t;
 
 /* platform_install_poll results besides 0 (= out is valid). */

@@ -221,6 +221,7 @@ int platform_install_poll(const char *content_id, platform_install_progress_t *o
     if (g_bgft.get_progress(g_bgft.task_id, &pr) != 0) return PLATFORM_INSTALL_NO_STATUS;
     memset(out, 0, sizeof(*out));
     out->downloaded_size = pr.transferred_total;
+    out->total_size = pr.length_total;
     if (pr.error_result != 0) {
         snprintf(out->status, sizeof(out->status), "error");
         out->error_code = pr.error_result;

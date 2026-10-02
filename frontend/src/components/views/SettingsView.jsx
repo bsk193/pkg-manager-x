@@ -3,7 +3,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import { DONATE_URL, isPlayStation } from '../../constants/config';
 import { formatBytes, formatVersion } from '../../utils/formatters';
 
-export default function SettingsView({ settings, onSaveSettings, onClose, onOpenSmb, onInstallShortcut, installingShortcut, cacheStats, loadingStats, onClearCache, leftoversData, scanningLeftovers, onScanLeftovers, onDeleteLeftover, showDonateQr, setShowDonateQr, httpSourcesCount = 0, shortcutSupported = true, consoleName = '' }) {
+export default function SettingsView({ settings, onSaveSettings, onClose, onOpenSmb, onInstallShortcut, onCloseApp, installingShortcut, cacheStats, loadingStats, onClearCache, leftoversData, scanningLeftovers, onScanLeftovers, onDeleteLeftover, showDonateQr, setShowDonateQr, httpSourcesCount = 0, shortcutSupported = true, consoleName = '' }) {
   const safeSettings = settings || {};
   const smbSharesCount = Array.isArray(safeSettings.smb_shares)
     ? safeSettings.smb_shares.length
@@ -33,6 +33,42 @@ export default function SettingsView({ settings, onSaveSettings, onClose, onOpen
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {/* Left Column */}
               <div className="space-y-6">
+                {/* Network Sources Card (SMB + HTTP/HTTPS) */}
+                <div className="rounded-[2px] bg-[#141520] border border-white/10 p-6 space-y-4">
+                  <div className="flex items-center justify-between pb-3 border-b border-white/10">
+                    <div className="flex items-center space-x-3">
+                      <div className="w-10 h-10 rounded-[2px] bg-cyan-600/20 border border-cyan-500/30 flex items-center justify-center text-cyan-400 shrink-0">
+                        <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <rect x="2" y="2" width="20" height="8" rx="2" />
+                          <rect x="2" y="14" width="20" height="8" rx="2" />
+                          <line x1="6" y1="6" x2="6.01" y2="6" />
+                          <line x1="6" y1="18" x2="6.01" y2="18" />
+                          <path d="M12 10v4" />
+                        </svg>
+                      </div>
+                      <div>
+                        <h3 className="text-lg font-bold text-white">Network Sources</h3>
+                        <p className="text-xs text-zinc-400">
+                          {smbSharesCount} SMB share{smbSharesCount === 1 ? '' : 's'}, {httpSourcesCount} HTTP server{httpSourcesCount === 1 ? '' : 's'}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-zinc-300 leading-relaxed">
+                    Install packages from Samba shares (PC or NAS) or HTTP/HTTPS servers without copying them to the console first.
+                  </p>
+
+                  <button
+                    type="button"
+                    onClick={onOpenSmb}
+                    className="w-full py-3 px-4 rounded-[2px] ps5-focus-item bg-cyan-600/20 hover:bg-cyan-600/30 border border-cyan-500/30 text-cyan-200 text-sm font-bold transition-colors flex items-center justify-between cursor-pointer"
+                  >
+                    <span>Manage Network Sources</span>
+                    <span>&rarr;</span>
+                  </button>
+                </div>
+
                 {/* Package Organization Card */}
                 <div className="rounded-[2px] bg-[#141520] border border-white/10 p-6 space-y-5">
                   <div className="flex items-center space-x-3 pb-3 border-b border-white/10">
@@ -140,80 +176,6 @@ export default function SettingsView({ settings, onSaveSettings, onClose, onOpen
                         <polyline points="20 6 9 17 4 12" />
                       </svg>
                     </div>
-                  </button>
-                </div>
-
-                {/* Stream Debug Logging Card */}
-                <div className="rounded-[2px] bg-[#141520] border border-white/10 p-6 space-y-5">
-                  <div className="flex items-center space-x-3 pb-3 border-b border-white/10">
-                    <div className="w-10 h-10 rounded-[2px] bg-amber-600/20 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
-                      <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <polyline points="4 17 10 11 4 5" />
-                        <line x1="12" y1="19" x2="20" y2="19" />
-                      </svg>
-                    </div>
-                    <div>
-                      <h3 className="text-lg font-bold text-white">Developer</h3>
-                      <p className="text-xs text-zinc-400">Debug &amp; diagnostics</p>
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => onSaveSettings({ ...safeSettings, pkg_install_debug: !safeSettings.pkg_install_debug })}
-                    className="w-full bg-white/5 hover:bg-white/10 border border-white/10 rounded-[2px] ps5-focus-item p-4 flex items-center justify-between transition-colors cursor-pointer text-left"
-                  >
-                    <div className="min-w-0 flex-1 mr-4">
-                      <span className="text-sm font-semibold text-white block">Package install debug logging</span>
-                      <span className="text-xs text-zinc-400 block mt-1">
-                        Record every stream server connection and byte-range request to a timestamped log file in /data/pkgmgr/. Use this to capture the exact PS5 download pattern for mock/replay testing.
-                      </span>
-                    </div>
-                    <div className={`w-6 h-6 rounded-[2px] border flex items-center justify-center shrink-0 transition-colors ${
-                      safeSettings.pkg_install_debug
-                        ? 'bg-amber-600 border-amber-500 text-white'
-                        : 'bg-black/40 border-white/20 text-transparent'
-                    }`}>
-                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                        <polyline points="20 6 9 17 4 12" />
-                      </svg>
-                    </div>
-                  </button>
-                </div>
-
-                {/* Samba (SMB) Shares Card */}
-                <div className="rounded-[2px] bg-[#141520] border border-white/10 p-6 space-y-4">
-                  <div className="flex items-center justify-between pb-3 border-b border-white/10">
-                    <div className="flex items-center space-x-3">
-                      <div className="w-10 h-10 rounded-[2px] bg-cyan-600/20 border border-cyan-500/30 flex items-center justify-center text-cyan-400 shrink-0">
-                        <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <rect x="2" y="2" width="20" height="8" rx="2" />
-                          <rect x="2" y="14" width="20" height="8" rx="2" />
-                          <line x1="6" y1="6" x2="6.01" y2="6" />
-                          <line x1="6" y1="18" x2="6.01" y2="18" />
-                          <path d="M12 10v4" />
-                        </svg>
-                      </div>
-                      <div>
-                        <h3 className="text-lg font-bold text-white">Network Sources</h3>
-                        <p className="text-xs text-zinc-400">
-                          {smbSharesCount} SMB share{smbSharesCount === 1 ? '' : 's'}, {httpSourcesCount} HTTP server{httpSourcesCount === 1 ? '' : 's'}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <p className="text-xs text-zinc-300 leading-relaxed">
-                    Install packages from Samba shares (PC or NAS) or HTTP/HTTPS servers without copying them to the console first.
-                  </p>
-
-                  <button
-                    type="button"
-                    onClick={onOpenSmb}
-                    className="w-full py-3 px-4 rounded-[2px] ps5-focus-item bg-cyan-600/20 hover:bg-cyan-600/30 border border-cyan-500/30 text-cyan-200 text-sm font-bold transition-colors flex items-center justify-between cursor-pointer"
-                  >
-                    <span>Manage Network Sources</span>
-                    <span>&rarr;</span>
                   </button>
                 </div>
 
@@ -508,6 +470,75 @@ export default function SettingsView({ settings, onSaveSettings, onClose, onOpen
                     </div>
                   ) : null}
                 </div>
+
+                {/* Stream Debug Logging Card */}
+                <div className="rounded-[2px] bg-[#141520] border border-white/10 p-6 space-y-5">
+                  <div className="flex items-center space-x-3 pb-3 border-b border-white/10">
+                    <div className="w-10 h-10 rounded-[2px] bg-amber-600/20 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                      <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <polyline points="4 17 10 11 4 5" />
+                        <line x1="12" y1="19" x2="20" y2="19" />
+                      </svg>
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-bold text-white">Developer</h3>
+                      <p className="text-xs text-zinc-400">Debug &amp; diagnostics</p>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => onSaveSettings({ ...safeSettings, pkg_install_debug: !safeSettings.pkg_install_debug })}
+                    className="w-full bg-white/5 hover:bg-white/10 border border-white/10 rounded-[2px] ps5-focus-item p-4 flex items-center justify-between transition-colors cursor-pointer text-left"
+                  >
+                    <div className="min-w-0 flex-1 mr-4">
+                      <span className="text-sm font-semibold text-white block">Package install debug logging</span>
+                      <span className="text-xs text-zinc-400 block mt-1">
+                        Record every stream server connection and byte-range request to a timestamped log file in /data/pkgmgr/. Use this to capture the exact PS5 download pattern for mock/replay testing.
+                      </span>
+                    </div>
+                    <div className={`w-6 h-6 rounded-[2px] border flex items-center justify-center shrink-0 transition-colors ${
+                      safeSettings.pkg_install_debug
+                        ? 'bg-amber-600 border-amber-500 text-white'
+                        : 'bg-black/40 border-white/20 text-transparent'
+                    }`}>
+                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                    </div>
+                  </button>
+                </div>
+
+                {/* Close PKG Manager Card */}
+                <div className="rounded-[2px] bg-[#141520] border border-white/10 p-6 space-y-4">
+                  <div className="flex items-center space-x-3 pb-3 border-b border-white/10">
+                    <div className="w-10 h-10 rounded-[2px] bg-rose-600/20 border border-rose-500/30 flex items-center justify-center text-rose-400 shrink-0">
+                      <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M10 17l5-5-5-5" />
+                        <path d="M15 12H3" />
+                        <path d="M12 3h6a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3h-6" />
+                      </svg>
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-bold text-white">Close PKG Manager</h3>
+                      <p className="text-xs text-zinc-400">Stop the server process</p>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-zinc-300 leading-relaxed">
+                    Close PKG Manager and stop its server process.
+                  </p>
+
+                  <button
+                    type="button"
+                    onClick={onCloseApp}
+                    className="w-full py-3 px-4 rounded-[2px] ps5-focus-item bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/30 text-rose-200 text-sm font-bold transition-colors flex items-center justify-between cursor-pointer"
+                  >
+                    <span>Close PKG Manager</span>
+                    <span>&rarr;</span>
+                  </button>
+                </div>
+
               </div>
             </div>
     </div>

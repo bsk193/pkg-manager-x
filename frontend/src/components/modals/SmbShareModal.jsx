@@ -58,11 +58,6 @@ export default function SmbShareModal({
   return (
     <div data-modal-dialog="true" role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4">
       <div className="bg-[#181a27] border border-white/15 rounded-[2px] max-w-lg w-full p-6 space-y-5 overflow-y-auto max-h-[90vh]">
-        <label className="flex items-center space-x-3 text-sm text-zinc-200">
-          <input type="checkbox" className="ps5-focus-item" checked={!!form.browse_only}
-            onChange={(event) => setForm({ ...form, browse_only: event.target.checked })} />
-          <span>Browse only — skip full and background scans. Select individual PKGs to install.</span>
-        </label>
         <div className="flex items-center justify-between pb-3 border-b border-white/10">
           <div className="flex items-center space-x-3">
             <div className="w-10 h-10 rounded-[2px] bg-cyan-600/20 border border-cyan-500/30 flex items-center justify-center text-cyan-400 shrink-0">
@@ -167,11 +162,14 @@ export default function SmbShareModal({
           <div>
             <label className="block font-semibold text-zinc-300 mb-1">Share *</label>
             <div className="flex gap-2">
-              <div className="flex-1 min-w-0 bg-black/50 border border-white/15 rounded-[2px] px-3.5 py-2.5 text-sm font-mono truncate">
-                {isShareValid
-                  ? <span className="text-white">{form.share.trim()}</span>
-                  : <span className="text-zinc-500">Not selected</span>}
-              </div>
+              <input
+                aria-label="Share name"
+                type="text"
+                placeholder="e.g. shared"
+                value={form.share || ''}
+                onChange={(e) => setForm({ ...form, share: e.target.value, path: '' })}
+                className="flex-1 min-w-0 bg-black/50 border border-white/15 rounded-[2px] px-3.5 py-2.5 text-sm font-mono text-white placeholder-zinc-500 focus:outline-none focus:border-white/40"
+              />
               <button
                 type="button"
                 onClick={() => setSharePickerOpen(true)}
@@ -181,6 +179,7 @@ export default function SmbShareModal({
                 Select share
               </button>
             </div>
+            <p className="text-[11px] text-zinc-500 mt-1">Enter the share name directly if the server does not allow listing shares.</p>
             {!isServerValid && (
               <p className="text-[11px] text-zinc-500 mt-1">Enter a server above first.</p>
             )}
@@ -226,6 +225,24 @@ export default function SmbShareModal({
           ) : (
             <p className="text-[11px] text-zinc-500">No folder selected yet.</p>
           )}
+
+          {/* Browse Only Mode */}
+          <div className="pt-2 border-t border-white/10">
+            <label className="flex items-start space-x-3 text-zinc-300 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                className="ps5-focus-item mt-0.5 rounded-[2px]"
+                checked={!!form.browse_only}
+                onChange={(event) => setForm({ ...form, browse_only: event.target.checked })}
+              />
+              <div>
+                <span className="font-semibold text-white block text-xs">Browse only</span>
+                <span className="text-[11px] text-zinc-400 leading-relaxed block">
+                  Skip full and background scans. Select individual PKGs to install directly from the file browser (recommended for large shares).
+                </span>
+              </div>
+            </label>
+          </div>
 
           {/* Test Result Banner */}
           {testResult && (

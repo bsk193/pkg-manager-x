@@ -398,7 +398,10 @@ static void smb_log_nt_diagnostic(uint32_t nt_err, const char *server, const cha
 }
 
 /* Helper to connect to an SMB share using smb2_context */
-static struct smb2_context *smb_connect(const smb_share_config_t *cfg, char *out_err, size_t err_sz, int verbose) {
+static struct smb2_context *smb_connect_attempt(const smb_share_config_t *cfg, char *out_err,
+                                               size_t err_sz, int verbose, int anonymous,
+                                               uint32_t *out_status) {
+    if (out_status) *out_status = 0;
     if (!cfg) {
         if (out_err && err_sz > 0) snprintf(out_err, err_sz, "Invalid share configuration (missing server/share)");
         if (verbose) install_log("[SMB TEST] ERROR: Invalid share configuration (NULL cfg)");
@@ -433,10 +436,13 @@ static struct smb2_context *smb_connect(const smb_share_config_t *cfg, char *out
         smb2_register_error_callback(ctx, smb_test_error_cb);
     }
 
-    const char *user = (clean_cfg.username[0] != '\0') ? clean_cfg.username : "Guest";
+    const char *user = anonymous ? "" : (clean_cfg.username[0] ? clean_cfg.username : "Guest");
     smb2_set_user(ctx, user);
-    if (clean_cfg.password[0] != '\0') smb2_set_password(ctx, clean_cfg.password);
-    smb2_set_domain(ctx, (clean_cfg.workgroup[0] != '\0') ? clean_cfg.workgroup : "WORKGROUP");
+    smb2_set_domain(ctx, anonymous ? "" : clean_cfg.workgroup);
+    /* NULL selects anonymous NTLM in libsmb2; "" authenticates an account
+     * with an empty password. Set this after user/domain (which may load
+     * credentials from NTLM_USER_FILE). */
+    smb2_set_password(ctx, anonymous ? NULL : clean_cfg.password);
 
     char srv_buf[192];
     if (clean_cfg.port > 0 && clean_cfg.port != SMB_DEFAULT_PORT) {
@@ -448,18 +454,19 @@ static struct smb2_context *smb_connect(const smb_share_config_t *cfg, char *out
     if (verbose) {
         install_log("[SMB TEST] Attempting connection -> server='%s', share='%s', user='%s', domain='%s', pass=%s, sec_mode=0 (server-required signing allowed)",
                     srv_buf, clean_cfg.share, user,
-                    clean_cfg.workgroup[0] ? clean_cfg.workgroup : "WORKGROUP",
-                    clean_cfg.password[0] ? "(configured)" : "(none)");
+                    anonymous ? "" : clean_cfg.workgroup,
+                    anonymous ? "(anonymous)" : (clean_cfg.password[0] ? "(configured)" : "(empty)"));
     }
 
     uint64_t t0 = smb_now_ms();
-    int rc = smb2_connect_share(ctx, srv_buf, clean_cfg.share, user);
+    int rc = smb2_connect_share(ctx, srv_buf, clean_cfg.share, NULL);
     uint64_t elapsed_ms = smb_now_ms() - t0;
 
     if (rc != 0) {
         const char *err = smb2_get_error(ctx);
         if (!err || !*err) err = "Failed to connect to SMB share";
         uint32_t nt_err = (uint32_t)smb2_get_nterror(ctx);
+        if (out_status) *out_status = nt_err;
         const char *nt_str = nterror_to_str(nt_err);
 
         if (verbose) {
@@ -469,7 +476,9 @@ static struct smb2_context *smb_connect(const smb_share_config_t *cfg, char *out
         }
 
         if (out_err && err_sz > 0) {
-            if (nt_err == 0xC000015B) {
+            if (nt_err == SMB2_STATUS_ACCOUNT_DISABLED) {
+                snprintf(out_err, err_sz, "Account '%s' is disabled (0x%08X). Everyone share permissions do not enable guest logon. Enable guest access on the server or use credentials for an enabled account.", user, nt_err);
+            } else if (nt_err == 0xC000015B) {
                 snprintf(out_err, err_sz, "Logon type not granted (0x%08X): The SMB server does not allow this account to connect over the network. Check its remote-access policy or use an account that is allowed to connect.",
                          nt_err);
             } else if (nt_err == 0xC000006D || nt_err == 0xC0000072 || nt_err == 0xC000006E) {
@@ -495,8 +504,32 @@ static struct smb2_context *smb_connect(const smb_share_config_t *cfg, char *out
     if (verbose) {
         install_log("[SMB TEST] -> smb2_connect_share SUCCEEDED (rc=0, elapsed=%llums)",
                     (unsigned long long)elapsed_ms);
+        install_log("[SMB TEST] Negotiated: dialect=0x%04x signing=%d encryption=%d max_read=%u credits=%u",
+                    ctx->dialect, ctx->sign, ctx->seal,
+                    smb2_get_max_read_size(ctx), ctx->credits);
     }
 
+    return ctx;
+}
+
+static struct smb2_context *smb_connect(const smb_share_config_t *cfg, char *out_err,
+                                       size_t err_sz, int verbose) {
+    uint32_t status = 0;
+    struct smb2_context *ctx = smb_connect_attempt(cfg, out_err, err_sz, verbose, 0, &status);
+    if (ctx || !cfg) return ctx;
+
+    smb_share_config_t clean = *cfg;
+    smb_client_sanitize_config(&clean);
+    /* Preserve anonymous-only shares, but never fall back from credentials
+     * the user supplied, or retry transport errors and missing shares. */
+    if (!clean.username[0] && !clean.password[0] &&
+        (status == SMB2_STATUS_ACCESS_DENIED || status == SMB2_STATUS_LOGON_FAILURE ||
+         status == SMB2_STATUS_ACCOUNT_DISABLED || status == SMB2_STATUS_ACCOUNT_RESTRICTION ||
+         status == SMB2_STATUS_LOGON_TYPE_NOT_GRANTED)) {
+        if (verbose) install_log("[SMB TEST] Guest logon rejected; trying anonymous access");
+        /* Keep the Guest failure if both attempts fail (e.g. account disabled). */
+        ctx = smb_connect_attempt(&clean, NULL, 0, verbose, 1, NULL);
+    }
     return ctx;
 }
 
@@ -792,6 +825,7 @@ int smb_client_list_dir(const smb_share_config_t *cfg, const char *subpath,
 /* Recursive directory scanner helper over SMB */
 static int scan_smb_dir(struct smb2_context *ctx, const smb_share_config_t *cfg,
                         const char *sub_dir, int depth,
+                        int skip_unreadable_subdirs,
                         smb_pkg_callback_t pkg_cb, void *user_data) {
     if (depth > 4) return 0;
 
@@ -815,8 +849,16 @@ static int scan_smb_dir(struct smb2_context *ctx, const smb_share_config_t *cfg,
 
         if (ent->st.smb2_type == SMB2_TYPE_DIRECTORY) {
             /* Descend into subdirectories */
-            int sub_count = scan_smb_dir(ctx, cfg, child_path, depth + 1, pkg_cb, user_data);
+            int sub_count = scan_smb_dir(ctx, cfg, child_path, depth + 1,
+                                         skip_unreadable_subdirs, pkg_cb, user_data);
             if (sub_count < 0) {
+                /* A share-root scan can encounter unrelated folders that the
+                 * configured account cannot read (for example server-managed
+                 * directories). Keep scanning siblings so one such folder
+                 * does not hide every readable PKG in the share. A selected
+                 * starting folder remains strict so incomplete scans are
+                 * still reported to the caller. */
+                if (skip_unreadable_subdirs) continue;
                 smb2_closedir(ctx, dir);
                 return -1;
             }
@@ -856,11 +898,16 @@ int smb_client_scan_share(const smb_share_config_t *cfg,
                           void *user_data) {
     if (!cfg || !cfg->enabled) return 0;
 
-    struct smb2_context *ctx = smb_connect(cfg, NULL, 0, 0);
+    smb_share_config_t clean_cfg = *cfg;
+    smb_client_sanitize_config(&clean_cfg);
+
+    struct smb2_context *ctx = smb_connect(&clean_cfg, NULL, 0, 0);
     if (!ctx) return -1;
 
-    const char *base_path = (cfg->path[0] != '\0' && strcmp(cfg->path, "/") != 0) ? cfg->path : "";
-    int total = scan_smb_dir(ctx, cfg, base_path, 0, pkg_cb, user_data);
+    const char *base_path = clean_cfg.path;
+    int at_share_root = base_path[0] == '\0';
+    int total = scan_smb_dir(ctx, &clean_cfg, base_path, 0,
+                             at_share_root, pkg_cb, user_data);
 
     smb2_destroy_context(ctx);
     return total;
@@ -878,6 +925,7 @@ struct smb_file_session {
     struct smb2fh *fh;
     int local_fd;
     uint64_t file_size;
+    uint64_t mtime;
     char url[512];
     int debug_enabled;
     pthread_mutex_t mutex;
@@ -912,6 +960,7 @@ smb_file_session_t *smb_file_session_open(const char *smb_url) {
 
         s->local_fd = lfd;
         s->file_size = (uint64_t)st.st_size;
+        s->mtime = (uint64_t)st.st_mtime;
         strncpy(s->url, smb_url, sizeof(s->url) - 1);
         pthread_mutex_init(&s->mutex, NULL);
         return s;
@@ -946,8 +995,10 @@ smb_file_session_t *smb_file_session_open(const char *smb_url) {
 
     struct smb2_stat_64 st;
     uint64_t sz = 0;
+    uint64_t mt = 0;
     if (smb2_fstat(ctx, fh, &st) == 0) {
         sz = (uint64_t)st.smb2_size;
+        mt = (uint64_t)st.smb2_mtime;
     }
 
     smb_file_session_t *s = (smb_file_session_t *)calloc(1, sizeof(smb_file_session_t));
@@ -961,6 +1012,7 @@ smb_file_session_t *smb_file_session_open(const char *smb_url) {
     s->fh = fh;
     s->local_fd = -1;
     s->file_size = sz;
+    s->mtime = mt;
     strncpy(s->url, smb_url, sizeof(s->url) - 1);
     app_settings_t debug_settings;
     pkg_cache_get_settings(&debug_settings);
@@ -1234,6 +1286,10 @@ uint64_t smb_file_session_get_size(smb_file_session_t *session) {
     return session ? session->file_size : 0;
 }
 
+uint64_t smb_file_session_get_mtime(smb_file_session_t *session) {
+    return session ? session->mtime : 0;
+}
+
 void smb_file_session_close(smb_file_session_t *session) {
     if (!session) return;
     pthread_mutex_lock(&session->mutex);
@@ -1339,6 +1395,7 @@ int smb_client_parse_pkg(const char *smb_url, pkg_detail_t *out) {
 
     out->file_size = sess->file_size;
     out->total_pkg_size = sess->file_size;
+    out->mtime = sess->mtime;
 
     uint8_t hdr[0x200];
     ssize_t hdr_read = smb_file_session_read(sess, hdr, sizeof(hdr), 0);

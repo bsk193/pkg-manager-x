@@ -10,16 +10,25 @@ export async function installPackage(path, updatePath = '') {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updatePath ? { path, update_path: updatePath } : { path })
   });
-  // Refusals (4xx/5xx) carry {success:false, error}; surface that message.
   let data = null;
-  try { data = await res.json(); } catch (e) {}
-  if (data && typeof data === 'object') return data;
+  try {
+    data = await res.json();
+  } catch (e) {
+    data = null;
+  }
+  if (data) return data;
   if (!res.ok) throw new Error(`Install failed: ${res.status}`);
-  return { success: false, error: 'Unexpected response from the console' };
+  return { success: false, error: `Install failed: ${res.status}` };
 }
 
 export async function cancelInstall() {
   const res = await fetch('/api/cancel', { method: 'POST' });
   if (!res.ok) throw new Error(`Cancel failed: ${res.status}`);
+  return res.json();
+}
+
+export async function detachDirectInstall() {
+  const res = await fetch('/api/detach', { method: 'POST' });
+  if (!res.ok) throw new Error(`Detach failed: ${res.status}`);
   return res.json();
 }
