@@ -863,6 +863,15 @@ int virtual_stream_check_path(const char *path) {
         smb_file_session_close(sess);
         return 0;
     }
+    if (pkg_parser_is_http_path(path)) {
+        /* Same open as the install stream: follows redirects (R2), uses the
+         * source's credentials / TLS rules, needs byte ranges and the catalog
+         * size, and marks a 404 as unavailable. */
+        http_file_session_t *hs = http_file_session_open(path);
+        if (!hs) return -1;
+        http_file_session_close(hs);
+        return 0;
+    }
     const char *local_path = (strncmp(path, "file://", 7) == 0) ? path + 7 : path;
     struct stat st;
     return stat(local_path, &st) == 0 ? 0 : -1;

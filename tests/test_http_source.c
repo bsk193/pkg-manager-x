@@ -17,6 +17,7 @@
 
 #include "http_source.h"
 #include "http_test_server.h"
+#include "installer.h"
 #include "multipart.h"
 #include "pkg_scanner.h"
 #include "test_fixture.h"
@@ -422,7 +423,64 @@ static void test_gateway(void) {
     printf("  gateway catalog / signed redirect / link refresh / unavailable ok\n");
 }
 
-static void test_scanner_integration(void) {    http_source_config_t c;
+static int wait_install_done(int timeout_ms) {
+    for (int waited = 0; waited < timeout_ms; waited += 50) {
+        installer_status_t st;
+        installer_get_status(&st);
+        if (!st.is_installing && (st.completed || st.failed)) return 0;
+        usleep(50 * 1000);
+    }
+    return -1;
+}
+
+/* x-v1.0.1: virtual_stream_check_path() handled live: and smb:// but sent
+ * http(s):// URLs to stat(), so installer_start() rejected every HTTP source
+ * package with -4 ("Package file not found!"), e.g. installing the PS4 tile
+ * from the home server. */
+static void test_http_install(void) {
+    http_source_config_t c;
+    make_config(&c, NULL, NULL);
+    assert(http_source_sanitize(&c) == 0);
+    assert(http_sources_set(&c, 1) == 1);
+
+    assert(fixture_write_ps4_pkg(HT_ROOT "/PS4/Tile.pkg", "PKGX00001", "PKG Manager X", "gd", "01.01") == 0);
+    char url[256], missing[256];
+    snprintf(url, sizeof(url), "%sPS4/Tile.pkg", g_base);
+    snprintf(missing, sizeof(missing), "%sPS4/Missing.pkg", g_base);
+
+    /* HTTP goes through the HTTP source (range probe), not stat(). */
+    assert(virtual_stream_check_path(url) == 0);
+    assert(virtual_stream_check_path(missing) == -1);
+    assert(http_source_is_unavailable(missing));
+    /* Local / file:// / live: behaviour unchanged. */
+    assert(virtual_stream_check_path(HT_ROOT "/PS4/Tile.pkg") == 0);
+    assert(virtual_stream_check_path("file://" HT_ROOT "/PS4/Tile.pkg") == 0);
+    assert(virtual_stream_check_path(HT_ROOT "/PS4/Nope.pkg") == -1);
+    assert(virtual_stream_check_path("live:no-such-session") == -1);
+    assert(virtual_stream_check_path("") == -1);
+    assert(virtual_stream_check_path(NULL) == -1);
+    printf("  install path check: http(s) via HTTP source, local/live unchanged ok\n");
+
+    /* Host-driven install of the tile from the HTTP source, as on a PS4. */
+    setenv("PKGMGR_CONSOLE", "ps4", 1);
+    assert(installer_init("http://127.0.0.1:8844/") == 0);
+    int rc = installer_start(url);
+    if (rc != 0) printf("  installer_start(%s) = %d\n", url, rc);
+    assert(rc == 0);
+    assert(wait_install_done(15000) == 0);
+    installer_status_t st;
+    installer_get_status(&st);
+    assert(st.completed == 1 && strcmp(st.title_id, "PKGX00001") == 0);
+    /* Gone from the server: "unavailable", not "file not found". */
+    assert(installer_start(missing) == INSTALLER_UNAVAILABLE);
+    installer_shutdown();
+    unsetenv("PKGMGR_CONSOLE");
+    unlink(HT_ROOT "/PS4/Tile.pkg");
+    printf("  host-driven HTTP install of the PS4 tile ok\n");
+}
+
+static void test_scanner_integration(void) {
+    http_source_config_t c;
     make_config(&c, NULL, NULL);
     assert(http_source_sanitize(&c) == 0);
     assert(http_sources_set(&c, 1) == 1);
@@ -472,6 +530,7 @@ int main(void) {
     test_auth_and_no_range();
     test_json_listing();
     test_gateway();
+    test_http_install();
     test_scanner_integration();
 
     http_test_server_stop();

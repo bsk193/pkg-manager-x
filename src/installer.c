@@ -2256,6 +2256,11 @@ static int installer_start_internal(const char *pkg_path, const char *pending_pk
 
     /* Verify that the package file exists and is accessible before proceeding */
     if (virtual_stream_check_path(pkg_path_copy) != 0) {
+        /* HTTP source answered 404: "unavailable", not a missing-file error. */
+        if (pkg_parser_is_http_path(pkg_path_copy) && http_source_is_unavailable(pkg_path_copy)) {
+            install_log("[INSTALLER] %s is unavailable on the server", pkg_path_copy);
+            return INSTALLER_UNAVAILABLE;
+        }
         install_log("[INSTALLER] Package file does not exist or cannot be opened: %s", pkg_path_copy);
         ps5_notify("Package file not found!");
         return -4; /* File not found */
@@ -2263,6 +2268,10 @@ static int installer_start_internal(const char *pkg_path, const char *pending_pk
 
     if (pending_path_copy[0] != '\0') {
         if (virtual_stream_check_path(pending_path_copy) != 0) {
+            if (pkg_parser_is_http_path(pending_path_copy) && http_source_is_unavailable(pending_path_copy)) {
+                install_log("[INSTALLER] Update %s is unavailable on the server", pending_path_copy);
+                return INSTALLER_UNAVAILABLE;
+            }
             install_log("[INSTALLER] Update package file does not exist or cannot be opened: %s", pending_path_copy);
             ps5_notify("Update package file not found!");
             return -4;
