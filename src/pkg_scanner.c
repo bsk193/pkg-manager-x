@@ -2289,8 +2289,19 @@ char *pkg_scanner_packages_for_drive_to_json_ex(const char *drive_id_or_path, co
         strncpy(display_title, pkg->title_name, sizeof(display_title) - 1);
         display_title[sizeof(display_title) - 1] = '\0';
         if (accept_language && accept_language[0] && pkg->localized_titles[0] == '{') {
-            pkg_parser_resolve_localized_title(pkg->localized_titles, pkg->default_language,
-                                               accept_language, display_title, sizeof(display_title));
+            if (strcmp(pkg->platform, "ps4") == 0) {
+                /* param.sfo: a requested-language TITLE_xx, else the SFO TITLE
+                 * (e.g. RE2 DLCs carry English only in TITLE; their first
+                 * TITLE_xx is Japanese). Keep the stored title on failure. */
+                char resolved[PKG_TITLE_NAME_LEN];
+                if (pkg_parser_resolve_sfo_title(pkg->localized_titles, accept_language, pkg->title_name,
+                                                 resolved, sizeof(resolved)) == 0 && resolved[0]) {
+                    snprintf(display_title, sizeof(display_title), "%s", resolved);
+                }
+            } else {
+                pkg_parser_resolve_localized_title(pkg->localized_titles, pkg->default_language,
+                                                   accept_language, display_title, sizeof(display_title));
+            }
         }
 
         const char *loc_json_raw = (pkg->localized_titles[0] == '{') ? pkg->localized_titles : "{}";

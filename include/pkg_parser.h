@@ -54,6 +54,16 @@ int pkg_parser_resolve_localized_title(const char *loc_json, const char *default
                                        const char *accept_lang, char *out, size_t out_max);
 
 /**
+ * PS4 (param.sfo) variant: TITLE_xx entries only exist for some languages and
+ * the plain TITLE is the title for every other one, as on the console. Picks
+ * an Accept-Language match from localized_titles, else default_title (the
+ * SFO TITLE); only without a TITLE does it fall back like the function above.
+ * Returns 0 and a non-empty out on success, negative otherwise (out = "").
+ */
+int pkg_parser_resolve_sfo_title(const char *loc_json, const char *accept_lang,
+                                 const char *default_title, char *out, size_t out_max);
+
+/**
  * Parses PS5 param.json buffer to extract titleId, category, version,
  * localized titles map, default language, and best default title.
  */

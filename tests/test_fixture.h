@@ -49,32 +49,24 @@ static inline void fx_le32(uint8_t *p, uint32_t v) {
 }
 
 /* Builds a param.sfo with TITLE/TITLE_ID/CATEGORY/APP_VER. Returns size, 0 on overflow. */
-static inline size_t fixture_build_sfo(uint8_t *out, size_t cap,
-                                const char *title, const char *title_id,
-                                const char *category, const char *app_ver) {
-    static const char *keys[] = {"TITLE", "TITLE_ID", "CATEGORY", "APP_VER"};
-    const char *vals[4];
-    vals[0] = title ? title : "";
-    vals[1] = title_id ? title_id : "";
-    vals[2] = category ? category : "gd";
-    vals[3] = app_ver ? app_ver : "01.00";
-
-    size_t key_off[4];
-    size_t key_total = 0;
-    for (int i = 0; i < 4; i++) {
+/* Builds a param.sfo from n UTF-8 key/value pairs (keys in the given order).
+ * Returns size, 0 on overflow. */
+static inline size_t fixture_build_sfo_kv(uint8_t *out, size_t cap, const char *const *keys,
+                                          const char *const *vals, int n) {
+    if (n <= 0 || n > 64) {
+        return 0;
+    }
+    size_t key_off[64], data_off[64], data_len[64];
+    size_t key_total = 0, data_total = 0;
+    for (int i = 0; i < n; i++) {
         key_off[i] = key_total;
         key_total += strlen(keys[i]) + 1;
-    }
-    size_t data_off[4];
-    size_t data_total = 0;
-    size_t data_len[4];
-    for (int i = 0; i < 4; i++) {
         data_off[i] = data_total;
         data_len[i] = strlen(vals[i]) + 1;
         data_total += data_len[i];
     }
 
-    size_t key_start = 20 + 4 * 16;
+    size_t key_start = 20 + (size_t)n * 16;
     size_t data_start = key_start + key_total;
     size_t total = data_start + data_total;
     if (total > cap) {
@@ -87,8 +79,8 @@ static inline size_t fixture_build_sfo(uint8_t *out, size_t cap,
     out[5] = 1;
     fx_le32(out + 8, (uint32_t)key_start);
     fx_le32(out + 12, (uint32_t)data_start);
-    fx_le32(out + 16, 4);
-    for (int i = 0; i < 4; i++) {
+    fx_le32(out + 16, (uint32_t)n);
+    for (int i = 0; i < n; i++) {
         uint8_t *e = out + 20 + (size_t)i * 16;
         fx_le16(e + 0, (uint16_t)key_off[i]);
         e[2] = 0x04;
@@ -97,11 +89,39 @@ static inline size_t fixture_build_sfo(uint8_t *out, size_t cap,
         fx_le32(e + 8, (uint32_t)data_len[i]);
         fx_le32(e + 12, (uint32_t)data_off[i]);
     }
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < n; i++) {
         memcpy(out + key_start + key_off[i], keys[i], strlen(keys[i]) + 1);
         memcpy(out + data_start + data_off[i], vals[i], data_len[i]);
     }
     return total;
+}
+
+/* Builds a minimal PS4 param.sfo (TITLE, TITLE_ID, CATEGORY, APP_VER) plus
+ * optional extra entries such as TITLE_00 / TITLE_17. Returns size, 0 on
+ * overflow. */
+static inline size_t fixture_build_sfo_ex(uint8_t *out, size_t cap,
+                                   const char *title, const char *title_id,
+                                   const char *category, const char *app_ver,
+                                   const char *const *extra_keys, const char *const *extra_vals,
+                                   int extra_count) {
+    const char *keys[64] = {"TITLE", "TITLE_ID", "CATEGORY", "APP_VER"};
+    const char *vals[64];
+    vals[0] = title ? title : "";
+    vals[1] = title_id ? title_id : "";
+    vals[2] = category ? category : "gd";
+    vals[3] = app_ver ? app_ver : "01.00";
+    int n = 4;
+    for (int i = 0; i < extra_count && n < 64; i++, n++) {
+        keys[n] = extra_keys[i];
+        vals[n] = extra_vals[i];
+    }
+    return fixture_build_sfo_kv(out, cap, keys, vals, n);
+}
+
+static inline size_t fixture_build_sfo(uint8_t *out, size_t cap,
+                                const char *title, const char *title_id,
+                                const char *category, const char *app_ver) {
+    return fixture_build_sfo_ex(out, cap, title, title_id, category, app_ver, NULL, NULL, 0);
 }
 
 /* Builds a PS5 param.json. Returns size, 0 on overflow. */
@@ -152,6 +172,10 @@ typedef struct {
     const char *content_id; /* NULL => derived EP0001-<tid>_00-TEST000000000001 */
     int is_multilang;
     const char *default_lang;
+    /* PS4 only: extra param.sfo entries, e.g. {"TITLE_00", ...}. */
+    const char *const *sfo_extra_keys;
+    const char *const *sfo_extra_vals;
+    int sfo_extra_count;
 } fixture_pkg_spec_t;
 
 /* Writes one CNT-based package. is_ps5 selects FIH+CNT vs raw CNT.
@@ -177,9 +201,11 @@ static inline int fixture_write_pkg(const char *path, int is_ps5, const fixture_
         }
     } else {
         payload_name = "param.sfo";
-        payload_len = fixture_build_sfo(payload, sizeof(payload),
-                                        spec->title, spec->title_id,
-                                        spec->category, spec->version);
+        payload_len = fixture_build_sfo_ex(payload, sizeof(payload),
+                                           spec->title, spec->title_id,
+                                           spec->category, spec->version,
+                                           spec->sfo_extra_keys, spec->sfo_extra_vals,
+                                           spec->sfo_extra_count);
     }
     if (payload_len == 0) {
         return -1;

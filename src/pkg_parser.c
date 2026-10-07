@@ -114,11 +114,10 @@ static int extract_val_for_key(const char *json, const char *key, char *out, siz
     return 0;
 }
 
-int pkg_parser_resolve_localized_title(const char *loc_json, const char *default_lang,
-                                       const char *accept_lang, char *out, size_t out_max) {
-    if (!loc_json || loc_json[0] != '{' || !out || out_max == 0) return -1;
-    out[0] = '\0';
-
+/* Accept-Language matching shared by both resolvers: exact tag, then
+ * primary-language prefix. 0 = out holds the match. */
+static int match_accept_language(const char *loc_json, const char *accept_lang,
+                                 char *out, size_t out_max) {
     if (accept_lang && accept_lang[0]) {
         const char *p = accept_lang;
         while (*p) {
@@ -177,6 +176,15 @@ int pkg_parser_resolve_localized_title(const char *loc_json, const char *default
             if (*p == ',') p++;
         }
     }
+    return -1;
+}
+
+int pkg_parser_resolve_localized_title(const char *loc_json, const char *default_lang,
+                                       const char *accept_lang, char *out, size_t out_max) {
+    if (!loc_json || loc_json[0] != '{' || !out || out_max == 0) return -1;
+    out[0] = '\0';
+
+    if (match_accept_language(loc_json, accept_lang, out, out_max) == 0) return 0;
 
     /* Fallback 1: default_lang */
     if (default_lang && default_lang[0]) {
@@ -247,6 +255,34 @@ int pkg_parser_resolve_localized_title(const char *loc_json, const char *default
         }
     }
 
+    return -1;
+}
+
+int pkg_parser_resolve_sfo_title(const char *loc_json, const char *accept_lang,
+                                 const char *default_title, char *out, size_t out_max) {
+    if (!out || out_max == 0) return -1;
+    out[0] = '\0';
+    int have_loc = loc_json && loc_json[0] == '{';
+
+    /* 1. A TITLE_xx for one of the requested languages. */
+    if (have_loc) {
+        char match[PKG_TITLE_NAME_LEN];
+        if (match_accept_language(loc_json, accept_lang, match, sizeof(match)) == 0 && match[0]) {
+            snprintf(out, out_max, "%s", match);
+            return 0;
+        }
+    }
+    /* 2. The SFO TITLE: what the console shows for every language without
+     *    its own TITLE_xx. Never the first TITLE_xx (often Japanese). */
+    if (default_title && default_title[0]) {
+        snprintf(out, out_max, "%s", default_title);
+        return 0;
+    }
+    /* 3. No TITLE at all: English, then any localized title. */
+    if (have_loc && pkg_parser_resolve_localized_title(loc_json, NULL, NULL, out, out_max) == 0 && out[0]) {
+        return 0;
+    }
+    out[0] = '\0';
     return -1;
 }
 

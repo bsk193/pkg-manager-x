@@ -121,7 +121,7 @@ TEST_CFLAGS := -g -O0 -Wall -Wextra -D_GNU_SOURCE -Iinclude -Ideps/libsmb2/inclu
 TEST_SRCS := src/multipart.c src/pkg_parser.c src/pkg_scanner.c src/pkg_cache.c src/miniz.c src/smb_client.c src/smb_debug_log.c src/debug_log_retention.c src/installer.c src/stream_server.c src/stream_debug_log.c src/notification.c src/app_info.c src/icon_blurhash.c src/leftovers.c src/app_diag.c src/app_installer.c src/sqlite3.c tests/mock_smb.c tests/ps5_sim.c src/ws_upload.c src/ws_stream.c tests/ws_test_client.c \
              src/pkg_platform.c src/pkg_parse_reader.c src/http_source.c tests/http_test_server.c src/ps4_notify.c
 TESTS := test_smb_auth test_smb_scan test_pkg_parser test_pkg_scanner test_pkg_cache test_installer test_leftovers test_edge_cases test_multipart test_stream_sim test_ws_upload test_direct_install_e2e test_ws_stream test_ws_stream_far test_parse_mem \
-         test_pkg_platform test_http_source test_ps4_notify
+         test_pkg_platform test_http_source test_ps4_notify test_ps4_title_localization
 
 all: $(ELF)
 
