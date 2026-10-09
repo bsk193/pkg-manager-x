@@ -39,6 +39,15 @@ extern int sceAppInstUtilTerminate(void);
 #define BGFT_TASK_OPTION_DISABLE_CDN_QUERY_PARAM 0x10000
 
 #define BGFT_ERROR_SAME_APPLICATION_ALREADY_INSTALLED 0x80990088u
+/* A download task for the same content ID already exists, typically left
+ * by an earlier failed install (CE-32928-4). */
+#define BGFT_ERROR_TASK_DUPLICATED                    0x80990015u
+
+/* OrbisBgftTaskSubType */
+#define BGFT_TASK_SUB_TYPE_UNKNOWN    0
+#define BGFT_TASK_SUB_TYPE_GAME       6
+#define BGFT_TASK_SUB_TYPE_GAME_AC    7
+#define BGFT_TASK_SUB_TYPE_GAME_PATCH 8
 
 typedef struct {
     void *heap;
@@ -82,6 +91,8 @@ typedef int (*bgft_term_fn)(void);
 typedef int (*bgft_register_fn)(bgft_download_param_t *, int *task_id);
 typedef int (*bgft_start_fn)(int task_id);
 typedef int (*bgft_progress_fn)(int task_id, bgft_task_progress_t *);
+typedef int (*bgft_find_fn)(const char *content_id, int sub_type, int *task_id);
+typedef int (*bgft_task_fn)(int task_id);
 
 static struct {
     int ready;
@@ -92,9 +103,12 @@ static struct {
     bgft_register_fn register_task;
     bgft_start_fn start_task;
     bgft_progress_fn get_progress;
+    bgft_find_fn find_task;        /* optional: duplicate-task recovery */
+    bgft_task_fn stop_task;        /* optional */
+    bgft_task_fn unregister_task;  /* optional */
     int task_id;
     char content_id[64];
-} g_bgft = { 0, -1, NULL, NULL, NULL, NULL, NULL, NULL, -1, "" };
+} g_bgft = { 0, -1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, -1, "" };
 
 static void *bgft_sym(const char *primary, const char *fallback) {
     void *addr = NULL;
@@ -126,6 +140,13 @@ int platform_install_init(void) {
                                                 "sceBgftServiceDownloadStartTask");
     g_bgft.get_progress = (bgft_progress_fn)bgft_sym("sceBgftServiceIntDownloadGetProgress",
                                                      "sceBgftServiceDownloadGetProgress");
+    /* Removing a task left by a failed install; installs still work
+     * without these (only the automatic 0x80990015 recovery is lost). */
+    g_bgft.find_task = (bgft_find_fn)bgft_sym("sceBgftServiceIntDownloadFindActiveTask",
+                                              "sceBgftServiceDownloadFindTaskByContentId");
+    g_bgft.stop_task = (bgft_task_fn)bgft_sym("sceBgftServiceIntDownloadStopTask",
+                                              "sceBgftServiceDownloadStopTask");
+    g_bgft.unregister_task = (bgft_task_fn)bgft_sym("sceBgftServiceIntDownloadUnregisterTask", NULL);
     if (!g_bgft.init || !g_bgft.register_task || !g_bgft.start_task) {
         ps5_notify("PKG Manager: BGFT symbols missing, installs disabled");
         return -1;
@@ -161,6 +182,41 @@ static const char *bgft_package_type(const platform_install_request_t *req) {
     if (req->category && strncmp(req->category, "al", 2) == 0) return "PS4AL";
     if (req->pkg_kind && strcasecmp(req->pkg_kind, "dlc") == 0) return "PS4AC";
     return "PS4GD";
+}
+
+/* Stops and unregisters a download task. 0 when it is gone. */
+static int bgft_remove_task(int task_id, const char *why) {
+    if (task_id < 0 || !g_bgft.unregister_task) return -1;
+    int stop = g_bgft.stop_task ? g_bgft.stop_task(task_id) : 0;
+    int unreg = g_bgft.unregister_task(task_id);
+    install_log("[BGFT] remove task %d (%s): stop -> 0x%08X, unregister -> 0x%08X",
+                task_id, why, stop, unreg);
+    return unreg == 0 ? 0 : -1;
+}
+
+static int bgft_sub_type(const char *package_type) {
+    if (strcmp(package_type, "PS4AC") == 0) return BGFT_TASK_SUB_TYPE_GAME_AC;
+    if (strcmp(package_type, "PS4DP") == 0) return BGFT_TASK_SUB_TYPE_GAME_PATCH;
+    return BGFT_TASK_SUB_TYPE_GAME;
+}
+
+/* TASK_DUPLICATED: find the leftover task for this content ID (its own
+ * sub type first, then the others) and remove it. 0 when one was removed. */
+static int bgft_clear_duplicate(const char *content_id, const char *package_type) {
+    if (!content_id || !content_id[0] || !g_bgft.find_task || !g_bgft.unregister_task) return -1;
+    const int own = bgft_sub_type(package_type);
+    const int order[] = { own, BGFT_TASK_SUB_TYPE_GAME, BGFT_TASK_SUB_TYPE_GAME_AC,
+                          BGFT_TASK_SUB_TYPE_GAME_PATCH, BGFT_TASK_SUB_TYPE_UNKNOWN };
+    for (size_t i = 0; i < sizeof(order) / sizeof(order[0]); i++) {
+        if (i > 0 && order[i] == own) continue;
+        int task_id = -1;
+        int rc = g_bgft.find_task(content_id, order[i], &task_id);
+        install_log("[BGFT] find task %s sub_type=%d -> 0x%08X task=%d", content_id, order[i], rc, task_id);
+        if (rc == 0 && task_id >= 0) {
+            return bgft_remove_task(task_id, "leftover from an earlier install");
+        }
+    }
+    return -1;
 }
 
 int platform_install_start(const platform_install_request_t *req,
@@ -201,11 +257,21 @@ int platform_install_start(const platform_install_request_t *req,
     int ret = g_bgft.register_task(&p, &task_id);
     install_log("[BGFT] register type=%s size=%llu user=%d -> 0x%08X task=%d",
                 p.package_type, (unsigned long long)req->package_size, user_id, ret, task_id);
+    if ((uint32_t)ret == BGFT_ERROR_TASK_DUPLICATED && bgft_clear_duplicate(s_cid, p.package_type) == 0) {
+        /* An earlier failed install left its task behind: retry once. */
+        task_id = -1;
+        ret = g_bgft.register_task(&p, &task_id);
+        install_log("[BGFT] register (after removing leftover) -> 0x%08X task=%d", ret, task_id);
+    }
     if (ret != 0) return ret;
 
     ret = g_bgft.start_task(task_id);
     install_log("[BGFT] start task %d -> 0x%08X", task_id, ret);
-    if (ret != 0) return ret;
+    if (ret != 0) {
+        /* Don't leave a registered-but-dead task to block the next try. */
+        bgft_remove_task(task_id, "start failed");
+        return ret;
+    }
 
     g_bgft.task_id = task_id;
     snprintf(g_bgft.content_id, sizeof(g_bgft.content_id), "%s", s_cid);
@@ -237,10 +303,20 @@ void platform_install_close(void) {
     g_bgft.task_id = -1;
 }
 
+void platform_install_discard(void) {
+    /* Failed or canceled: remove our task so it cannot block the next
+     * attempt with 0x80990015. */
+    if (g_bgft.ready && g_bgft.task_id >= 0) {
+        bgft_remove_task(g_bgft.task_id, "install failed or canceled");
+    }
+    g_bgft.task_id = -1;
+}
+
 const char *platform_install_strerror(int code) {
     if (code == 0) return "OK";
     switch ((uint32_t)code) {
     case BGFT_ERROR_SAME_APPLICATION_ALREADY_INSTALLED: return "BGFT_ERROR_SAME_APPLICATION_ALREADY_INSTALLED";
+    case BGFT_ERROR_TASK_DUPLICATED: return "BGFT_ERROR_TASK_DUPLICATED";
     default: return NULL;
     }
 }

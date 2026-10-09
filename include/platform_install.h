@@ -67,6 +67,12 @@ int platform_install_poll(const char *content_id, platform_install_progress_t *o
 /* Releases per-install resources (PS5 helper process). Idempotent. */
 void platform_install_close(void);
 
+/* Like platform_install_close(), for an install that failed or was
+ * canceled: PS4 also stops and unregisters its BGFT download task so it
+ * cannot block the next attempt (0x80990015 TASK_DUPLICATED). PS5: same as
+ * platform_install_close(). */
+void platform_install_discard(void);
+
 /* Human-readable name for an install error code, or NULL. */
 const char *platform_install_strerror(int code);
 

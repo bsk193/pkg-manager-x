@@ -55,6 +55,8 @@ jobs:
         run: |
           cc -Iinclude -o /tmp/test_ps4_bgft_url tests/test_ps4_bgft_url.c
           /tmp/test_ps4_bgft_url
+          cc -Wall -Iinclude -o /tmp/test_ps4_bgft_tasks tests/test_ps4_bgft_tasks.c
+          /tmp/test_ps4_bgft_tasks
 
   frontend:
     runs-on: ubuntu-latest

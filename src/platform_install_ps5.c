@@ -77,6 +77,11 @@ void platform_install_close(void) {
     install_service_close(&g_service);
 }
 
+/* PS5: a failed/canceled install needs no extra cleanup. */
+void platform_install_discard(void) {
+    platform_install_close();
+}
+
 /* Human-readable names for installer/playgo error codes (verified against
    etaHEN error_translator and on-console results). Unknown codes -> NULL. */
 const char *platform_install_strerror(int code) {

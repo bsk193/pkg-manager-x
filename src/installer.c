@@ -1416,8 +1416,11 @@ static void *stream_installer_worker(void *arg) {
         install_log("[INSTALLER] Stopping helper after cancel/shutdown");
         pthread_mutex_lock(&g_installer_mutex);
         g_pending_pkg_path[0] = '\0';
+        int canceled_start = g_cancel_stream;
         pthread_mutex_unlock(&g_installer_mutex);
-        platform_install_close();
+        /* Canceled: drop the system task too (PS4 BGFT); shutdown keeps it. */
+        if (canceled_start) platform_install_discard();
+        else platform_install_close();
         free(extracted_icon);
         ws_live_abort();
         if (!is_filesystem_install) {
@@ -1942,7 +1945,15 @@ static void *stream_installer_worker(void *arg) {
 
         sleep(1);
     }
-    platform_install_close();
+    {
+        /* Failed or canceled installs drop their system task (PS4: a BGFT
+         * task left behind blocks the next attempt with 0x80990015). */
+        pthread_mutex_lock(&g_installer_mutex);
+        int discard_task = g_status.failed || g_cancel_stream;
+        pthread_mutex_unlock(&g_installer_mutex);
+        if (discard_task) platform_install_discard();
+        else platform_install_close();
+    }
 
 #else
     /* Mock streaming simulation for host tests */
