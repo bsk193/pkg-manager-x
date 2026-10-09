@@ -2,22 +2,21 @@
  * PKG Manager X - PS4 home screen tile.
  *
  * PS4 has no "web link" tile like the PS5 deeplink shortcut, so this tiny
- * app does the same job:
+ * app does the same job, and only that:
  *   1. If PKG Manager X is not running (nothing on 127.0.0.1:8844), send the
  *      bundled payload (/app0/pkgmgr-ps4.elf) to GoldHEN's BinLoader on
  *      127.0.0.1:9090 and wait for the web server to come up.
  *   2. Open the console browser at http://127.0.0.1:8844/.
- * The app then stays in the background. Whenever it gets the focus back
- * (Circle in the browser, or the tile opened again from the home screen) it
- * reopens the browser instead of showing a black screen; any controller
- * button on the black screen does the same.
+ *   3. Close itself (sceSystemServiceLoadExec("exit")). Circle in the
+ *      browser then goes back to the home screen; opening the tile again
+ *      just opens the browser. The tile never stops or restarts the
+ *      PKG Manager X service: that runs until reboot / rest mode. (The
+ *      payload also refuses to replace a running copy of the same version.)
  * Optional: a /app0/preset_sources.json (one HTTP source object, e.g. a
  * private build with a home server) is added through the local API once the
  * server is up, unless a source with the same URL already exists.
- * PS4 apps must not return from
- * main: the system reports that as a crash (CE-34878-0) and GoldHEN may take
- * the payload it started for us down with it. Closing the app from the home
- * screen ends it cleanly.
+ * PS4 apps must not return from main: the system reports that as a crash
+ * (CE-34878-0).
  */
 
 #include <errno.h>
@@ -32,8 +31,6 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
-#include <time.h>
-#include <orbis/Pad.h>
 
 #define PKGMGR_PORT     8844
 #define BINLOADER_PORT  9090
@@ -47,13 +44,7 @@ int sceUserServiceTerminate(void);
 int sceSystemServiceLaunchWebBrowser(const char *uri, void *param);
 int sceSystemServiceHideSplashScreen(void);
 int sceKernelUsleep(unsigned int usec);
-int sceUserServiceGetInitialUser(int *user_id);
-
-/* Set in OrbisPadData.buttons while another app / the system UI has focus. */
-#define PAD_BUTTON_INTERCEPTED 0x80000000u
-#define POLL_USEC          (250 * 1000)
-#define RESUME_GAP_SEC     2   /* loop stalled this long => we were suspended */
-#define RELAUNCH_COOLDOWN  3   /* seconds between browser launches */
+int sceSystemServiceLoadExec(const char *path, const char *args[]);
 
 /* libkernel notification (same layout as OpenOrbis' OrbisNotificationRequest). */
 typedef struct {
@@ -272,66 +263,26 @@ static int ensure_server(void) {
     return -1;
 }
 
-static time_t g_last_launch;
-static int g_preset_done;
-
-static void open_browser(void) {
-    g_last_launch = time(NULL);
-    if (ensure_server() != 0) return;
-    if (!g_preset_done) {
-        apply_preset_source();
-        g_preset_done = 1;
-    }
-    int rc = sceSystemServiceLaunchWebBrowser(UI_URL, NULL);
-    if (rc != 0) notify("PKG Manager X: could not open the browser (0x%08X)\nOpen %s", rc, UI_URL);
-    g_last_launch = time(NULL);
+/* Leaves the app the way the system expects, so Circle in the browser
+ * lands on the home screen. The PKG Manager X service keeps running. */
+static void exit_app(void) {
+    /* Let the browser / notifications come up first. */
+    sceKernelUsleep(2 * 1000 * 1000);
+    sceUserServiceTerminate();
+    sceSystemServiceLoadExec("exit", NULL);
+    /* Not reached; never return from main (CE-34878-0). */
+    for (;;) sceKernelUsleep(60 * 1000 * 1000);
 }
 
 int main(void) {
     sceSystemServiceHideSplashScreen();
     sceUserServiceInitialize(NULL);
 
-    int pad = -1;
-    int user = -1;
-    if (scePadInit() == 0 && sceUserServiceGetInitialUser(&user) == 0) {
-        pad = scePadOpen(user, 0, 0, NULL);
+    if (ensure_server() == 0) {
+        apply_preset_source();
+        int rc = sceSystemServiceLaunchWebBrowser(UI_URL, NULL);
+        if (rc != 0) notify("PKG Manager X: could not open the browser (0x%08X)\nOpen %s", rc, UI_URL);
     }
-
-    open_browser();
-
-    /* Never returns; the user closes the app from the home screen. */
-    uint32_t prev_buttons = 0;
-    int had_focus_loss = 0;
-    time_t prev_tick = time(NULL);
-    for (;;) {
-        sceKernelUsleep(POLL_USEC);
-        time_t now = time(NULL);
-        int reopen = 0;
-
-        /* Suspended while the browser was in front, now running again. */
-        if (now - prev_tick >= RESUME_GAP_SEC) reopen = 1;
-        prev_tick = now;
-
-        if (pad >= 0) {
-            OrbisPadData d;
-            memset(&d, 0, sizeof(d));
-            if (scePadReadState(pad, &d) == 0 && d.connected) {
-                if (d.buttons & PAD_BUTTON_INTERCEPTED) {
-                    had_focus_loss = 1;            /* browser / system UI in front */
-                } else {
-                    if (had_focus_loss) reopen = 1; /* focus is back on the black screen */
-                    had_focus_loss = 0;
-                    uint32_t pressed = d.buttons & ~prev_buttons;
-                    if (pressed) reopen = 1;        /* any button on the black screen */
-                }
-                prev_buttons = d.buttons & ~PAD_BUTTON_INTERCEPTED;
-            }
-        }
-
-        if (reopen && now - g_last_launch >= RELAUNCH_COOLDOWN) {
-            open_browser();
-            prev_tick = time(NULL);
-        }
-    }
+    exit_app();
     return 0;
 }

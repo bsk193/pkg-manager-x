@@ -32,6 +32,7 @@
 #if PKGMGR_ON_CONSOLE
 #include <sys/sysctl.h>
 #include <sys/syscall.h>
+#include <sys/time.h>
 
 extern int sceNetCtlInit(void);
 extern int sceUserServiceInitialize(int *priority);
@@ -122,6 +123,41 @@ static int get_local_ip(char *ip_buf, size_t buf_size) {
 
 #define DEFAULT_HTTP_PORT 8844
 
+#if PKGMGR_CONSOLE_PS4
+/* PS4: 1 when PKG Manager X of this exact version already answers on the
+ * local web port. A second copy (e.g. sent again by the home-screen tile)
+ * then leaves the running service alone instead of restarting it; a
+ * different version still replaces it (updates). */
+static int ps4_same_version_running(void) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return 0;
+    struct timeval tv = { 3, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_port = htons(DEFAULT_HTTP_PORT);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (connect(fd, (struct sockaddr *)&a, sizeof(a)) != 0) {
+        close(fd);
+        return 0;
+    }
+    static const char req[] = "GET /api/platform HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n";
+    char resp[2048];
+    size_t len = 0;
+    if (send(fd, req, sizeof(req) - 1, 0) == (ssize_t)(sizeof(req) - 1)) {
+        ssize_t n;
+        while (len + 1 < sizeof(resp) && (n = recv(fd, resp + len, sizeof(resp) - 1 - len, 0)) > 0) {
+            len += (size_t)n;
+        }
+    }
+    close(fd);
+    resp[len] = '\0';
+    return strstr(resp, "\"version\":\"" PKGMGR_X_VERSION "\"") != NULL;
+}
+#endif
+
 static volatile int g_running = 1;
 static volatile sig_atomic_t g_resumed = 0;
 
@@ -150,6 +186,14 @@ int main(int argc, char **argv) {
 
 #if PKGMGR_ON_CONSOLE
     syscall(SYS_thr_set_name, -1, "pkgmgr.elf");
+
+#if PKGMGR_CONSOLE_PS4
+    if (ps4_same_version_running()) {
+        printf("[PKG Manager] PKG Manager X v%s is already running; leaving it in place.\n",
+               PKGMGR_X_VERSION);
+        return EXIT_SUCCESS;
+    }
+#endif
 
     pid_t old_pid;
     while ((old_pid = find_pid("pkgmgr.elf")) > 0) {

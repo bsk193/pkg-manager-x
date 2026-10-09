@@ -65,10 +65,14 @@ Pressing the tile:
    the payload bundled in the package to GoldHEN's **BinLoader** on
    `127.0.0.1:9090` and waits for the server to start. The BinLoader must be
    enabled in GoldHEN's settings; otherwise load the ELF as usual first.
-2. It opens the console browser at `http://127.0.0.1:8844/` and stays in the
-   background. When it gets the focus back (Circle in the browser, or the tile
-   opened again) it reopens the browser; any button on its black screen does the
-   same. Close it from the home screen like any app.
+2. It opens the console browser at `http://127.0.0.1:8844/` and closes itself.
+   Circle in the browser goes back to the home screen; opening the tile again
+   just opens the browser.
+
+The tile and the browser are only the UI: closing either never stops the
+PKG Manager X service, which runs until reboot or rest mode. If the same
+version is already running, a newly sent payload (tile, or manual) exits and
+leaves the running service alone; a different version replaces it.
 
 So after a reboot + jailbreak the tile is all you need. The bundled payload is
 the one from the same release; install the new tile package when you update
