@@ -2256,16 +2256,7 @@ struct http_file_session {
     pthread_mutex_t refresh_lock;
     http_conn_t *idle[HTTP_POOL_MAX];
     int idle_count;
-    /* Read-ahead for install streams: one large range request serves many
-     * small sequential reads. The PS4 stream server reads 64 KiB at a time,
-     * and one HTTPS round trip per 64 KiB capped installs at ~0.5-1.2 MB/s. */
-    pthread_mutex_t ra_lock;
-    unsigned char *ra_buf;
-    uint64_t ra_off;
-    size_t ra_len;
 };
-
-#define HTTP_READAHEAD_SIZE (1024 * 1024)
 
 static http_conn_t *session_take(http_file_session_t *s) {
     http_conn_t *c = NULL;
@@ -2303,7 +2294,6 @@ http_file_session_t *http_file_session_open(const char *url) {
     if (!s) return NULL;
     pthread_mutex_init(&s->lock, NULL);
     pthread_mutex_init(&s->refresh_lock, NULL);
-    pthread_mutex_init(&s->ra_lock, NULL);
     s->has_cfg = http_sources_find_for_url(url, &s->cfg) == 0;
     copy_str(s->origin, sizeof(s->origin), url);
 
@@ -2330,7 +2320,6 @@ http_file_session_t *http_file_session_open(const char *url) {
         }
         pthread_mutex_destroy(&s->refresh_lock);
         pthread_mutex_destroy(&s->lock);
-        pthread_mutex_destroy(&s->ra_lock);
         free(s);
         return NULL;
     }
@@ -2386,7 +2375,10 @@ static int session_refresh(http_file_session_t *s, unsigned seen_generation) {
     return rc;
 }
 
-static ssize_t session_read_direct(http_file_session_t *s, void *buf, size_t count, uint64_t offset) {
+ssize_t http_file_session_read(http_file_session_t *s, void *buf, size_t count, uint64_t offset) {
+    if (!s || !buf) return -1;
+    if (count == 0 || offset >= s->size) return 0;
+    if (count > s->size - offset) count = (size_t)(s->size - offset);
 
     time_t deadline = 0;
     int delay = 1, refreshes = 0;
@@ -2454,38 +2446,6 @@ static ssize_t session_read_direct(http_file_session_t *s, void *buf, size_t cou
     }
 }
 
-ssize_t http_file_session_read(http_file_session_t *s, void *buf, size_t count, uint64_t offset) {
-    if (!s || !buf) return -1;
-    if (count == 0 || offset >= s->size) return 0;
-    if (count > s->size - offset) count = (size_t)(s->size - offset);
-    /* Metadata reads and large reads go straight to the server. */
-    if (!s->resilient || count >= HTTP_READAHEAD_SIZE) return session_read_direct(s, buf, count, offset);
-
-    pthread_mutex_lock(&s->ra_lock);
-    if (!s->ra_buf) s->ra_buf = (unsigned char *)malloc(HTTP_READAHEAD_SIZE);
-    if (!s->ra_buf) {
-        pthread_mutex_unlock(&s->ra_lock);
-        return session_read_direct(s, buf, count, offset);
-    }
-    if (!(offset >= s->ra_off && offset + count <= s->ra_off + s->ra_len)) {
-        uint64_t want = s->size - offset;
-        if (want > HTTP_READAHEAD_SIZE) want = HTTP_READAHEAD_SIZE;
-        ssize_t n = session_read_direct(s, s->ra_buf, (size_t)want, offset);
-        if (n <= 0) {
-            s->ra_len = 0;
-            pthread_mutex_unlock(&s->ra_lock);
-            return n;
-        }
-        s->ra_off = offset;
-        s->ra_len = (size_t)n;
-    }
-    size_t avail = (size_t)(s->ra_off + s->ra_len - offset);
-    size_t take = count < avail ? count : avail;
-    memcpy(buf, s->ra_buf + (offset - s->ra_off), take);
-    pthread_mutex_unlock(&s->ra_lock);
-    return (ssize_t)take;
-}
-
 uint64_t http_file_session_get_size(http_file_session_t *s) {
     return s ? s->size : 0;
 }
@@ -2498,7 +2458,5 @@ void http_file_session_close(http_file_session_t *s) {
     pthread_mutex_unlock(&s->lock);
     pthread_mutex_destroy(&s->refresh_lock);
     pthread_mutex_destroy(&s->lock);
-    pthread_mutex_destroy(&s->ra_lock);
-    free(s->ra_buf);
     free(s);
 }

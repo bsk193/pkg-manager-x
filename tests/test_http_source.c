@@ -220,32 +220,6 @@ static void test_session_streaming(void) {
     assert(http_file_session_read(s, tail, sizeof(tail), size) == 0);
     http_file_session_close(s);
 
-    /* Install streams (resilient) read ahead: small sequential reads, a
-     * backward seek, and parallel readers still return the exact bytes. */
-    s = http_file_session_open(url);
-    assert(s);
-    http_file_session_set_resilient(s, 1);
-    uint8_t *chunk = malloc(64 * 1024);
-    assert(chunk);
-    for (uint64_t off = 0; off < size; off += 64 * 1024) {
-        size_t want = size - off < 64 * 1024 ? (size_t)(size - off) : 64 * 1024;
-        assert(http_file_session_read(s, chunk, want, off) == (ssize_t)want);
-        assert(memcmp(chunk, ref + off, want) == 0);
-    }
-    assert(http_file_session_read(s, chunk, 100, 7) == 100);
-    assert(memcmp(chunk, ref + 7, 100) == 0);
-    free(chunk);
-    for (int i = 0; i < 4; i++) {
-        args[i].s = s;
-        args[i].seed = i + 11;
-        assert(pthread_create(&t[i], NULL, reader_thread, &args[i]) == 0);
-    }
-    for (int i = 0; i < 4; i++) {
-        pthread_join(t[i], NULL);
-        assert(args[i].ok);
-    }
-    http_file_session_close(s);
-
     /* The virtual stream engine routes http:// the same way. */
     virtual_stream_t *vs = calloc(1, sizeof(*vs));
     assert(vs && virtual_stream_open(url, vs) == 0);
