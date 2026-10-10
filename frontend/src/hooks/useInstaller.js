@@ -173,7 +173,14 @@ export function useInstaller(props) {
 
         const currentBatchAfterStatus = batchInstallRef.current;
         if (currentBatchAfterStatus) {
-          if (!data.is_installing && (data.completed || data.failed)) {
+          if (!data.is_installing && !data.completed && !data.failed) {
+            // The service is idle with no result (restarted after a jailbreak,
+            // or the install was canceled from the console's Downloads list):
+            // the saved Base + Update is stale. The base-to-update handoff keeps
+            // is_installing set, so a real batch never looks like this.
+            try { localStorage.removeItem('pkg_batch_install'); } catch (e) {}
+            setBatchInstall(null);
+          } else if (!data.is_installing && (data.completed || data.failed)) {
             if (currentBatchAfterStatus.stage === 'update' || data.failed) {
               try { localStorage.removeItem('pkg_batch_install'); } catch (e) {}
               setBatchInstall(null);
