@@ -959,6 +959,31 @@ static void conn_close(http_conn_t *c) {
     conn_slot_release();
 }
 
+/* Large receive buffer, set before connect(): TCP agrees on the window
+ * scale in the handshake, so enlarging it afterwards may not raise the
+ * window the server uses. One connection then streams at roughly
+ * buffer / round trip; the PS4 topped out near 6 MB/s on a 490 Mbit/s
+ * line. Falls back to smaller sizes the kernel accepts; the result lives
+ * in kernel socket memory, not the payload heap. */
+static void set_rcvbuf(int fd) {
+    static const int sizes[] = { 4 * 1024 * 1024, 2 * 1024 * 1024, 1024 * 1024, 512 * 1024, 256 * 1024 };
+    static int logged = 0;
+    int asked = 0;
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+        if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &sizes[i], sizeof(sizes[i])) == 0) {
+            asked = sizes[i];
+            break;
+        }
+    }
+    if (!logged) {
+        logged = 1;
+        int got = 0;
+        socklen_t sl = sizeof(got);
+        getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &got, &sl);
+        install_log("[HTTP] socket receive buffer: asked %d KiB, got %d KiB", asked / 1024, got / 1024);
+    }
+}
+
 static int tcp_connect(const char *host, int port, char *err, size_t err_sz) {
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%d", port);
@@ -977,6 +1002,7 @@ static int tcp_connect(const char *host, int port, char *err, size_t err_sz) {
     for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
         fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if (fd < 0) { last_errno = errno; continue; }
+        set_rcvbuf(fd);
         int flags = fcntl(fd, F_GETFL, 0);
         fcntl(fd, F_SETFL, flags | O_NONBLOCK);
         int rc = connect(fd, ai->ai_addr, ai->ai_addrlen);
@@ -1013,8 +1039,6 @@ static int tcp_connect(const char *host, int port, char *err, size_t err_sz) {
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-    int rcvbuf = 2 * 1024 * 1024;
-    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
     return fd;
 }
 
