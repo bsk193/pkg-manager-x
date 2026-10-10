@@ -364,6 +364,8 @@ int main(void) {
     int in_dialog = 0;
     if (ensure_server() == 0) {
         apply_preset_source();
+        /* The web view takes a few seconds to show the first frame. */
+        notify("Opening PKG Manager X...");
         in_dialog = show_web_dialog(UI_URL) == 0;
         if (!in_dialog) {
             int rc = sceSystemServiceLaunchWebBrowser(UI_URL, NULL);

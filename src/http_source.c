@@ -10,6 +10,7 @@
 #if !defined(_GNU_SOURCE) && !defined(PS4_BUILD) && !defined(PS5_BUILD)
 #define _GNU_SOURCE /* strcasestr on glibc host test builds */
 #endif
+#include "platform.h"
 #include "http_source.h"
 #include "pkg_parse_reader.h"
 #include "pkg_cache.h"
@@ -55,7 +56,20 @@
 #define HTTP_MAX_LISTING        (8 * 1024 * 1024)
 #define HTTP_MAX_DEPTH          5
 #define HTTP_MAX_DIRS           512
+/* Each connection holds a 64 KiB read buffer plus mbedTLS state (~100+
+ * KiB with TLS). The PS4 payload heap is small: loading the catalog opened
+ * ~17 HTTPS connections at once and every allocation failed ("Out of
+ * memory"), which also killed a running install. So the PS4 build keeps
+ * fewer idle connections and caps the live ones; extra requests wait for a
+ * free slot instead of failing. */
+#if PKGMGR_CONSOLE_PS4
+#define HTTP_POOL_MAX           2
+#define HTTP_MAX_LIVE_CONNS     6
+#else
 #define HTTP_POOL_MAX           6
+#define HTTP_MAX_LIVE_CONNS     48
+#endif
+#define HTTP_CONN_WAIT_SEC      60
 #define HTTP_DEFAULT_CA_PATH    "/data/pkgmgr/cacert.pem" /* optional extra CAs */
 #define HTTP_STATE_SLOTS        8192   /* per-file state (power of two) */
 #define HTTP_READ_RETRY_SEC     120    /* install streams ride out outages this long */
@@ -878,6 +892,60 @@ typedef struct {
 #endif
 } http_conn_t;
 
+static pthread_mutex_t g_conn_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_conn_cond = PTHREAD_COND_INITIALIZER;
+static int g_live_conns = 0;
+
+/* Waits for one of the HTTP_MAX_LIVE_CONNS slots. 0, or -1 on timeout. */
+static int conn_slot_acquire(void) {
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += HTTP_CONN_WAIT_SEC;
+    int rc = 0;
+    pthread_mutex_lock(&g_conn_lock);
+    while (g_live_conns >= HTTP_MAX_LIVE_CONNS && rc == 0) {
+        if (pthread_cond_timedwait(&g_conn_cond, &g_conn_lock, &deadline) == ETIMEDOUT &&
+            g_live_conns >= HTTP_MAX_LIVE_CONNS) {
+            rc = -1;
+        }
+    }
+    if (rc == 0) g_live_conns++;
+    pthread_mutex_unlock(&g_conn_lock);
+    return rc;
+}
+
+/* Diagnostics: the largest block malloc can still hand out (KiB), found by
+ * halving from 256 MiB. Logged when a connection cannot be allocated, so a
+ * PS4 "Out of memory" report shows how much heap was really left. */
+size_t http_source_largest_free_kib(void) {
+    size_t lo = 0, hi = 256u * 1024u; /* KiB */
+    while (hi - lo > 16) {
+        size_t mid = lo + (hi - lo) / 2;
+        void *p = malloc(mid * 1024u);
+        if (p) {
+            free(p);
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+int http_source_live_connections(void) {
+    pthread_mutex_lock(&g_conn_lock);
+    int n = g_live_conns;
+    pthread_mutex_unlock(&g_conn_lock);
+    return n;
+}
+
+static void conn_slot_release(void) {
+    pthread_mutex_lock(&g_conn_lock);
+    if (g_live_conns > 0) g_live_conns--;
+    pthread_cond_signal(&g_conn_cond);
+    pthread_mutex_unlock(&g_conn_lock);
+}
+
 static void conn_close(http_conn_t *c) {
     if (!c) return;
 #ifdef PKGMGR_HAVE_TLS
@@ -890,6 +958,7 @@ static void conn_close(http_conn_t *c) {
 #endif
     if (c->fd >= 0) close(c->fd);
     free(c);
+    conn_slot_release();
 }
 
 static int tcp_connect(const char *host, int port, char *err, size_t err_sz) {
@@ -1040,8 +1109,16 @@ static http_conn_t *conn_open(const http_url_t *u, const http_source_config_t *c
         return NULL;
     }
 #endif
+    if (conn_slot_acquire() != 0) {
+        snprintf(err, err_sz, "Too many open connections; try again");
+        return NULL;
+    }
     http_conn_t *c = (http_conn_t *)calloc(1, sizeof(http_conn_t));
     if (!c) {
+        conn_slot_release();
+        install_log("[HTTP] Out of memory for a %u-byte connection: %d live connections, largest free block %zu KiB",
+                    (unsigned)sizeof(http_conn_t), http_source_live_connections(),
+                    http_source_largest_free_kib());
         snprintf(err, err_sz, "Out of memory");
         return NULL;
     }
@@ -1051,6 +1128,7 @@ static http_conn_t *conn_open(const http_url_t *u, const http_source_config_t *c
     c->fd = tcp_connect(u->host, u->port, err, err_sz);
     if (c->fd < 0) {
         free(c);
+        conn_slot_release();
         return NULL;
     }
 #ifdef PKGMGR_HAVE_TLS
