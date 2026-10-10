@@ -40,7 +40,11 @@ static int mock_find(const char *cid, int sub_type, int *task) {
     return (int)0x80990001;
 }
 static int mock_stop(int task) { stopped[n_stopped++] = task; return 0; }
-static int mock_unregister(int task) { unregistered[n_unregistered++] = task; return 0; }
+static int mock_unregister(int task) {
+    unregistered[n_unregistered++] = task;
+    if (task == found_task) found_task = -1; /* gone from the system */
+    return 0;
+}
 
 int sceKernelLoadStartModule(const char *p, size_t a, const void *v, unsigned int f, void *o, int *r) {
     (void)p; (void)a; (void)v; (void)f; (void)o; (void)r;
@@ -92,11 +96,12 @@ static int start_install(const char *kind, const char *category) {
 }
 
 int main(void) {
-    /* 1. Leftover DLC task from a failed install: found by content ID (DLC
-     *    sub type first), stopped + unregistered, registration retried. */
-    reset(DUP, 0, 0, 34, BGFT_TASK_SUB_TYPE_GAME_AC);
+    /* 1. Leftover DLC task from a failed install: found by content ID before
+     *    registering, stopped + unregistered, then registered once. */
+    reset(0, 0, 0, 34, BGFT_TASK_SUB_TYPE_GAME_AC);
     assert(start_install("dlc", "ac") == 0);
-    assert(reg_calls == 2 && start_calls == 1 && find_calls == 1);
+    /* GAME, GAME_AC (found, then gone), GAME_PATCH, UNKNOWN */
+    assert(reg_calls == 1 && start_calls == 1 && find_calls == 5);
     assert(n_stopped == 1 && stopped[0] == 34);
     assert(n_unregistered == 1 && unregistered[0] == 34);
     platform_install_close(); /* success path: our task stays */
@@ -104,16 +109,17 @@ int main(void) {
     platform_install_shutdown();
 
     /* 2. Leftover registered under another sub type: still found. */
-    reset(DUP, 0, 0, 51, BGFT_TASK_SUB_TYPE_GAME);
+    reset(0, 0, 0, 51, BGFT_TASK_SUB_TYPE_GAME);
     assert(start_install("dlc", "ac") == 0);
-    assert(n_unregistered == 1 && unregistered[0] == 51 && reg_calls == 2);
+    assert(n_unregistered == 1 && unregistered[0] == 51 && reg_calls == 1);
     platform_install_shutdown();
 
     /* 3. Nothing to remove: the original error comes back, named. */
     reset(DUP, 0, 0, -1, -1);
     assert(start_install("base", "gd") == DUP);
-    /* GAME, GAME_AC, GAME_PATCH, UNKNOWN: each sub type looked up once. */
-    assert(reg_calls == 1 && n_unregistered == 0 && find_calls == 4);
+    /* Each sub type looked up once before registering, once after the
+     * duplicate error. */
+    assert(reg_calls == 1 && n_unregistered == 0 && find_calls == 8);
     assert(strcmp(platform_install_strerror(DUP), "BGFT_ERROR_TASK_DUPLICATED") == 0);
     platform_install_shutdown();
 
@@ -157,9 +163,9 @@ int main(void) {
     reset(0, 0, 0, -1, -1);
     assert(start_install("dlc", "ac") == 0 && patch_calls == 0);
     platform_install_shutdown();
-    /* Leftover update task: removed, and the retry uses the patch call too. */
-    reset(DUP, 0, 0, 34, BGFT_TASK_SUB_TYPE_GAME_PATCH);
-    assert(start_install("update", "gp") == 0 && patch_calls == 2);
+    /* Leftover update task: removed first, then the patch call registers. */
+    reset(0, 0, 0, 34, BGFT_TASK_SUB_TYPE_GAME_PATCH);
+    assert(start_install("update", "gp") == 0 && patch_calls == 1);
     assert(n_unregistered == 1 && unregistered[0] == 34);
     platform_install_shutdown();
     /* Firmware without the patch export: updates fall back to RegisterTask. */

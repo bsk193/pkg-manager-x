@@ -1353,6 +1353,27 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
         return ret;
     }
 
+    /* ── GET /api/client-event?msg=... ── UI diagnostics into the log ── */
+    if (strcmp(method, "GET") == 0 && strcmp(url, "/api/client-event") == 0) {
+        const char *msg = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "msg");
+        char clean[160];
+        size_t o = 0;
+        for (const char *c = msg ? msg : ""; *c && o + 1 < sizeof(clean); c++) {
+            unsigned char ch = (unsigned char)*c;
+            clean[o++] = (ch >= 0x20 && ch < 0x7f) ? (char)ch : '?';
+        }
+        clean[o] = ' ';
+        if (o) install_log("[UI] %s", clean);
+        static const char ok_body[] = "{\"success\":true}";
+        struct MHD_Response *resp = MHD_create_response_from_buffer(
+            sizeof(ok_body) - 1, (void *)ok_body, MHD_RESPMEM_PERSISTENT);
+        add_cors_headers(resp);
+        MHD_add_response_header(resp, "Content-Type", "application/json");
+        enum MHD_Result ret = MHD_queue_response(conn, MHD_HTTP_OK, resp);
+        MHD_destroy_response(resp);
+        return ret;
+    }
+
     /* ── GET /api/log/file ── on-disk log, survives restarts ──────── */
     if (strcmp(method, "GET") == 0 && strcmp(url, "/api/log/file") == 0) {
         size_t log_sz = 0;

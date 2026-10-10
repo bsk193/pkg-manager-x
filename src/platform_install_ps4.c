@@ -226,6 +226,28 @@ static int bgft_clear_duplicate(const char *content_id, const char *package_type
     return -1;
 }
 
+/* Before every install: remove every download task already registered for
+ * this content ID (any sub type), e.g. from an earlier failed, canceled or
+ * crashed attempt, so it cannot block or race the new one. Returns how
+ * many were removed. */
+static int bgft_remove_leftovers(const char *content_id) {
+    if (!content_id || !content_id[0] || !g_bgft.find_task || !g_bgft.unregister_task) return 0;
+    const int types[] = { BGFT_TASK_SUB_TYPE_GAME, BGFT_TASK_SUB_TYPE_GAME_AC,
+                          BGFT_TASK_SUB_TYPE_GAME_PATCH, BGFT_TASK_SUB_TYPE_UNKNOWN };
+    int removed = 0;
+    for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
+        /* A few per type at most; stop when nothing (more) is found. */
+        for (int n = 0; n < 4; n++) {
+            int task_id = -1;
+            if (g_bgft.find_task(content_id, types[i], &task_id) != 0 || task_id < 0) break;
+            if (bgft_remove_task(task_id, "leftover found before install") != 0) break;
+            removed++;
+        }
+    }
+    if (removed) install_log("[BGFT] removed %d leftover task(s) for %s", removed, content_id);
+    return removed;
+}
+
 int platform_install_start(const platform_install_request_t *req,
                            char *out_content_id, size_t content_id_size,
                            platform_install_canceled_fn canceled) {
@@ -264,6 +286,8 @@ int platform_install_start(const platform_install_request_t *req,
      * updates on firmware without it) through RegisterTask. */
     int is_patch = strcmp(p.package_type, "PS4DP") == 0 && g_bgft.register_patch;
     bgft_register_fn reg = is_patch ? g_bgft.register_patch : g_bgft.register_task;
+
+    bgft_remove_leftovers(s_cid);
 
     int task_id = -1;
     int ret = reg(&p, &task_id);

@@ -426,17 +426,25 @@ static void test_logging_reduction(void) {
     assert(f_big != NULL);
     char dummy_chunk[1024];
     memset(dummy_chunk, 'A', sizeof(dummy_chunk));
-    for (int i = 0; i < 130; i++) {
+    for (int i = 0; i < 520; i++) {
         fwrite(dummy_chunk, 1, sizeof(dummy_chunk), f_big);
     }
     fclose(f_big);
 
-    assert(stat(test_log, &st) == 0 && st.st_size > 128 * 1024);
+    assert(stat(test_log, &st) == 0 && st.st_size > 512 * 1024);
 
     /* Next error should trigger log rotation */
     install_log("[INSTALLER] Failed to read header: simulated error");
     assert(stat(test_log, &st) == 0);
-    assert(st.st_size < 128 * 1024); /* Truncated/rotated to small size */
+    assert(st.st_size < 512 * 1024); /* Rotated: a fresh small file */
+    /* The previous content is kept as <log>.1 (crash context). */
+    {
+        char old_log[300];
+        snprintf(old_log, sizeof(old_log), "%s.1", test_log);
+        struct stat st_old;
+        assert(stat(old_log, &st_old) == 0 && st_old.st_size > 512 * 1024);
+        unlink(old_log);
+    }
 
     FILE *f_rot = fopen(test_log, "r");
     assert(f_rot != NULL);

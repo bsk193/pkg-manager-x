@@ -70,6 +70,11 @@ Pressing the tile:
    Browser app, this opens no new browser window on each launch. If the dialog
    cannot open, the tile opens the Browser app instead and closes itself.
 
+**Don't use rest mode while PKG Manager X is installing.** The PS4 downloads
+every byte through the payload on the console (`127.0.0.1`); with GoldHEN's
+rest mode support on, suspending it mid-transfer has crashed the console
+(kernel panic). Let installs finish first.
+
 The tile and the browser are only the UI: closing either never stops the
 PKG Manager X service, which runs until reboot or rest mode. If the same
 version is already running, a newly sent payload (tile, or manual) exits and
