@@ -193,6 +193,7 @@ export function useHistoryNavigation(props) {
     installerStatus,
     isBatchActive,
     directInstallScreenDismissed,
+    installScreenHidden = false,
     showDonateModal,
     handleCloseDonateModal,
     showClearCacheModal,
@@ -263,18 +264,21 @@ export function useHistoryNavigation(props) {
   const activeDirectInstallScreenDismissed = Boolean(
     (installerStatus?.is_direct_storage || installerStatus?.progress < 0) && directInstallScreenDismissed
   );
-  isInstallingRef.current = !activeDirectInstallScreenDismissed && Boolean(
+  // Only while the full install screen is showing: with "Continue in
+  // Background" (and the install queue) something is often installing while
+  // the user browses, and Back must then navigate, not close the page.
+  isInstallingRef.current = !activeDirectInstallScreenDismissed && !installScreenHidden && Boolean(
     installerStatus?.is_installing ||
     installerStatus?.waiting_for_disc ||
     isBatchActive
   );
   useEffect(() => {
-    isInstallingRef.current = !activeDirectInstallScreenDismissed && Boolean(
+    isInstallingRef.current = !activeDirectInstallScreenDismissed && !installScreenHidden && Boolean(
       installerStatus?.is_installing ||
       installerStatus?.waiting_for_disc ||
       isBatchActive
     );
-  }, [installerStatus?.is_installing, installerStatus?.waiting_for_disc, isBatchActive, activeDirectInstallScreenDismissed]);
+  }, [installerStatus?.is_installing, installerStatus?.waiting_for_disc, isBatchActive, activeDirectInstallScreenDismissed, installScreenHidden]);
 
   const modalStateRef = useRef({});
   modalStateRef.current = {

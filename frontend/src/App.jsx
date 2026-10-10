@@ -678,6 +678,7 @@ export default function App() {
     installerStatus,
     isBatchActive,
     directInstallScreenDismissed,
+    installScreenHidden,
     showDonateModal,
     handleCloseDonateModal,
     showClearCacheModal,
