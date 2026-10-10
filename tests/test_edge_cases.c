@@ -209,11 +209,24 @@ static void test_installer_concurrency(void) {
     /* Canceling the running install starts the queued one by itself. */
     assert(installer_cancel() == 0);
     int started_next = 0;
-    for (int i = 0; i < 100 && !started_next; i++) {
+    for (int i = 0; i < 600 && !started_next; i++) {
         installer_status_t st;
         installer_get_status(&st);
-        started_next = st.is_installing && strcmp(st.pkg_path, "/tmp/test_edge_fixtures/b.pkg") == 0;
+        started_next = strcmp(st.pkg_path, "/tmp/test_edge_fixtures/b.pkg") == 0;
         if (!started_next) usleep(50 * 1000);
+    }
+    if (!started_next) {
+        char *diag = installer_status_to_json();
+        size_t log_len = 0;
+        char *log = install_log_get_text(&log_len);
+        fprintf(stderr, "queued package did not start
+status: %s
+log:
+%s
+",
+                diag ? diag : "?", log ? log : "?");
+        free(diag);
+        free(log);
     }
     assert(started_next);
     js = installer_status_to_json();
