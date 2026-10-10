@@ -2375,7 +2375,75 @@ static int session_refresh(http_file_session_t *s, unsigned seen_generation) {
     return rc;
 }
 
+/* Install-stream speed diagnostics: every 30 s, how many bytes came from the
+ * server, in how many range requests, how long the server took per request
+ * and how many reads ran in parallel. Tells server/network latency apart
+ * from the console asking slowly. */
+static pthread_mutex_t g_speed_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct {
+    time_t window_start;
+    uint64_t bytes;
+    unsigned requests, failures, inflight, max_inflight;
+    uint64_t total_ms, max_ms;
+} g_speed;
+
+static uint64_t now_ms(void) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint64_t)tv.tv_sec * 1000u + (uint64_t)tv.tv_usec / 1000u;
+}
+
+static void speed_begin(void) {
+    pthread_mutex_lock(&g_speed_lock);
+    if (++g_speed.inflight > g_speed.max_inflight) g_speed.max_inflight = g_speed.inflight;
+    pthread_mutex_unlock(&g_speed_lock);
+}
+
+static void speed_end(ssize_t got, uint64_t ms) {
+    pthread_mutex_lock(&g_speed_lock);
+    if (g_speed.inflight) g_speed.inflight--;
+    time_t now = time(NULL);
+    if (g_speed.window_start == 0) g_speed.window_start = now;
+    if (got > 0) {
+        g_speed.bytes += (uint64_t)got;
+        g_speed.requests++;
+        g_speed.total_ms += ms;
+        if (ms > g_speed.max_ms) g_speed.max_ms = ms;
+    } else {
+        g_speed.failures++;
+    }
+    long secs = (long)(now - g_speed.window_start);
+    if (secs >= 30) {
+        unsigned req = g_speed.requests ? g_speed.requests : 1;
+        install_log("[SPEED] %lds: %llu KiB in %u requests (avg %llu KiB), server avg %llu ms max %llu ms, "
+                    "%llu KiB/s, up to %u parallel, %u failed",
+                    secs, (unsigned long long)(g_speed.bytes / 1024), g_speed.requests,
+                    (unsigned long long)(g_speed.bytes / 1024 / req),
+                    (unsigned long long)(g_speed.total_ms / req), (unsigned long long)g_speed.max_ms,
+                    (unsigned long long)(g_speed.bytes / 1024 / (uint64_t)secs),
+                    g_speed.max_inflight, g_speed.failures);
+        unsigned keep = g_speed.inflight;
+        memset(&g_speed, 0, sizeof(g_speed));
+        g_speed.window_start = now;
+        g_speed.inflight = keep;
+        g_speed.max_inflight = keep;
+    }
+    pthread_mutex_unlock(&g_speed_lock);
+}
+
+static ssize_t session_read_direct(http_file_session_t *s, void *buf, size_t count, uint64_t offset);
+
 ssize_t http_file_session_read(http_file_session_t *s, void *buf, size_t count, uint64_t offset) {
+    if (!s || !buf) return -1;
+    if (!s->resilient) return session_read_direct(s, buf, count, offset);
+    speed_begin();
+    uint64_t t0 = now_ms();
+    ssize_t got = session_read_direct(s, buf, count, offset);
+    speed_end(got, now_ms() - t0);
+    return got;
+}
+
+static ssize_t session_read_direct(http_file_session_t *s, void *buf, size_t count, uint64_t offset) {
     if (!s || !buf) return -1;
     if (count == 0 || offset >= s->size) return 0;
     if (count > s->size - offset) count = (size_t)(s->size - offset);
