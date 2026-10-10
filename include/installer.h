@@ -57,6 +57,8 @@ int installer_cancel(void);
 /* Another package is installing: this one was added to the install queue and
  * starts automatically when the queue reaches it. */
 #define INSTALLER_QUEUED      (-17)
+/* An update / DLC whose base game just failed and is not installed. */
+#define INSTALLER_SKIPPED     (-18)
 /* Drop a waiting package from the queue (0, or -1 if it is not queued). */
 int installer_queue_remove(const char *pkg_path);
 const char *installer_refusal_reason(void);

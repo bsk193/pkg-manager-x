@@ -74,6 +74,11 @@ typedef struct {
 } install_queue_entry_t;
 static install_queue_entry_t g_queue[INSTALL_QUEUE_MAX];
 static int g_queue_len = 0;
+/* Title ID whose base package last failed or was canceled. Its updates and
+ * DLC cannot install without the base, so they are skipped (queue, batch
+ * handoff) instead of downloading for nothing. Cleared when that base is
+ * started again. */
+static char g_failed_base_title[32];
 
 static int installer_start_internal(const char *pkg_path, const char *pending_pkg_path, int is_queued_handoff);
 #define INSTALLER_HANDOFF_DISCARDED (-1000)
@@ -122,6 +127,7 @@ static void installer_start_next_queued(void) {
             pthread_mutex_unlock(&g_installer_mutex);
             return;
         }
+        if (res == INSTALLER_SKIPPED) continue; /* already logged and notified */
         install_log("[QUEUE] Queued package could not start (code %d), skipping: %s", res, next.path);
         ps5_notify("Queued install could not start (code %d)", res);
     }
@@ -2255,7 +2261,7 @@ mock_install_done:
     int has_next = 0;
     pthread_mutex_lock(&g_installer_mutex);
     if (g_pending_pkg_path[0] != '\0' && g_monitor_running && !g_cancel_stream &&
-        !g_detach_direct_storage) {
+        !g_detach_direct_storage && !g_status.failed) {
         strncpy(next_pkg_path, g_pending_pkg_path, sizeof(next_pkg_path) - 1);
         next_pkg_path[sizeof(next_pkg_path) - 1] = '\0';
         g_pending_pkg_path[0] = '\0';
@@ -2310,6 +2316,14 @@ mock_install_done:
  * queue then waits for it. */
 static void *stream_installer_worker(void *arg) {
     void *ret = stream_installer_worker_body(arg);
+    pthread_mutex_lock(&g_installer_mutex);
+    if (!g_status.is_installing && g_status.failed && strcasecmp(g_status.pkg_kind, "base") == 0 &&
+        g_status.title_id[0]) {
+        snprintf(g_failed_base_title, sizeof(g_failed_base_title), "%s", g_status.title_id);
+        install_log("[QUEUE] Base of %s did not install; its queued updates and DLC will be skipped",
+                    g_failed_base_title);
+    }
+    pthread_mutex_unlock(&g_installer_mutex);
     installer_start_next_queued();
     return ret;
 }
@@ -2465,6 +2479,24 @@ static int installer_start_internal(const char *pkg_path, const char *pending_pk
      * PS4-on-PS5 switch): refuse before streaming anything, even when the
      * request bypasses the UI's disabled button. */
     if (installer_check_platform(&detail, pkg_path_copy) != 0) return INSTALLER_REFUSED;
+
+    /* The base of this title just failed and is still not installed: its
+     * update / DLC cannot install, so don't download it. A new base attempt
+     * clears the mark. */
+    {
+        int is_base = strcasecmp(detail.pkg_type_str, "base") == 0;
+        pthread_mutex_lock(&g_installer_mutex);
+        int base_failed = g_failed_base_title[0] && strcmp(g_failed_base_title, detail.title_id) == 0;
+        if (base_failed && is_base) g_failed_base_title[0] = '\0';
+        pthread_mutex_unlock(&g_installer_mutex);
+        if (base_failed && !is_base && !app_info_check_installed(detail.title_id, NULL, 0)) {
+            install_log("[INSTALLER] Skipping %s (%s): the base game did not install", pkg_path_copy,
+                        detail.pkg_type_str);
+            ps5_notify("Skipped %s: the base game did not install",
+                       detail.title_name[0] ? detail.title_name : detail.title_id);
+            return INSTALLER_SKIPPED;
+        }
+    }
 
     /* Multi-part packages are only supported on local drives (USB / optical discs) */
     if ((detail.is_multipart || strstr(pkg_path_copy, ".part") != NULL || strstr(pkg_path_copy, ".pkg.part") != NULL) &&
