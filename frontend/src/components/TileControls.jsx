@@ -16,42 +16,7 @@ function closeTile() {
   try { window.close(); } catch (e) {}
 }
 
-// Diagnostics: what the web view reports for the controller buttons (the
-// first 40 key events and any gamepad button presses go to the server log).
-function report(msg) {
-  try { fetch(`/api/client-event?msg=${encodeURIComponent(msg)}`).catch(() => {}); } catch (e) {}
-}
-
-function useButtonDiagnostics() {
-  useEffect(() => {
-    let sent = 0;
-    const onKey = (e) => {
-      if (sent++ >= 40) return;
-      report(`${e.type} key=${e.key} code=${e.code} keyCode=${e.keyCode} which=${e.which}`);
-    };
-    window.addEventListener('keydown', onKey, true);
-    window.addEventListener('keyup', onKey, true);
-    report(`tile web view: ${navigator.userAgent} gamepadApi=${typeof navigator.getGamepads === 'function'}`);
-    let last = '';
-    const timer = setInterval(() => {
-      if (typeof navigator.getGamepads !== 'function') return;
-      const pads = Array.from(navigator.getGamepads() || []).filter(Boolean);
-      const pressed = pads.map((p) => `${p.index}:[${p.buttons.map((b, i) => (b.pressed ? i : null)).filter((i) => i !== null).join(',')}]`).join(' ');
-      if (pressed !== last) {
-        last = pressed;
-        if (pressed.replace(/\d+:\[\]/g, '').trim()) report(`gamepad ${pressed}`);
-      }
-    }, 100);
-    return () => {
-      window.removeEventListener('keydown', onKey, true);
-      window.removeEventListener('keyup', onKey, true);
-      clearInterval(timer);
-    };
-  }, []);
-}
-
 export default function TileControls() {
-  useButtonDiagnostics();
   useEffect(() => {
     // The web view's cancel button arrives as Escape (keyCode 27, measured
     // on 13.52); confirm never reaches the page. The tile's param.sfo makes

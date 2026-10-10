@@ -282,3 +282,16 @@ input:focus-visible,
 }
 
 
+
+/* PS4 tile web view (?app=ps4tile, html.ps4-lite): the system web view is
+   much slower than the Browser app and the cursor lagged. Drop the effects
+   that repaint as the cursor moves: blurred translucent panels, transitions
+   and hover animations. Loading spinners keep animating. */
+html.ps4-lite *,
+html.ps4-lite *::before,
+html.ps4-lite *::after {
+  transition: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: none !important;
+}
