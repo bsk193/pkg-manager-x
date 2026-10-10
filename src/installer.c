@@ -29,6 +29,7 @@
 #include <pthread.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <fcntl.h>
 #include <dirent.h>
 #include <stdbool.h>
 #include <errno.h>
@@ -1127,6 +1128,229 @@ static int installer_check_platform(const pkg_detail_t *detail, const char *what
     ps5_notify("%s", reason);
     return -1;
 }
+
+#if PKGMGR_CONSOLE_PS4
+/* PS4, HTTP sources: download the package to the console's drive, install
+ * that file through BGFT's storage route and delete it, as PS4-Store / SSPI
+ * / FPKGi's "download first" mode do. Streaming the URL to BGFT rejected
+ * some fake PKGs with 0x80990004 at a package section end (RE2: the same
+ * byte every time, with two different read paths) after half the download,
+ * so HTTP installs on PS4 always go this way. */
+#define PS4_LOCAL_DL_DIR      "/data/pkgmgr/dl"
+#define PS4_LOCAL_DL_BGFT_DIR "/user/data/pkgmgr/dl" /* same folder, as BGFT addresses it */
+#define PS4_LOCAL_DL_CHUNK    (64 * 1024)
+#define PS4_LOCAL_STALL_SEC   (30 * 60)
+
+static void local_status(const char *status, const char *fmt, ...) {
+    va_list ap;
+    pthread_mutex_lock(&g_installer_mutex);
+    snprintf(g_status.status_str, sizeof(g_status.status_str), "%s", status);
+    va_start(ap, fmt);
+    vsnprintf(g_status.prompt_message, sizeof(g_status.prompt_message), fmt, ap);
+    va_end(ap);
+    pthread_mutex_unlock(&g_installer_mutex);
+}
+
+static void local_progress(uint64_t done, uint64_t total) {
+    pthread_mutex_lock(&g_installer_mutex);
+    g_status.downloaded_bytes = done;
+    g_status.total_bytes = total;
+    g_status.progress_percent = total ? (float)((double)done * 100.0 / (double)total) : 0.0f;
+    pthread_mutex_unlock(&g_installer_mutex);
+}
+
+static int local_stop_requested(void) {
+    return g_cancel_stream || !g_monitor_running;
+}
+
+/* Runs in the install worker for the package installer_start_internal just
+ * committed. Returns 0 when it ended up installed; sets g_status either way. */
+static int ps4_local_install(const char *src_url) {
+    char title_id[32], title_name[256], content_id[64], kind[16], version[32];
+    uint64_t total;
+    pthread_mutex_lock(&g_installer_mutex);
+    snprintf(title_id, sizeof(title_id), "%s", g_status.title_id);
+    snprintf(title_name, sizeof(title_name), "%s", g_status.title_name[0] ? g_status.title_name : "Package");
+    snprintf(content_id, sizeof(content_id), "%s", g_status.content_id);
+    snprintf(kind, sizeof(kind), "%s", g_status.pkg_kind);
+    snprintf(version, sizeof(version), "%s", g_status.pkg_version);
+    total = g_status.total_bytes;
+    g_status.is_installing = 1;
+    g_status.failed = 0;
+    g_status.completed = 0;
+    g_status.error_code = 0;
+    g_status.downloaded_bytes = 0;
+    g_status.progress_percent = 0.0f;
+    pthread_mutex_unlock(&g_installer_mutex);
+
+    char local_path[384], bgft_path[384];
+    snprintf(local_path, sizeof(local_path), PS4_LOCAL_DL_DIR "/%s-%s.pkg", title_id, kind);
+    snprintf(bgft_path, sizeof(bgft_path), PS4_LOCAL_DL_BGFT_DIR "/%s-%s.pkg", title_id, kind);
+    const char *fail = NULL;
+    int fail_code = -1;
+    int fd = -1;
+    http_file_session_t *hs = NULL;
+    unsigned char *buf = NULL;
+    int bgft_started = 0;
+
+    install_log("[LOCAL] downloading %s to %s, then installing it from there", title_name, local_path);
+    local_status("downloading", "Downloading %s to the console...", title_name);
+
+    /* Room for the copy and the installed game, plus a margin. */
+    struct statvfs vs;
+    if (total && statvfs("/data", &vs) == 0) {
+        uint64_t avail = (uint64_t)vs.f_bavail * (uint64_t)vs.f_frsize;
+        uint64_t need = total * 2 + (512ull << 20);
+        if (avail < need) {
+            install_log("[LOCAL] not enough space: %llu MiB free, %llu MiB needed",
+                        (unsigned long long)(avail >> 20), (unsigned long long)(need >> 20));
+            fail = "Not enough free space to download the package to the console first";
+            goto done;
+        }
+    }
+
+    mkdir_recursive(PS4_LOCAL_DL_DIR);
+    cleanup_tmp_dir(PS4_LOCAL_DL_DIR);
+    fd = open(local_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    hs = http_file_session_open(src_url);
+    buf = (unsigned char *)malloc(PS4_LOCAL_DL_CHUNK);
+    if (fd < 0 || !hs || !buf) {
+        install_log("[LOCAL] setup failed: file=%d session=%p buffer=%p (%s)", fd, (void *)hs, (void *)buf,
+                    strerror(errno));
+        fail = "Could not start the download to the console";
+        goto done;
+    }
+    http_file_session_set_resilient(hs, 1);
+    if (!total) total = http_file_session_get_size(hs);
+
+    uint64_t off = 0;
+    time_t last_report = 0;
+    while (off < total) {
+        if (local_stop_requested()) { fail = "Installation was canceled"; goto done; }
+        size_t want = total - off < PS4_LOCAL_DL_CHUNK ? (size_t)(total - off) : PS4_LOCAL_DL_CHUNK;
+        ssize_t n = http_file_session_read(hs, buf, want, off);
+        if (n <= 0) {
+            install_log("[LOCAL] download failed at %llu / %llu", (unsigned long long)off, (unsigned long long)total);
+            fail = "Download to the console failed";
+            goto done;
+        }
+        for (ssize_t w = 0; w < n;) {
+            ssize_t k = write(fd, buf + w, (size_t)(n - w));
+            if (k <= 0) {
+                install_log("[LOCAL] write failed at %llu: %s", (unsigned long long)(off + (uint64_t)w), strerror(errno));
+                fail = "Writing the package to the console's drive failed";
+                goto done;
+            }
+            w += k;
+        }
+        off += (uint64_t)n;
+        time_t now = time(NULL);
+        if (now != last_report) {
+            last_report = now;
+            local_progress(off, total);
+        }
+    }
+    local_progress(total, total);
+    close(fd);
+    fd = -1;
+    http_file_session_close(hs);
+    hs = NULL;
+    free(buf);
+    buf = NULL;
+    install_log("[LOCAL] downloaded %llu bytes; installing from the console's drive", (unsigned long long)total);
+
+    local_status("installing", "Installing %s from the console's drive...", title_name);
+    local_progress(0, total);
+    platform_install_request_t r;
+    memset(&r, 0, sizeof(r));
+    r.uri = bgft_path;
+    r.display_name = title_name;
+    r.title_name = title_name;
+    r.content_id = content_id;
+    r.pkg_kind = kind;
+    r.category = g_pkg_category;
+    r.package_size = total;
+    char cid[64] = "";
+    int ret = platform_install_start_local(&r, bgft_path, cid, sizeof(cid));
+    if (ret != 0) {
+        fail = "The console could not install the downloaded package";
+        fail_code = ret;
+        goto done;
+    }
+    bgft_started = 1;
+
+    uint64_t last_done = 0;
+    time_t last_change = time(NULL);
+    for (;;) {
+        sleep(1);
+        if (local_stop_requested()) { fail = "Installation was canceled"; goto done; }
+        platform_install_progress_t pr;
+        memset(&pr, 0, sizeof(pr));
+        int st = platform_install_poll(cid, &pr);
+        if (st == 0 && (pr.error_code != 0 || strcmp(pr.status, "error") == 0)) {
+            const char *name = platform_install_strerror(pr.error_code);
+            install_log("[LOCAL] install from the console's drive failed: 0x%08X (%s)", (unsigned)pr.error_code,
+                        name ? name : "unknown");
+            fail = "The console rejected the package";
+            fail_code = pr.error_code ? pr.error_code : -1;
+            goto done;
+        }
+        if (st == 0 && pr.downloaded_size != last_done) {
+            last_done = pr.downloaded_size;
+            last_change = time(NULL);
+            local_progress(pr.downloaded_size, pr.total_size ? pr.total_size : total);
+        }
+        int copied = st == 0 && pr.total_size > 0 && pr.downloaded_size >= pr.total_size;
+        if ((copied || st != 0) && check_package_verified_installed(title_id, kind, content_id, version)) {
+            break; /* installed */
+        }
+        if (time(NULL) - last_change > PS4_LOCAL_STALL_SEC) {
+            install_log("[LOCAL] no progress for %d minutes; giving up", PS4_LOCAL_STALL_SEC / 60);
+            fail = "Installing from the console's drive stopped making progress";
+            goto done;
+        }
+    }
+    platform_install_close();
+    bgft_started = 0;
+
+done:
+    if (fd >= 0) close(fd);
+    if (hs) http_file_session_close(hs);
+    free(buf);
+    if (bgft_started) platform_install_discard();
+    unlink(local_path);
+
+    pthread_mutex_lock(&g_installer_mutex);
+    int canceled = g_cancel_stream;
+    if (fail) {
+        g_status.is_installing = 0;
+        g_status.failed = 1;
+        g_status.completed = 0;
+        if (!canceled) {
+            g_status.error_code = fail_code;
+            snprintf(g_status.status_str, sizeof(g_status.status_str), "error");
+            snprintf(g_status.prompt_message, sizeof(g_status.prompt_message), "%s", fail);
+        }
+    } else {
+        g_status.is_installing = 0;
+        g_status.failed = 0;
+        g_status.completed = 1;
+        g_status.downloaded_bytes = g_status.total_bytes;
+        g_status.progress_percent = 100.0f;
+        snprintf(g_status.status_str, sizeof(g_status.status_str), "playable");
+        snprintf(g_status.prompt_message, sizeof(g_status.prompt_message), "%s is ready to play!", title_name);
+    }
+    pthread_mutex_unlock(&g_installer_mutex);
+    if (fail) {
+        install_log("[LOCAL] %s: %s (0x%08X)", title_name, fail, (unsigned)fail_code);
+        if (!canceled) ps5_notify("%s: %s", title_name, fail);
+        return -1;
+    }
+    install_log("[LOCAL] %s installed from the console's drive; download removed", title_name);
+    if (g_pending_pkg_path[0] == '\0') installer_notify_ready(title_id, title_name);
+    return 0;
+}
+#endif
 
 static void *stream_installer_worker_body(void *arg) {
     (void)arg;
@@ -2254,6 +2478,7 @@ static void *stream_installer_worker_body(void *arg) {
 mock_install_done:
 #endif
 
+
     /* Capture a queued second package before releasing the first package's
      * stream. The next worker must only start after the first worker has
      * completely stopped using the stream server. */
@@ -2314,8 +2539,55 @@ mock_install_done:
 /* Every way out of an install (done, failed, canceled) moves the queue on.
  * A batch update handed off by the body is already installing, so the
  * queue then waits for it. */
+#if PKGMGR_CONSOLE_PS4
+/* Download-first install of a PS4 HTTP package, plus the base -> update
+ * handoff the streaming worker would otherwise do. */
+static void ps4_local_install_worker(const char *pkg_path) {
+    int ok = ps4_local_install(pkg_path) == 0;
+    char next[512] = "";
+    pthread_mutex_lock(&g_installer_mutex);
+    if (ok && g_pending_pkg_path[0] != '\0' && g_monitor_running && !g_cancel_stream &&
+        !g_detach_direct_storage) {
+        snprintf(next, sizeof(next), "%s", g_pending_pkg_path);
+        g_status.is_installing = 1;
+        g_status.completed = 0;
+        snprintf(g_status.status_str, sizeof(g_status.status_str), "installing");
+        snprintf(g_status.prompt_message, sizeof(g_status.prompt_message), "Base package installed. Starting update...");
+    }
+    g_pending_pkg_path[0] = '\0';
+    pthread_mutex_unlock(&g_installer_mutex);
+    if (!next[0]) return;
+    install_log("[INSTALLER] Base completed; starting queued update: %s", next);
+    int res = installer_start_internal(next, NULL, 1 /* is_queued_handoff */);
+    if (res != 0 && res != INSTALLER_HANDOFF_DISCARDED) {
+        pthread_mutex_lock(&g_installer_mutex);
+        g_status.is_installing = 0;
+        g_status.failed = 1;
+        g_status.error_code = res;
+        snprintf(g_status.status_str, sizeof(g_status.status_str), "error");
+        snprintf(g_status.prompt_message, sizeof(g_status.prompt_message),
+                 "Failed to start queued update (code %d)", res);
+        pthread_mutex_unlock(&g_installer_mutex);
+        install_log("[INSTALLER] Failed to start queued update (code %d)", res);
+        ps5_notify("Failed to start queued update");
+    }
+}
+#endif
+
 static void *stream_installer_worker(void *arg) {
-    void *ret = stream_installer_worker_body(arg);
+    void *ret = NULL;
+#if PKGMGR_CONSOLE_PS4
+    char pkg_path[512];
+    int multipart;
+    pthread_mutex_lock(&g_installer_mutex);
+    snprintf(pkg_path, sizeof(pkg_path), "%s", g_status.pkg_path);
+    multipart = g_status.is_multipart;
+    pthread_mutex_unlock(&g_installer_mutex);
+    if (!multipart && pkg_parser_is_http_path(pkg_path)) {
+        ps4_local_install_worker(pkg_path);
+    } else
+#endif
+    ret = stream_installer_worker_body(arg);
     pthread_mutex_lock(&g_installer_mutex);
     if (!g_status.is_installing && g_status.failed && strcasecmp(g_status.pkg_kind, "base") == 0 &&
         g_status.title_id[0]) {
@@ -2348,6 +2620,9 @@ int installer_init(const char *server_url) {
         tmp_dir = PKG_DEFAULT_TMP_DIR;
     }
     cleanup_tmp_dir(tmp_dir);
+#if PKGMGR_CONSOLE_PS4
+    cleanup_tmp_dir(PS4_LOCAL_DL_DIR); /* partial download-first copies */
+#endif
     pthread_mutex_unlock(&g_installer_mutex);
 
 #if PKGMGR_ON_CONSOLE

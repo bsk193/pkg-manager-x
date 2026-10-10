@@ -70,6 +70,14 @@ Pressing the tile:
    Browser app, this opens no new browser window on each launch. If the dialog
    cannot open, the tile opens the Browser app instead and closes itself.
 
+**HTTP sources install in two steps on PS4:** the package is first downloaded
+to the console (`/data/pkgmgr/dl`), then installed from there and the copy is
+deleted. Streaming the URL straight to the PS4's downloader rejected some fake
+PKGs halfway (`0x80990004` at a package section end); installing from the
+console's drive is what PS4-Store, SSPI and FPKGi's download mode do. It needs
+free space for the copy plus the installed game while it runs. Local, USB and
+SMB packages install directly as before.
+
 **Don't use rest mode while PKG Manager X is installing.** The PS4 downloads
 every byte through the payload on the console (`127.0.0.1`); with GoldHEN's
 rest mode support on, suspending it mid-transfer has crashed the console

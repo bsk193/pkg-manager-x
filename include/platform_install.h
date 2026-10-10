@@ -61,6 +61,12 @@ int platform_install_start(const platform_install_request_t *req,
                            char *out_content_id, size_t content_id_size,
                            platform_install_canceled_fn canceled);
 
+/* PS4: installs a package file that is already on the console's drive
+ * (local_path) through BGFT's storage route. Same contract as
+ * platform_install_start; then poll/close/discard as usual. PS5: -1. */
+int platform_install_start_local(const platform_install_request_t *req, const char *local_path,
+                                 char *out_content_id, size_t content_id_size);
+
 /* Queries system progress for the running install (content_id may be ""). */
 int platform_install_poll(const char *content_id, platform_install_progress_t *out);
 
