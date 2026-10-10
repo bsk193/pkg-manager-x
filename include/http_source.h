@@ -135,6 +135,8 @@ void http_file_session_close(http_file_session_t *s);
 /* Diagnostics: heap left in 64 KiB blocks (capped at 32 MiB), and open
  * HTTP connections. */
 size_t http_source_heap_headroom_kib(void);
+/* Diagnostics: logs this console's AES-GCM / ChaCha20 speed once. */
+void http_source_log_crypto_speed(void);
 int http_source_live_connections(void);
 
 #ifdef __cplusplus

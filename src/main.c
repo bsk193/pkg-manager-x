@@ -324,6 +324,7 @@ int main(int argc, char **argv) {
         printf("[PKG Manager] Web UI: http://%s:%d/\n", current_ip, port);
         install_log("[PKG Manager] Found %d package(s); web UI http://%s:%d/", found_count, current_ip, port);
         install_log("[MEM] heap headroom at start: %zu KiB", http_source_heap_headroom_kib());
+        http_source_log_crypto_speed();
     }
 #else
     if (strcmp(current_ip, "unknown") != 0) {

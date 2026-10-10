@@ -47,6 +47,8 @@
 #include <mbedtls/sha256.h>
 #include <mbedtls/ssl.h>
 #include <mbedtls/x509_crt.h>
+#include <mbedtls/gcm.h>
+#include <mbedtls/chachapoly.h>
 #endif
 
 #define HTTP_CONNECT_TIMEOUT_MS 5000
@@ -2686,4 +2688,60 @@ void http_file_session_close(http_file_session_t *s) {
     pthread_mutex_destroy(&s->lock);
     pthread_mutex_destroy(&s->st_lock);
     free(s);
+}
+
+
+/* Diagnostics: how fast this console decrypts the two TLS ciphers, and
+ * whether mbedTLS sees the CPU's AES / carry-less multiply instructions.
+ * Logged once at startup; ~4 MiB per cipher in 64 KiB pieces. */
+#ifdef PKGMGR_HAVE_TLS
+/* Weak: absent when this mbedTLS build has no AES-NI code at all. */
+extern int mbedtls_aesni_has_support(unsigned int what) __attribute__((weak));
+#define BENCH_AESNI_AES   0x02000000u
+#define BENCH_AESNI_CLMUL 0x00000002u
+#endif
+
+void http_source_log_crypto_speed(void) {
+#ifdef PKGMGR_HAVE_TLS
+    enum { PIECE = 64 * 1024, PIECES = 64 };
+    unsigned char *buf = (unsigned char *)malloc(PIECE);
+    if (!buf) {
+        install_log("[CRYPTO] benchmark skipped: no memory");
+        return;
+    }
+    memset(buf, 0x5a, PIECE);
+    unsigned char key[32] = { 1 }, iv[12] = { 2 }, tag[16];
+    uint64_t gcm_us = 0, cha_us = 0;
+
+    mbedtls_gcm_context gcm;
+    mbedtls_gcm_init(&gcm);
+    if (mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, key, 128) == 0) {
+        uint64_t t0 = mono_us();
+        for (int i = 0; i < PIECES; i++) {
+            mbedtls_gcm_crypt_and_tag(&gcm, MBEDTLS_GCM_DECRYPT, PIECE, iv, sizeof(iv), NULL, 0,
+                                      buf, buf, sizeof(tag), tag);
+        }
+        gcm_us = mono_us() - t0;
+    }
+    mbedtls_gcm_free(&gcm);
+
+    mbedtls_chachapoly_context cp;
+    mbedtls_chachapoly_init(&cp);
+    if (mbedtls_chachapoly_setkey(&cp, key) == 0) {
+        uint64_t t0 = mono_us();
+        for (int i = 0; i < PIECES; i++) {
+            mbedtls_chachapoly_encrypt_and_tag(&cp, PIECE, iv, NULL, 0, buf, buf, tag);
+        }
+        cha_us = mono_us() - t0;
+    }
+    mbedtls_chachapoly_free(&cp);
+    free(buf);
+
+    uint64_t mib_x1000 = (uint64_t)PIECE * PIECES * 1000u / (1024u * 1024u);
+    install_log("[CRYPTO] AES-NI aes=%d clmul=%d; AES-128-GCM %llu MiB/s, ChaCha20-Poly1305 %llu MiB/s",
+                mbedtls_aesni_has_support ? (mbedtls_aesni_has_support(BENCH_AESNI_AES) ? 1 : 0) : -1,
+                mbedtls_aesni_has_support ? (mbedtls_aesni_has_support(BENCH_AESNI_CLMUL) ? 1 : 0) : -1,
+                (unsigned long long)(gcm_us ? mib_x1000 * 1000u / gcm_us : 0),
+                (unsigned long long)(cha_us ? mib_x1000 * 1000u / cha_us : 0));
+#endif
 }
