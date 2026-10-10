@@ -51,7 +51,6 @@
 
 #define HTTP_CONNECT_TIMEOUT_MS 5000
 #define HTTP_IO_TIMEOUT_SEC     30
-#define HTTP_RBUF_SIZE          (64 * 1024)
 #define HTTP_MAX_REDIRECTS      5
 #define HTTP_MAX_LISTING        (8 * 1024 * 1024)
 #define HTTP_MAX_DEPTH          5
@@ -63,9 +62,12 @@
  * fewer idle connections and caps the live ones; extra requests wait for a
  * free slot instead of failing. */
 #if PKGMGR_CONSOLE_PS4
+/* Measured on a PS4 (GoldHEN 13.52): ~1.8 MiB of heap left at start. */
+#define HTTP_RBUF_SIZE          (16 * 1024)
 #define HTTP_POOL_MAX           2
-#define HTTP_MAX_LIVE_CONNS     6
+#define HTTP_MAX_LIVE_CONNS     4
 #else
+#define HTTP_RBUF_SIZE          (64 * 1024)
 #define HTTP_POOL_MAX           6
 #define HTTP_MAX_LIVE_CONNS     48
 #endif

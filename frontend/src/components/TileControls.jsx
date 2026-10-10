@@ -3,7 +3,7 @@ import React, { useEffect } from 'react';
 // The PS4 tile shows the UI in the system web view (opened with ?app=ps4tile).
 // Its buttons do not behave like the Browser app's, so offer an explicit way
 // out: window.close() ends the web view and the tile returns to the home
-// screen. A Back/Escape key goes back a screen, or closes on the first one.
+// screen. X (Escape in the web view) confirms like Circle.
 export function isPs4Tile() {
   try {
     return new URLSearchParams(window.location.search).get('app') === 'ps4tile';
@@ -53,13 +53,15 @@ function useButtonDiagnostics() {
 export default function TileControls() {
   useButtonDiagnostics();
   useEffect(() => {
+    // The web view uses the Japanese layout: Circle confirms by itself (no
+    // key event reaches the page) and X arrives as Escape (keyCode 27,
+    // measured on 13.52). Make X confirm too: click the focused element.
     const onKey = (e) => {
-      const back = e.key === 'Escape' || e.key === 'GoBack' || e.key === 'BrowserBack' || e.keyCode === 27;
-      if (!back) return;
+      if (e.key !== 'Escape' && e.keyCode !== 27) return;
       e.preventDefault();
-      const hash = window.location.hash || '';
-      if (hash && hash !== '#' && hash !== '#/') window.history.back();
-      else closeTile();
+      e.stopPropagation();
+      const el = document.activeElement;
+      if (el && el !== document.body && typeof el.click === 'function') el.click();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
