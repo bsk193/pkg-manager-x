@@ -5,7 +5,8 @@
 #
 # Output: $(CONTENT_ID).pkg (install it with GoldHEN's Package Installer).
 # The tile starts the bundled payload through GoldHEN's BinLoader when PKG
-# Manager X is not running, then opens http://127.0.0.1:8844/ in the browser.
+# Manager X is not running, then shows http://127.0.0.1:8844/ in the system
+# web browser dialog (Browser app as fallback).
 
 TITLE       := PKG Manager X
 TITLE_ID    := PKGX00001
@@ -27,6 +28,7 @@ CFLAGS      := --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -O2 -Wall 
                -isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include
 LDFLAGS     := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x --eh-frame-hdr \
                -L$(TOOLCHAIN)/lib -lc -lkernel -lSceUserService -lSceSystemService \
+               -lSceSysmodule -lSceCommonDialog -lSceWebBrowserDialog \
                $(TOOLCHAIN)/lib/crt1.o
 
 # sce_module/*.prx: the system libc modules every OpenOrbis app ships. Without

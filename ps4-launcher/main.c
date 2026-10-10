@@ -6,12 +6,14 @@
  *   1. If PKG Manager X is not running (nothing on 127.0.0.1:8844), send the
  *      bundled payload (/app0/pkgmgr-ps4.elf) to GoldHEN's BinLoader on
  *      127.0.0.1:9090 and wait for the web server to come up.
- *   2. Open the console browser at http://127.0.0.1:8844/.
- *   3. Close itself (sceSystemServiceLoadExec("exit")). Circle in the
- *      browser then goes back to the home screen; opening the tile again
- *      just opens the browser. The tile never stops or restarts the
- *      PKG Manager X service: that runs until reboot / rest mode. (The
- *      payload also refuses to replace a running copy of the same version.)
+ *   2. Show http://127.0.0.1:8844/ in the system web browser dialog, inside
+ *      this app. Unlike the Browser app it opens no new browser window per
+ *      launch and leaves the Browser app's windows alone. Circle closes
+ *      the dialog. If the dialog cannot open, the Browser app is used.
+ *   3. Close itself (sceSystemServiceLoadExec("exit")), back to the home
+ *      screen. The tile never stops or restarts the PKG Manager X service:
+ *      that runs until reboot / rest mode. (The payload also refuses to
+ *      replace a running copy of the same version.)
  * Optional: a /app0/preset_sources.json (one HTTP source object, e.g. a
  * private build with a home server) is added through the local API once the
  * server is up, unless a source with the same URL already exists.
@@ -32,6 +34,9 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 
+#include <orbis/CommonDialog.h>
+#include <orbis/Sysmodule.h>
+
 #define PKGMGR_PORT     8844
 #define BINLOADER_PORT  9090
 #define PAYLOAD_PATH    "/app0/pkgmgr-ps4.elf"
@@ -45,6 +50,35 @@ int sceSystemServiceLaunchWebBrowser(const char *uri, void *param);
 int sceSystemServiceHideSplashScreen(void);
 int sceKernelUsleep(unsigned int usec);
 int sceSystemServiceLoadExec(const char *path, const char *args[]);
+int sceUserServiceGetForegroundUser(int *user_id);
+int sceUserServiceGetInitialUser(int *user_id);
+
+/* libSceWebBrowserDialog has no OpenOrbis types; this is Sony's
+ * SceWebBrowserDialogParam as used by RommPS, Nuvio-PS5 and EVO Player. */
+typedef struct {
+    OrbisCommonDialogBaseParam base;
+    uint64_t size;
+    int32_t mode; /* 1: the browser's own layout, 2: the rectangle below */
+    int32_t user_id;
+    const char *url;
+    void *callback_init;
+    uint16_t width, height, pos_x, pos_y;
+    uint32_t parts;
+    uint16_t header_width, header_x, header_y, pad0;
+    uint32_t control;
+    void *ime_param;
+    void *webview_param;
+    uint32_t animation;
+    uint8_t reserved[202];
+    uint16_t tail_pad;
+} web_dialog_param_t;
+_Static_assert(sizeof(web_dialog_param_t) == 328, "SceWebBrowserDialogParam is 328 bytes");
+
+int sceWebBrowserDialogInitialize(void);
+int sceWebBrowserDialogOpen(web_dialog_param_t *param);
+int sceWebBrowserDialogUpdateStatus(void);
+int sceWebBrowserDialogClose(void);
+int sceWebBrowserDialogTerminate(void);
 
 /* libkernel notification (same layout as OpenOrbis' OrbisNotificationRequest). */
 typedef struct {
@@ -263,11 +297,60 @@ static int ensure_server(void) {
     return -1;
 }
 
-/* Leaves the app the way the system expects, so Circle in the browser
- * lands on the home screen. The PKG Manager X service keeps running. */
-static void exit_app(void) {
-    /* Let the browser / notifications come up first. */
-    sceKernelUsleep(2 * 1000 * 1000);
+static int user_id(void) {
+    int id = -1;
+    if (sceUserServiceGetForegroundUser(&id) == 0 && id != -1 && id != 0xff) return id;
+    if (sceUserServiceGetInitialUser(&id) == 0) return id;
+    return -1;
+}
+
+/* The dialog's magic encodes this block's address, so it must not move. */
+static web_dialog_param_t g_web __attribute__((aligned(16)));
+
+static int open_web_dialog(const char *url, int mode) {
+    memset(&g_web, 0, sizeof(g_web));
+    g_web.base.size = sizeof(g_web.base);
+    g_web.base.magic = (uint32_t)(ORBIS_COMMON_DIALOG_MAGIC_NUMBER + (uint64_t)(uintptr_t)&g_web.base);
+    g_web.size = sizeof(g_web);
+    g_web.mode = mode;
+    g_web.user_id = user_id();
+    g_web.url = url;
+    if (mode == 2) {
+        g_web.width = 1920;
+        g_web.height = 1080;
+        g_web.header_width = 1920;
+    }
+    return sceWebBrowserDialogOpen(&g_web);
+}
+
+/* Full screen dialog, then the dialog's own layout. Returns 0 once the user
+ * closed it with Circle, nonzero if no dialog could be opened. */
+static int show_web_dialog(const char *url) {
+    if (sceSysmoduleLoadModule(ORBIS_SYSMODULE_WEB_BROWSER_DIALOG) < 0) return -1;
+    sceCommonDialogInitialize();
+    if (sceWebBrowserDialogInitialize() < 0) return -1;
+    int rc = open_web_dialog(url, 2);
+    if (rc != 0) rc = open_web_dialog(url, 1);
+    if (rc != 0) {
+        sceWebBrowserDialogTerminate();
+        return rc;
+    }
+    int status;
+    while ((status = sceWebBrowserDialogUpdateStatus()) == ORBIS_COMMON_DIALOG_STATUS_RUNNING ||
+           status == ORBIS_COMMON_DIALOG_STATUS_INITIALIZED) {
+        sceKernelUsleep(16 * 1000);
+    }
+    sceWebBrowserDialogClose();
+    sceWebBrowserDialogTerminate();
+    return 0;
+}
+
+/* Leaves the app the way the system expects, back to the home screen. The
+ * PKG Manager X service keeps running. */
+static void exit_app(int wait_for_browser) {
+    /* Browser app fallback / errors: let it and the notifications come up
+     * before this app goes away. */
+    if (wait_for_browser) sceKernelUsleep(2 * 1000 * 1000);
     sceUserServiceTerminate();
     sceSystemServiceLoadExec("exit", NULL);
     /* Not reached; never return from main (CE-34878-0). */
@@ -278,11 +361,15 @@ int main(void) {
     sceSystemServiceHideSplashScreen();
     sceUserServiceInitialize(NULL);
 
+    int in_dialog = 0;
     if (ensure_server() == 0) {
         apply_preset_source();
-        int rc = sceSystemServiceLaunchWebBrowser(UI_URL, NULL);
-        if (rc != 0) notify("PKG Manager X: could not open the browser (0x%08X)\nOpen %s", rc, UI_URL);
+        in_dialog = show_web_dialog(UI_URL) == 0;
+        if (!in_dialog) {
+            int rc = sceSystemServiceLaunchWebBrowser(UI_URL, NULL);
+            if (rc != 0) notify("PKG Manager X: could not open the browser (0x%08X)\nOpen %s", rc, UI_URL);
+        }
     }
-    exit_app();
+    exit_app(!in_dialog);
     return 0;
 }

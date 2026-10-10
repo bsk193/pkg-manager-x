@@ -65,9 +65,10 @@ Pressing the tile:
    the payload bundled in the package to GoldHEN's **BinLoader** on
    `127.0.0.1:9090` and waits for the server to start. The BinLoader must be
    enabled in GoldHEN's settings; otherwise load the ELF as usual first.
-2. It opens the console browser at `http://127.0.0.1:8844/` and closes itself.
-   Circle in the browser goes back to the home screen; opening the tile again
-   just opens the browser.
+2. It shows `http://127.0.0.1:8844/` in the system web browser dialog, inside
+   the tile. Circle closes it and the tile exits to the home screen. Unlike the
+   Browser app, this opens no new browser window on each launch. If the dialog
+   cannot open, the tile opens the Browser app instead and closes itself.
 
 The tile and the browser are only the UI: closing either never stops the
 PKG Manager X service, which runs until reboot or rest mode. If the same

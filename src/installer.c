@@ -1053,7 +1053,7 @@ static int installer_check_platform(const pkg_detail_t *detail, const char *what
     return -1;
 }
 
-static void *stream_installer_worker(void *arg) {
+static void *stream_installer_worker_body(void *arg) {
     (void)arg;
 
     /* Snapshot state under lock at thread entry (happens-after
@@ -2232,9 +2232,17 @@ mock_install_done:
             ps5_notify("Failed to start queued update");
         }
     }
-    if (!has_next) installer_start_next_queued();
     free(extracted_icon);
     return NULL;
+}
+
+/* Every way out of an install (done, failed, canceled) moves the queue on.
+ * A batch update handed off by the body is already installing, so the
+ * queue then waits for it. */
+static void *stream_installer_worker(void *arg) {
+    void *ret = stream_installer_worker_body(arg);
+    installer_start_next_queued();
+    return ret;
 }
 
 int installer_init(const char *server_url) {
