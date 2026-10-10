@@ -156,6 +156,58 @@ static int ps4_same_version_running(void) {
     resp[len] = '\0';
     return strstr(resp, "\"version\":\"" PKGMGR_X_VERSION "\"") != NULL;
 }
+
+static int ps4_local_port_open(void) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return 0;
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_port = htons(DEFAULT_HTTP_PORT);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    int open_ = connect(fd, (struct sockaddr *)&a, sizeof(a)) == 0;
+    close(fd);
+    return open_;
+}
+
+/* PS4: replacing a running PKG Manager X by SIGKILL on its pid also took
+ * down GoldHEN's BinLoader and FTP (they stopped listening until toggled),
+ * and sometimes the new copy never came up. Ask the old one to exit cleanly
+ * through its own API first and wait for the web port to close. Returns 1
+ * when the old service is gone (or none was running). */
+static int ps4_stop_running_service(void) {
+    if (!ps4_local_port_open()) return 1;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd >= 0) {
+        struct timeval tv = { 3, 0 };
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        struct sockaddr_in a;
+        memset(&a, 0, sizeof(a));
+        a.sin_family = AF_INET;
+        a.sin_port = htons(DEFAULT_HTTP_PORT);
+        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        if (connect(fd, (struct sockaddr *)&a, sizeof(a)) == 0) {
+            static const char req[] = "POST /api/shutdown HTTP/1.0\r\nHost: 127.0.0.1\r\n"
+                                      "Content-Length: 0\r\n\r\n";
+            char resp[512];
+            if (send(fd, req, sizeof(req) - 1, 0) == (ssize_t)(sizeof(req) - 1)) {
+                while (recv(fd, resp, sizeof(resp), 0) > 0) {}
+            }
+        }
+        close(fd);
+    }
+    for (int i = 0; i < 30; i++) {
+        if (!ps4_local_port_open()) {
+            printf("[PKG Manager] Previous PKG Manager X exited cleanly.\n");
+            sleep(1); /* let its threads finish */
+            return 1;
+        }
+        usleep(500 * 1000);
+    }
+    printf("[PKG Manager] Previous PKG Manager X did not exit within 15 s.\n");
+    return 0;
+}
 #endif
 
 static volatile int g_running = 1;
@@ -193,6 +245,9 @@ int main(int argc, char **argv) {
                PKGMGR_X_VERSION);
         return EXIT_SUCCESS;
     }
+    /* A different version runs: ask it to exit cleanly. Only if that fails
+     * does the kill loop below run (last resort). */
+    ps4_stop_running_service();
 #endif
 
     pid_t old_pid;
