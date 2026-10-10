@@ -3,7 +3,7 @@ import BlurIcon, { iconUrlFor } from '../../BlurIcon';
 import { formatBytes } from '../../utils/formatters';
 import DebugSpeedOverlay from './DebugSpeedOverlay';
 
-export default function InstallingScreen({ installerStatus, batchInstall, etaInfo, storage, isDiscSource, onCancel, onDismiss, packages = [], directIconUrl, debugSpeeds }) {
+export default function InstallingScreen({ installerStatus, batchInstall, etaInfo, storage, isDiscSource, onCancel, onDismiss, onBackground, queue = [], onRemoveQueued, consoleName = 'ps5', packages = [], directIconUrl, debugSpeeds }) {
 const isBatch = !!(batchInstall && batchInstall.combinedTotal > 0);
     let totalBytes = installerStatus.total_bytes;
     let downloadedBytes = installerStatus.downloaded_bytes;
@@ -18,7 +18,11 @@ const isBatch = !!(batchInstall && batchInstall.combinedTotal > 0);
       ? `Installing Part ${installerStatus.current_part} of ${installerStatus.total_parts}`
       : isDirectStorage
         ? 'Direct Storage Install'
-        : 'Installing to PS5';
+        : `Installing to ${consoleName === 'ps4' ? 'PS4' : 'PS5'}`;
+    const queuedName = (path) => {
+      const pkg = packages && packages.find((p) => p.path === path);
+      return (pkg && pkg.title_name) || decodeURIComponent(String(path).split('/').pop() || path);
+    };
 
     if (isBatch) {
       totalBytes = batchInstall.combinedTotal;
@@ -161,9 +165,18 @@ const isBatch = !!(batchInstall && batchInstall.combinedTotal > 0);
             </>
           )}
 
-          {/* Cancel Installation Button (hidden for direct storage installs) */}
+          {/* Background + Cancel (cancel hidden for direct storage installs) */}
           {!isDirectStorage && (
-            <div className="mt-8">
+            <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+              {onBackground && (
+                <button
+                  type="button"
+                  onClick={onBackground}
+                  className="px-6 py-2.5 rounded-[2px] ps5-focus-item bg-blue-600/80 hover:bg-blue-600 border border-white/20 text-sm font-semibold text-white transition-all cursor-pointer"
+                >
+                  Continue in Background
+                </button>
+              )}
               <button
                 type="button"
                 onClick={onCancel}
@@ -171,6 +184,32 @@ const isBatch = !!(batchInstall && batchInstall.combinedTotal > 0);
               >
                 Cancel Installation
               </button>
+            </div>
+          )}
+
+          {queue.length > 0 && (
+            <div className="w-[75vw] max-w-3xl mt-8 text-left">
+              <h3 className="text-xs uppercase font-bold tracking-wider text-zinc-400 mb-2">
+                Up next ({queue.length})
+              </h3>
+              <ul className="space-y-1.5">
+                {queue.map((path, i) => (
+                  <li key={path} className="flex items-center justify-between rounded-[2px] bg-white/[0.04] border border-white/10 px-3 py-2">
+                    <span className="text-sm text-zinc-200 truncate">
+                      <span className="text-zinc-500 font-mono mr-2">{i + 1}.</span>{queuedName(path)}
+                    </span>
+                    {onRemoveQueued && (
+                      <button
+                        type="button"
+                        onClick={() => onRemoveQueued(path)}
+                        className="ml-3 shrink-0 px-3 py-1 rounded-[2px] ps5-focus-item bg-white/10 hover:bg-rose-600/80 border border-white/20 text-xs font-semibold text-zinc-200 cursor-pointer"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
         </div>

@@ -54,6 +54,11 @@ int installer_cancel(void);
  * INSTALLER_UNAVAILABLE: the HTTP source no longer has the package (404). */
 #define INSTALLER_REFUSED     (-15)
 #define INSTALLER_UNAVAILABLE (-16)
+/* Another package is installing: this one was added to the install queue and
+ * starts automatically when the queue reaches it. */
+#define INSTALLER_QUEUED      (-17)
+/* Drop a waiting package from the queue (0, or -1 if it is not queued). */
+int installer_queue_remove(const char *pkg_path);
 const char *installer_refusal_reason(void);
 /* 1 while the current install is being canceled or the daemon stops. */
 int installer_is_canceling(void);

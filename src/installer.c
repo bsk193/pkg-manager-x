@@ -64,8 +64,68 @@ static int g_batch_update_pending = 0;
  * The browser may be closed while the base package is being finalized. */
 static char g_pending_pkg_path[512];
 
+/* PKG Manager X: installs requested while another one runs wait here and
+ * start one after another from the finishing worker, so they keep going
+ * with the browser closed. Each entry may carry a queued update. */
+#define INSTALL_QUEUE_MAX 16
+typedef struct {
+    char path[512];
+    char update_path[512];
+} install_queue_entry_t;
+static install_queue_entry_t g_queue[INSTALL_QUEUE_MAX];
+static int g_queue_len = 0;
+
 static int installer_start_internal(const char *pkg_path, const char *pending_pkg_path, int is_queued_handoff);
 #define INSTALLER_HANDOFF_DISCARDED (-1000)
+
+/* Caller holds g_installer_mutex. */
+static int queue_find_locked(const char *path) {
+    for (int i = 0; i < g_queue_len; i++) {
+        if (strcmp(g_queue[i].path, path) == 0) return i;
+    }
+    return -1;
+}
+
+static void queue_remove_at_locked(int i) {
+    if (i < 0 || i >= g_queue_len) return;
+    memmove(&g_queue[i], &g_queue[i + 1], (size_t)(g_queue_len - i - 1) * sizeof(g_queue[0]));
+    g_queue_len--;
+}
+
+/* Called by a finishing worker (and after a cancel): start the next queued
+ * package unless something else is installing or the daemon stops. A
+ * package that cannot start is skipped and the next one tried. */
+static void installer_start_next_queued(void) {
+    for (;;) {
+        install_queue_entry_t next;
+        pthread_mutex_lock(&g_installer_mutex);
+        if (g_queue_len == 0 || !g_monitor_running || g_status.is_installing) {
+            pthread_mutex_unlock(&g_installer_mutex);
+            return;
+        }
+        next = g_queue[0];
+        queue_remove_at_locked(0);
+        int left = g_queue_len;
+        pthread_mutex_unlock(&g_installer_mutex);
+
+        install_log("[QUEUE] Starting next queued package: %s (%d more waiting)", next.path, left);
+        int res = installer_start_internal(next.path, next.update_path[0] ? next.update_path : NULL, 0);
+        if (res == 0) return;
+        if (res == -2) {
+            /* Another install started first: put it back at the head. */
+            pthread_mutex_lock(&g_installer_mutex);
+            if (g_queue_len < INSTALL_QUEUE_MAX) {
+                memmove(&g_queue[1], &g_queue[0], (size_t)g_queue_len * sizeof(g_queue[0]));
+                g_queue[0] = next;
+                g_queue_len++;
+            }
+            pthread_mutex_unlock(&g_installer_mutex);
+            return;
+        }
+        install_log("[QUEUE] Queued package could not start (code %d), skipping: %s", res, next.path);
+        ps5_notify("Queued install could not start (code %d)", res);
+    }
+}
 
 static int mkdir_recursive(const char *dir_path) {
     char tmp[512];
@@ -2172,6 +2232,7 @@ mock_install_done:
             ps5_notify("Failed to start queued update");
         }
     }
+    if (!has_next) installer_start_next_queued();
     free(extracted_icon);
     return NULL;
 }
@@ -2462,8 +2523,42 @@ static int installer_start_internal(const char *pkg_path, const char *pending_pk
     return 0;
 }
 
+/* Busy: add the package to the queue instead of refusing it. Returns
+ * INSTALLER_QUEUED, or -2 when the queue is full. */
+static int installer_enqueue(const char *pkg_path, const char *update_path) {
+    pthread_mutex_lock(&g_installer_mutex);
+    if (queue_find_locked(pkg_path) >= 0 || strcmp(g_status.pkg_path, pkg_path) == 0) {
+        pthread_mutex_unlock(&g_installer_mutex);
+        return INSTALLER_QUEUED; /* already waiting or installing */
+    }
+    if (g_queue_len >= INSTALL_QUEUE_MAX) {
+        pthread_mutex_unlock(&g_installer_mutex);
+        return -2;
+    }
+    install_queue_entry_t *e = &g_queue[g_queue_len++];
+    snprintf(e->path, sizeof(e->path), "%s", pkg_path);
+    snprintf(e->update_path, sizeof(e->update_path), "%s", update_path ? update_path : "");
+    int pos = g_queue_len;
+    int idle = !g_status.is_installing;
+    pthread_mutex_unlock(&g_installer_mutex);
+    install_log("[QUEUE] Queued %s at position %d", pkg_path, pos);
+    /* The install finished between the refusal and the enqueue. */
+    if (idle) installer_start_next_queued();
+    return INSTALLER_QUEUED;
+}
+
+int installer_queue_remove(const char *pkg_path) {
+    pthread_mutex_lock(&g_installer_mutex);
+    int i = pkg_path ? queue_find_locked(pkg_path) : -1;
+    if (i >= 0) queue_remove_at_locked(i);
+    pthread_mutex_unlock(&g_installer_mutex);
+    if (i >= 0) install_log("[QUEUE] Removed %s", pkg_path);
+    return i >= 0 ? 0 : -1;
+}
+
 int installer_start(const char *pkg_path) {
-    return installer_start_internal(pkg_path, NULL, 0);
+    int res = installer_start_internal(pkg_path, NULL, 0);
+    return res == -2 ? installer_enqueue(pkg_path, NULL) : res;
 }
 
 int installer_start_batch(const char *base_pkg_path, const char *update_pkg_path) {
@@ -2471,7 +2566,8 @@ int installer_start_batch(const char *base_pkg_path, const char *update_pkg_path
         !update_pkg_path || update_pkg_path[0] == '\0') {
         return -1;
     }
-    return installer_start_internal(base_pkg_path, update_pkg_path, 0);
+    int res = installer_start_internal(base_pkg_path, update_pkg_path, 0);
+    return res == -2 ? installer_enqueue(base_pkg_path, update_pkg_path) : res;
 }
 
 /* NEW: start an install from a live RAM session ("live:<id>", Direct
@@ -2755,7 +2851,9 @@ char *installer_status_to_json(void) {
     pthread_mutex_lock(&g_installer_mutex);
     g_status.last_poll_time = time(NULL); /* Heartbeat */
 
-    char *json = (char *)malloc(4096);
+    /* Each queue entry: escaped path (<= 2 * 512) plus quotes and comma. */
+    size_t json_size = 4096 + (size_t)g_queue_len * 1040;
+    char *json = (char *)malloc(json_size);
     if (!json) {
         pthread_mutex_unlock(&g_installer_mutex);
         return NULL;
@@ -2777,7 +2875,7 @@ char *installer_status_to_json(void) {
     escape_json_str(g_status.status_str, esc_status, sizeof(esc_status));
     escape_json_str(g_status.prompt_message, esc_prompt, sizeof(esc_prompt));
 
-    snprintf(json, 4096,
+    int n = snprintf(json, json_size,
         "{"
         "\"is_installing\":%s,"
         "\"pkg_path\":\"%s\","
@@ -2797,8 +2895,8 @@ char *installer_status_to_json(void) {
         "\"total_parts\":%u,"
         "\"waiting_for_disc\":%s,"
         "\"is_direct_storage\":%s,"
-        "\"prompt_message\":\"%s\""
-        "}",
+        "\"prompt_message\":\"%s\","
+        "\"queue\":[",
         g_status.is_installing ? "true" : "false",
         esc_path,
         esc_title_id,
@@ -2819,6 +2917,12 @@ char *installer_status_to_json(void) {
         g_status.is_direct_storage ? "true" : "false",
         esc_prompt
     );
+    for (int i = 0; i < g_queue_len && n > 0 && (size_t)n < json_size; i++) {
+        char esc_q[1024];
+        escape_json_str(g_queue[i].path, esc_q, sizeof(esc_q));
+        n += snprintf(json + n, json_size - (size_t)n, "%s\"%s\"", i ? "," : "", esc_q);
+    }
+    if (n > 0 && (size_t)n < json_size) snprintf(json + n, json_size - (size_t)n, "]}");
 
     pthread_mutex_unlock(&g_installer_mutex);
     return json;
@@ -2829,6 +2933,7 @@ void installer_shutdown(void) {
     g_monitor_running = 0;
     pthread_mutex_lock(&g_installer_mutex);
     g_pending_pkg_path[0] = '\0';
+    g_queue_len = 0;
     pthread_mutex_unlock(&g_installer_mutex);
     /* NEW: unblock any live readers so the worker join below can't wedge. */
     ws_live_abort();

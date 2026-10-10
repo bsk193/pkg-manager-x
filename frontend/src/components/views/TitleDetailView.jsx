@@ -173,7 +173,7 @@ export default function TitleDetailView({ title: selectedTitle, onBack, onInstal
                           <button
                             type="button"
                             onClick={() => handleInstallBaseAndUpdate(selectedTitle.base, selectedTitle.updates[0])}
-                            disabled={installerStatus.is_installing || selectedTitle.hasLeftover || selectedTitle.base.can_install === false}
+                            disabled={selectedTitle.hasLeftover || selectedTitle.base.can_install === false}
                             title={selectedTitle.hasLeftover ? 'Leftovers detected on console. Clean up leftovers before installing.' : (selectedTitle.base.install_disabled_reason || '')}
                             className={`w-full px-6 py-3.5 rounded-[2px] ps5-focus-item font-bold text-base transition-all flex items-center justify-center space-x-2.5 whitespace-nowrap ${
                               (selectedTitle.hasLeftover || selectedTitle.base.can_install === false)
@@ -200,7 +200,7 @@ export default function TitleDetailView({ title: selectedTitle, onBack, onInstal
                         <button
                           type="button"
                           onClick={() => handleInstall(selectedTitle.base)}
-                          disabled={installerStatus.is_installing || selectedTitle.hasLeftover || selectedTitle.base.can_install === false}
+                          disabled={selectedTitle.hasLeftover || selectedTitle.base.can_install === false}
                           title={selectedTitle.hasLeftover ? 'Leftovers detected on console. Clean up leftovers before installing.' : (selectedTitle.base.install_disabled_reason || '')}
                           className={`w-full px-5 py-3.5 rounded-[2px] ps5-focus-item font-bold text-base transition-all flex items-center justify-center space-x-2.5 whitespace-nowrap ${
                             (selectedTitle.hasLeftover || selectedTitle.base.can_install === false)
@@ -307,7 +307,7 @@ export default function TitleDetailView({ title: selectedTitle, onBack, onInstal
                     const maxAvailable = maxAvailableFor(pkg.title_id || selectedTitle.title_id);
                     const notEnoughSpace = !!storage && maxAvailable < requiredSpace;
                     const canInstall = pkg.can_install !== false;
-                    const isInstallDisabled = !canInstall || notEnoughSpace || installerStatus.is_installing;
+                    const isInstallDisabled = !canInstall || notEnoughSpace;
 
                     let disabledLabel = 'Unavailable';
                     if (selectedTitle.hasLeftover || (pkg.install_disabled_reason && pkg.install_disabled_reason.includes('Leftovers detected'))) {
@@ -425,7 +425,7 @@ export default function TitleDetailView({ title: selectedTitle, onBack, onInstal
                     const maxAvailable = maxAvailableFor(pkg.title_id || selectedTitle.title_id);
                     const notEnoughSpace = !!storage && maxAvailable < requiredSpace;
                     const canInstall = pkg.can_install !== false;
-                    const isInstallDisabled = !canInstall || notEnoughSpace || installerStatus.is_installing;
+                    const isInstallDisabled = !canInstall || notEnoughSpace;
 
                     let disabledLabel = 'Unavailable';
                     if (selectedTitle.hasLeftover || (pkg.install_disabled_reason && pkg.install_disabled_reason.includes('Leftovers detected'))) {
@@ -564,7 +564,7 @@ export default function TitleDetailView({ title: selectedTitle, onBack, onInstal
                     const maxAvailable = maxAvailableFor(pkg.title_id || selectedTitle.title_id);
                     const notEnoughSpace = !!storage && maxAvailable < requiredSpace;
                     const canInstall = pkg.can_install !== false;
-                    const isInstallDisabled = !canInstall || notEnoughSpace || installerStatus.is_installing;
+                    const isInstallDisabled = !canInstall || notEnoughSpace;
 
                     return (
                       <div

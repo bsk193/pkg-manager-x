@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { pollStatus, installPackage, cancelInstall, detachDirectInstall } from '../api/installer';
+import { pollStatus, installPackage, cancelInstall, detachDirectInstall, removeFromQueue } from '../api/installer';
 import { formatBytes, formatEta } from '../utils/formatters';
 import { getInstallStorageOptions } from '../utils/installStorage';
 
@@ -189,9 +189,39 @@ export function useInstaller(props) {
     } catch (err) {}
   };
 
+  // Something is installing: the backend queues the package and starts it
+  // when the current install finishes, even with the browser closed.
+  const queueInstall = async (pkg, updatePkg = null) => {
+    const name = pkg.title_name || 'package';
+    try {
+      const data = await installPackage(pkg.path, updatePkg ? updatePkg.path : '');
+      if (data && data.success) {
+        if (showToast) showToast(`${name} added to the install queue`, 'success');
+        fetchStatus();
+      } else if (showToast) {
+        showToast((data && data.error) || 'Could not add to the install queue',
+                  (data && (data.unavailable || data.refused)) ? 'warning' : 'error');
+      }
+    } catch (err) {
+      if (showToast) showToast('Install request failed: ' + err.message, 'error');
+    }
+  };
+
+  const handleRemoveFromQueue = async (path) => {
+    try {
+      const data = await removeFromQueue(path);
+      if (!data || !data.success) {
+        if (showToast) showToast((data && data.error) || 'Could not remove from the queue', 'error');
+      }
+      fetchStatus();
+    } catch (err) {
+      if (showToast) showToast('Queue request failed: ' + err.message, 'error');
+    }
+  };
+
   const handleInstall = async (pkg) => {
     if (installerStatus.is_installing) {
-      if (showToast) showToast('Another installation is already in progress', 'warning');
+      await queueInstall(pkg);
       return;
     }
 
@@ -223,7 +253,12 @@ export function useInstaller(props) {
 
     try {
       const data = await installPackage(pkg.path);
-      if (!data || !data.success) {
+      if (data && data.success && data.queued) {
+        // Another install started in the meantime (e.g. from another device).
+        if (showToast) showToast(`${pkg.title_name || 'Package'} added to the install queue`, 'success');
+        if (shouldRestoreDetailScrollRef) shouldRestoreDetailScrollRef.current = false;
+        fetchStatus();
+      } else if (!data || !data.success) {
         if (showToast) {
           showToast((data && data.error) || 'Failed to start installation',
                     (data && (data.unavailable || data.refused)) ? 'warning' : 'error');
@@ -242,7 +277,7 @@ export function useInstaller(props) {
 
   const handleInstallBaseAndUpdate = async (basePkg, updatePkg) => {
     if (installerStatus.is_installing) {
-      if (showToast) showToast('Another installation is already in progress', 'warning');
+      await queueInstall(basePkg, updatePkg);
       return;
     }
 
@@ -388,6 +423,7 @@ export function useInstaller(props) {
     fetchStatus,
     handleInstall,
     handleInstallBaseAndUpdate,
+    handleRemoveFromQueue,
     handleCancel
   };
 }

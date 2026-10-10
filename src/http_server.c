@@ -1411,9 +1411,12 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
                          update_path[0] != '\0'
                              ? "{\"success\":true,\"message\":\"Base installation started; update queued\"}"
                              : "{\"success\":true,\"message\":\"Installation started successfully\"}");
+            } else if (res == INSTALLER_QUEUED) {
+                snprintf(response_buf, sizeof(response_buf),
+                         "{\"success\":true,\"queued\":true,\"message\":\"Added to the install queue\"}");
             } else if (res == -2) {
                 snprintf(response_buf, sizeof(response_buf),
-                         "{\"success\":false,\"error\":\"Another package is currently installing\"}");
+                         "{\"success\":false,\"error\":\"The install queue is full\"}");
                 status_code = MHD_HTTP_CONFLICT;
             } else if (res == -4) {
                 snprintf(response_buf, sizeof(response_buf),
@@ -1455,6 +1458,26 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
         add_cors_headers(resp);
         MHD_add_response_header(resp, "Content-Type", "application/json");
         enum MHD_Result ret = MHD_queue_response(conn, status_code, resp);
+        MHD_destroy_response(resp);
+        return ret;
+    }
+
+    /* ── POST /api/queue/remove ── drop a waiting package ────────── */
+    if (strcmp(method, "POST") == 0 && strcmp(url, "/api/queue/remove") == 0) {
+        post_state_t *ps = (post_state_t *)*con_cls;
+        char target_path[512] = {0};
+        if (ps && ps->data) {
+            extract_json_string_value(ps->data, "path", target_path, sizeof(target_path));
+        }
+        int res = target_path[0] ? installer_queue_remove(target_path) : -1;
+        const char *body = res == 0
+            ? "{\"success\":true}"
+            : "{\"success\":false,\"error\":\"Package is not in the queue\"}";
+        struct MHD_Response *resp = MHD_create_response_from_buffer(
+            strlen(body), (void *)body, MHD_RESPMEM_MUST_COPY);
+        add_cors_headers(resp);
+        MHD_add_response_header(resp, "Content-Type", "application/json");
+        enum MHD_Result ret = MHD_queue_response(conn, MHD_HTTP_OK, resp);
         MHD_destroy_response(resp);
         return ret;
     }

@@ -39,6 +39,7 @@ import OfflineScreen from './components/screens/OfflineScreen';
 import LoadingScreen from './components/screens/LoadingScreen';
 import WaitingForPartScreen from './components/screens/WaitingForPartScreen';
 import InstallingScreen from './components/screens/InstallingScreen';
+import InstallBackgroundBar from './components/screens/InstallBackgroundBar';
 import ScanningScreen from './components/screens/ScanningScreen';
 
 import Toast from './components/layout/Toast';
@@ -128,6 +129,8 @@ export default function App() {
   }, []);
   const [selectedTitleId, setSelectedTitleId] = useState(null);
   const [directInstallScreenDismissed, setDirectInstallScreenDismissed] = useState(false);
+  // "Continue in background": browse (and queue more) while an install runs.
+  const [installScreenHidden, setInstallScreenHidden] = useState(false);
   const [showDirectInstall, setShowDirectInstall] = useState(false);
   const directTabId = useRef(Math.random().toString(36).slice(2) + Date.now());
   const directUpload = useDirectUpload(directTabId.current);
@@ -585,7 +588,7 @@ export default function App() {
   const {
     installerStatus, setInstallerStatus, batchInstall, setBatchInstall, initialStatusLoaded, setInitialStatusLoaded,
     etaInfo, isWaitingForPart, isBatchActive, isInstalling, isDiscSource, speedCalcRef, wasInstallingRef, batchInstallRef,
-    installerStatusRef, fetchStatus, handleInstall, handleInstallBaseAndUpdate, handleCancel,
+    installerStatusRef, fetchStatus, handleInstall, handleInstallBaseAndUpdate, handleCancel, handleRemoveFromQueue,
     handleDetachDirectStorage
   } = useInstaller({
     showToast,
@@ -879,11 +882,15 @@ export default function App() {
     return () => clearInterval(interval);
   }, [installerStatus.is_installing, installerStatus.waiting_for_disc, isOffline]);
 
+  const installQueue = Array.isArray(installerStatus.queue) ? installerStatus.queue : [];
+
   useEffect(() => {
     if (!installerStatus.is_installing && !isBatchActive) {
       setDirectInstallScreenDismissed(false);
+      // Stay in the background while queued packages are still to come.
+      if (installQueue.length === 0) setInstallScreenHidden(false);
     }
-  }, [installerStatus.is_installing, isBatchActive]);
+  }, [installerStatus.is_installing, isBatchActive, installQueue.length]);
 
   useEffect(() => {
     if (isOffline) return;
@@ -970,7 +977,7 @@ export default function App() {
   }
 
   // Active installation overlay.
-  if (isInstalling && !directInstallScreenDismissed) {
+  if (isInstalling && !directInstallScreenDismissed && !installScreenHidden) {
     return <InstallingScreen
       installerStatus={installerStatus}
       batchInstall={batchInstall}
@@ -988,6 +995,10 @@ export default function App() {
       onDismiss={async () => {
         if (await handleDetachDirectStorage()) setDirectInstallScreenDismissed(true);
       }}
+      onBackground={() => setInstallScreenHidden(true)}
+      queue={installQueue}
+      onRemoveQueued={handleRemoveFromQueue}
+      consoleName={platformInfo.console}
       packages={packages}
       directIconUrl={directUpload.iconUrl}
     />;
@@ -1035,6 +1046,14 @@ export default function App() {
         selectedDrive={selectedDrive}
         onBackToDrives={handleBackToDrives}
       />
+
+      {isInstalling && installScreenHidden && (
+        <InstallBackgroundBar
+          installerStatus={installerStatus}
+          queueLength={installQueue.length}
+          onShow={() => setInstallScreenHidden(false)}
+        />
+      )}
 
       {/* Main Container */}
       <main className="w-full px-4 py-4 flex-1 space-y-6">

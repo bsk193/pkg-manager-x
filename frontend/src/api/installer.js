@@ -21,6 +21,16 @@ export async function installPackage(path, updatePath = '') {
   return { success: false, error: `Install failed: ${res.status}` };
 }
 
+export async function removeFromQueue(path) {
+  const res = await fetch('/api/queue/remove', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path })
+  });
+  if (!res.ok) throw new Error(`Queue remove failed: ${res.status}`);
+  return res.json();
+}
+
 export async function cancelInstall() {
   const res = await fetch('/api/cancel', { method: 'POST' });
   if (!res.ok) throw new Error(`Cancel failed: ${res.status}`);

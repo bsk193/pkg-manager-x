@@ -188,9 +188,37 @@ static void test_installer_concurrency(void) {
     int res1 = installer_start("/tmp/test_edge_fixtures/a.pkg");
     assert(res1 == 0);
 
-    /* Second start while first is active */
+    /* Second start while first is active: queued, not refused. */
     int res2 = installer_start("/tmp/test_edge_fixtures/b.pkg");
-    assert(res2 == -2); /* -2: already installing */
+    assert(res2 == INSTALLER_QUEUED);
+    /* Asking again neither duplicates it nor queues the running one. */
+    assert(installer_start("/tmp/test_edge_fixtures/b.pkg") == INSTALLER_QUEUED);
+    assert(installer_start("/tmp/test_edge_fixtures/a.pkg") == INSTALLER_QUEUED);
+    char *js = installer_status_to_json();
+    assert(js && strstr(js, "\"queue\":[\"/tmp/test_edge_fixtures/b.pkg\"]}") != NULL);
+    free(js);
+
+    /* Removing it empties the queue; re-adding puts it back. */
+    assert(installer_queue_remove("/tmp/test_edge_fixtures/b.pkg") == 0);
+    assert(installer_queue_remove("/tmp/test_edge_fixtures/b.pkg") == -1);
+    js = installer_status_to_json();
+    assert(js && strstr(js, "\"queue\":[]}") != NULL);
+    free(js);
+    assert(installer_start("/tmp/test_edge_fixtures/b.pkg") == INSTALLER_QUEUED);
+
+    /* Canceling the running install starts the queued one by itself. */
+    assert(installer_cancel() == 0);
+    int started_next = 0;
+    for (int i = 0; i < 100 && !started_next; i++) {
+        installer_status_t st;
+        installer_get_status(&st);
+        started_next = st.is_installing && strcmp(st.pkg_path, "/tmp/test_edge_fixtures/b.pkg") == 0;
+        if (!started_next) usleep(50 * 1000);
+    }
+    assert(started_next);
+    js = installer_status_to_json();
+    assert(js && strstr(js, "\"queue\":[]}") != NULL);
+    free(js);
 
     installer_shutdown();
     printf("Installer concurrency test passed.\n");
