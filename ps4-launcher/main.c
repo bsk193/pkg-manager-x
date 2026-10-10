@@ -328,8 +328,12 @@ static int open_web_dialog(const char *url, int mode) {
 /* Full screen dialog, then the dialog's own layout. Returns 0 once the user
  * closed it with Circle, nonzero if no dialog could be opened. */
 static int show_web_dialog(const char *url) {
-    if (sceSysmoduleLoadModule(ORBIS_SYSMODULE_WEB_BROWSER_DIALOG) < 0) return -1;
+    /* Load the internal common dialog module before initializing it, as
+     * borealis does: without it the dialog may not pick up the console's
+     * "enter button" setting and falls back to Circle = confirm. */
+    sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_COMMON_DIALOG);
     sceCommonDialogInitialize();
+    if (sceSysmoduleLoadModule(ORBIS_SYSMODULE_WEB_BROWSER_DIALOG) < 0) return -1;
     if (sceWebBrowserDialogInitialize() < 0) return -1;
     int rc = open_web_dialog(url, 2);
     if (rc != 0) rc = open_web_dialog(url, 1);
