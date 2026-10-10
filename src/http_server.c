@@ -1362,8 +1362,8 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
             unsigned char ch = (unsigned char)*c;
             clean[o++] = (ch >= 0x20 && ch < 0x7f) ? (char)ch : '?';
         }
-        clean[o] = ' ';
-        if (o) install_log("[UI] %s", clean);
+        clean[o] = '\0';
+        if (o) install_log("[UI] %.*s", (int)o, clean);
         static const char ok_body[] = "{\"success\":true}";
         struct MHD_Response *resp = MHD_create_response_from_buffer(
             sizeof(ok_body) - 1, (void *)ok_body, MHD_RESPMEM_PERSISTENT);
