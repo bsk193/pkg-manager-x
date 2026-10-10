@@ -40,6 +40,7 @@ import LoadingScreen from './components/screens/LoadingScreen';
 import WaitingForPartScreen from './components/screens/WaitingForPartScreen';
 import InstallingScreen from './components/screens/InstallingScreen';
 import InstallBackgroundBar from './components/screens/InstallBackgroundBar';
+import TileControls, { isPs4Tile } from './components/TileControls';
 import ScanningScreen from './components/screens/ScanningScreen';
 
 import Toast from './components/layout/Toast';
@@ -1013,6 +1014,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#0a0a0f] text-white flex flex-col font-ps5">
       <Toast notification={notification} />
+      {isPs4Tile() && <TileControls />}
 
       <fieldset
         id="app-main-content"

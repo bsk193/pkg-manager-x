@@ -41,6 +41,8 @@
 #define BINLOADER_PORT  9090
 #define PAYLOAD_PATH    "/app0/pkgmgr-ps4.elf"
 #define UI_URL          "http://127.0.0.1:8844/"
+/* The web view gets ?app=ps4tile: the UI then shows a Close button. */
+#define TILE_UI_URL     "http://127.0.0.1:8844/?app=ps4tile"
 #define START_WAIT_SEC  25
 #define PRESET_PATH     "/app0/preset_sources.json"
 
@@ -366,7 +368,7 @@ int main(void) {
         apply_preset_source();
         /* The web view takes a few seconds to show the first frame. */
         notify("Opening PKG Manager X...");
-        in_dialog = show_web_dialog(UI_URL) == 0;
+        in_dialog = show_web_dialog(TILE_UI_URL) == 0;
         if (!in_dialog) {
             int rc = sceSystemServiceLaunchWebBrowser(UI_URL, NULL);
             if (rc != 0) notify("PKG Manager X: could not open the browser (0x%08X)\nOpen %s", rc, UI_URL);
