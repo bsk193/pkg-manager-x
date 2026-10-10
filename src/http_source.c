@@ -72,6 +72,8 @@
 #define HTTP_MAX_LIVE_CONNS     48
 #endif
 #define HTTP_CONN_WAIT_SEC      60
+/* Time spent blocked in recv() under TLS (speed diagnostics, see bio_recv). */
+static volatile uint64_t g_bio_wait_us;
 #define HTTP_DEFAULT_CA_PATH    "/data/pkgmgr/cacert.pem" /* optional extra CAs */
 #define HTTP_STATE_SLOTS        8192   /* per-file state (power of two) */
 #define HTTP_READ_RETRY_SEC     120    /* install streams ride out outages this long */
@@ -857,9 +859,21 @@ static int bio_send(void *ctx, const unsigned char *buf, size_t len) {
     return -0x004E; /* MBEDTLS_ERR_NET_SEND_FAILED */
 }
 
+/* Speed diagnostics: time spent blocked in recv() under TLS (waiting for
+ * the network), versus the rest of a read (decrypting). Approximate: only
+ * the install stream reads in practice. */
+
+static uint64_t mono_us(void) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint64_t)tv.tv_sec * 1000000u + (uint64_t)tv.tv_usec;
+}
+
 static int bio_recv(void *ctx, unsigned char *buf, size_t len) {
     int fd = *(int *)ctx;
+    uint64_t t0 = mono_us();
     ssize_t n = recv(fd, buf, len, 0);
+    g_bio_wait_us += mono_us() - t0;
     if (n >= 0) return (int)n;
     if (errno == EINTR) return MBEDTLS_ERR_SSL_WANT_READ;
     if (errno == EAGAIN || errno == EWOULDBLOCK) return MBEDTLS_ERR_SSL_TIMEOUT;
@@ -1101,6 +1115,14 @@ static int tls_handshake(http_conn_t *c, const http_source_config_t *cfg, const 
             snprintf(err, err_sz, "TLS handshake failed: %s", ebuf);
         }
         return -1;
+    }
+    {
+        static int cipher_logged = 0;
+        if (!cipher_logged) {
+            cipher_logged = 1;
+            install_log("[HTTP] TLS %s, cipher %s", mbedtls_ssl_get_version(&c->ssl),
+                        mbedtls_ssl_get_ciphersuite(&c->ssl));
+        }
     }
 
     const mbedtls_x509_crt *peer = mbedtls_ssl_get_peer_cert(&c->ssl);
@@ -2451,13 +2473,16 @@ static void speed_end(ssize_t got, uint64_t ms) {
     long secs = (long)(now - g_speed.window_start);
     if (secs >= 30) {
         unsigned req = g_speed.requests ? g_speed.requests : 1;
+        uint64_t wait_ms = g_bio_wait_us / 1000u;
+        g_bio_wait_us = 0;
         install_log("[SPEED] %lds: %llu KiB in %u requests (avg %llu KiB), server avg %llu ms max %llu ms, "
-                    "%llu KiB/s, up to %u parallel, %u failed",
+                    "%llu KiB/s, up to %u parallel, %u failed; reading %llu ms of which network wait %llu ms",
                     secs, (unsigned long long)(g_speed.bytes / 1024), g_speed.requests,
                     (unsigned long long)(g_speed.bytes / 1024 / req),
                     (unsigned long long)(g_speed.total_ms / req), (unsigned long long)g_speed.max_ms,
                     (unsigned long long)(g_speed.bytes / 1024 / (uint64_t)secs),
-                    g_speed.max_inflight, g_speed.failures);
+                    g_speed.max_inflight, g_speed.failures,
+                    (unsigned long long)g_speed.total_ms, (unsigned long long)wait_ms);
         unsigned keep = g_speed.inflight;
         memset(&g_speed, 0, sizeof(g_speed));
         g_speed.window_start = now;
