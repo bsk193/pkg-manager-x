@@ -914,22 +914,18 @@ static int conn_slot_acquire(void) {
     return rc;
 }
 
-/* Diagnostics: the largest block malloc can still hand out (KiB), found by
- * halving from 256 MiB. Logged when a connection cannot be allocated, so a
- * PS4 "Out of memory" report shows how much heap was really left. */
-size_t http_source_largest_free_kib(void) {
-    size_t lo = 0, hi = 256u * 1024u; /* KiB */
-    while (hi - lo > 16) {
-        size_t mid = lo + (hi - lo) / 2;
-        void *p = malloc(mid * 1024u);
-        if (p) {
-            free(p);
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    return lo;
+/* Diagnostics: how much heap is left in 64 KiB blocks (the size connections
+ * and TLS records use), up to 32 MiB. One huge malloc is no measure on PS4:
+ * a 256 MiB block succeeded while 140 KiB connections failed. */
+size_t http_source_heap_headroom_kib(void) {
+    enum { BLOCK = 64 * 1024, MAX_BLOCKS = 512 };
+    void **blocks = (void **)malloc(MAX_BLOCKS * sizeof(void *));
+    if (!blocks) return 0;
+    int n = 0;
+    while (n < MAX_BLOCKS && (blocks[n] = malloc(BLOCK)) != NULL) n++;
+    for (int i = 0; i < n; i++) free(blocks[i]);
+    free(blocks);
+    return (size_t)n * (BLOCK / 1024);
 }
 
 int http_source_live_connections(void) {
@@ -1116,9 +1112,9 @@ static http_conn_t *conn_open(const http_url_t *u, const http_source_config_t *c
     http_conn_t *c = (http_conn_t *)calloc(1, sizeof(http_conn_t));
     if (!c) {
         conn_slot_release();
-        install_log("[HTTP] Out of memory for a %u-byte connection: %d live connections, largest free block %zu KiB",
+        install_log("[HTTP] Out of memory for a %u-byte connection: %d live connections, heap headroom %zu KiB",
                     (unsigned)sizeof(http_conn_t), http_source_live_connections(),
-                    http_source_largest_free_kib());
+                    http_source_heap_headroom_kib());
         snprintf(err, err_sz, "Out of memory");
         return NULL;
     }

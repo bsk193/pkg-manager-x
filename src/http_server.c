@@ -1353,6 +1353,23 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
         return ret;
     }
 
+    /* ── GET /api/log/file ── on-disk log, survives restarts ──────── */
+    if (strcmp(method, "GET") == 0 && strcmp(url, "/api/log/file") == 0) {
+        size_t log_sz = 0;
+        char *log_data = install_log_get_file_text(&log_sz);
+        if (!log_data) {
+            log_data = strdup("No log file.\n");
+            log_sz = log_data ? strlen(log_data) : 0;
+        }
+        struct MHD_Response *resp = MHD_create_response_from_buffer(
+            log_sz, (void *)log_data, MHD_RESPMEM_MUST_FREE);
+        add_cors_headers(resp);
+        MHD_add_response_header(resp, "Content-Type", "text/plain; charset=utf-8");
+        enum MHD_Result ret = MHD_queue_response(conn, MHD_HTTP_OK, resp);
+        MHD_destroy_response(resp);
+        return ret;
+    }
+
     /* ── POST /api/install ─────────────────────────────────────── */
     if (strcmp(method, "POST") == 0 && strcmp(url, "/api/install") == 0) {
         post_state_t *ps = (post_state_t *)*con_cls;

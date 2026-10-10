@@ -323,7 +323,7 @@ int main(int argc, char **argv) {
         ps5_notify("%s", scan_msg);
         printf("[PKG Manager] Web UI: http://%s:%d/\n", current_ip, port);
         install_log("[PKG Manager] Found %d package(s); web UI http://%s:%d/", found_count, current_ip, port);
-        install_log("[PKG Manager] Largest free memory block: %zu KiB", http_source_largest_free_kib());
+        install_log("[MEM] heap headroom at start: %zu KiB", http_source_heap_headroom_kib());
     }
 #else
     if (strcmp(current_ip, "unknown") != 0) {

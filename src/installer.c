@@ -250,8 +250,21 @@ static void *installer_monitor_worker(void *arg) {
      * install runs in the background). last_poll_time is still maintained
      * by installer_record_poll()/installer_status_to_json() for future
      * diagnostics, but no launch happens here. */
+    int ticks = 0;
     while (g_monitor_running) {
         usleep(500000); /* 500ms */
+        /* Every minute during an install: how much small-block heap is left
+         * (PS4 "Out of memory" diagnostics). */
+        if (++ticks >= 120) {
+            ticks = 0;
+            pthread_mutex_lock(&g_installer_mutex);
+            int installing = g_status.is_installing;
+            pthread_mutex_unlock(&g_installer_mutex);
+            if (installing) {
+                install_log("[MEM] heap headroom %zu KiB, %d HTTP connections",
+                            http_source_heap_headroom_kib(), http_source_live_connections());
+            }
+        }
     }
     return NULL;
 }
@@ -276,7 +289,7 @@ static void cleanup_tmp_dir(const char *dir_path) {
 /* Keep recent diagnostics without reserving tens of MiB in the daemon. */
 #define MAX_LOG_LINES INSTALL_LOG_MAX_LINES
 #define MAX_LOG_LINE_LEN 512
-#define MAX_LOG_FILE_SIZE (128 * 1024)
+#define MAX_LOG_FILE_SIZE (512 * 1024)
 #define DEFAULT_LOG_FILE_PATH "/data/pkgmgr/install.log"
 
 static char s_log_buffer[MAX_LOG_LINES][MAX_LOG_LINE_LEN];
@@ -393,9 +406,15 @@ static void append_to_log_file(const char *filepath, const char *line) {
     FILE *f = NULL;
     struct stat st;
     if (stat(filepath, &st) == 0 && st.st_size > MAX_LOG_FILE_SIZE) {
+        /* Keep the previous file as <log>.1: after a crash and restart, the
+         * lines leading up to it are still there (GET /api/log/file). */
+        char old_path[300];
+        snprintf(old_path, sizeof(old_path), "%s.1", filepath);
+        unlink(old_path);
+        rename(filepath, old_path);
         f = fopen(filepath, "w");
         if (f) {
-            fprintf(f, "[LOG ROTATED: exceeded %d bytes]\n", MAX_LOG_FILE_SIZE);
+            fprintf(f, "[LOG ROTATED: previous %d bytes in %s]\n", MAX_LOG_FILE_SIZE, old_path);
         }
     } else {
         f = fopen(filepath, "a");
@@ -459,6 +478,49 @@ void install_log(const char *fmt, ...) {
     if (path_copy[0] != '\0' && is_log_warning_or_error(buf)) {
         append_to_log_file(path_copy, full_line);
     }
+}
+
+/* Appends up to max bytes from the end of path to buf (grown with realloc). */
+static int append_file_tail(char **buf, size_t *len, const char *path, long max) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    if (sz > max) sz = max;
+    if (sz > 0) {
+        fseek(f, -sz, SEEK_END);
+        char *n = (char *)realloc(*buf, *len + (size_t)sz + 1);
+        if (n) {
+            *buf = n;
+            *len += fread(n + *len, 1, (size_t)sz, f);
+            n[*len] = '\0';
+        }
+    }
+    fclose(f);
+    return 0;
+}
+
+char *install_log_get_file_text(size_t *out_len) {
+    char path_copy[256];
+    pthread_mutex_lock(&s_log_mutex);
+    snprintf(path_copy, sizeof(path_copy), "%s", s_log_file_path);
+    pthread_mutex_unlock(&s_log_mutex);
+    char *buf = NULL;
+    size_t len = 0;
+    if (path_copy[0] != '\0' && strcmp(path_copy, "none") != 0) {
+        char old_path[300];
+        snprintf(old_path, sizeof(old_path), "%s.1", path_copy);
+        pthread_mutex_lock(&s_file_mutex);
+        append_file_tail(&buf, &len, old_path, 512 * 1024);
+        append_file_tail(&buf, &len, path_copy, 512 * 1024);
+        pthread_mutex_unlock(&s_file_mutex);
+    }
+    if (!buf) {
+        buf = strdup("No log file.\n");
+        len = buf ? strlen(buf) : 0;
+    }
+    if (out_len) *out_len = len;
+    return buf;
 }
 
 char *install_log_get_text(size_t *out_len) {
@@ -757,9 +819,16 @@ static int check_package_verified_installed(const char *title_id, const char *ki
                             title_id, installed_ver, expect_ver);
                 return 1;
             } else if (installed_ver[0] != '\0') {
-                install_log("[INSTALLER] %s not yet applied: %s installed=%s expect=%s",
-                            (kind && strcasecmp(kind, "update") == 0) ? "Update" : "App",
-                            title_id, installed_ver, expect_ver);
+                /* Polled every second while finalizing: log every 30 s so
+                 * it cannot flood the log (and rotate away crash context). */
+                static time_t last_logged = 0;
+                time_t now = time(NULL);
+                if (now - last_logged >= 30) {
+                    last_logged = now;
+                    install_log("[INSTALLER] %s not yet applied: %s installed=%s expect=%s",
+                                (kind && strcasecmp(kind, "update") == 0) ? "Update" : "App",
+                                title_id, installed_ver, expect_ver);
+                }
             } else if (!kind || strcasecmp(kind, "update") != 0) {
                 install_log("[INSTALLER] App verified installed in database: %s", title_id);
                 return 1;

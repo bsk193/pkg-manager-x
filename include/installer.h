@@ -69,6 +69,8 @@ char *installer_status_to_json(void);
 void installer_notify_bytes_streamed(uint64_t bytes_read);
 void install_log(const char *fmt, ...);
 char *install_log_get_text(size_t *out_len);
+/* The on-disk log (previous rotated file + current), survives restarts. */
+char *install_log_get_file_text(size_t *out_len);
 void install_log_clear(void);
 void install_log_set_file_path(const char *path);
 void installer_shutdown(void);

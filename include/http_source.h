@@ -132,8 +132,9 @@ ssize_t http_file_session_read(http_file_session_t *s, void *buf, size_t count, 
 uint64_t http_file_session_get_size(http_file_session_t *s);
 void http_file_session_close(http_file_session_t *s);
 
-/* Diagnostics: largest malloc-able block in KiB, and open connections. */
-size_t http_source_largest_free_kib(void);
+/* Diagnostics: heap left in 64 KiB blocks (capped at 32 MiB), and open
+ * HTTP connections. */
+size_t http_source_heap_headroom_kib(void);
 int http_source_live_connections(void);
 
 #ifdef __cplusplus
