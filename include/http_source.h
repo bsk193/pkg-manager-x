@@ -137,6 +137,10 @@ void http_file_session_close(http_file_session_t *s);
 size_t http_source_heap_headroom_kib(void);
 /* Diagnostics: logs this console's AES-GCM / ChaCha20 speed once. */
 void http_source_log_crypto_speed(void);
+/* PS4: dedicated heap for TLS and HTTP connections (call once at startup,
+ * before any HTTPS use); no-op elsewhere. Size in bytes, 0 if none. */
+void http_source_memory_init(void);
+size_t http_source_tls_heap_size(void);
 int http_source_live_connections(void);
 
 #ifdef __cplusplus

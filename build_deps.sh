@@ -96,6 +96,14 @@ python3 scripts/config.py unset MBEDTLS_SSL_PROTO_TLS1_3
 python3 scripts/config.py set MBEDTLS_NO_PLATFORM_ENTROPY
 python3 scripts/config.py set MBEDTLS_ENTROPY_HARDWARE_ALT
 python3 scripts/config.py set MBEDTLS_PLATFORM_ZEROIZE_ALT
+#  - a dedicated heap for TLS (PS4: the payload's normal heap is ~1.8 MiB
+#    for small blocks, while one large block is no problem), thread-safe
+#    because several threads use TLS at once. Unused unless pkgmgr calls
+#    mbedtls_memory_buffer_alloc_init (PS4 only).
+python3 scripts/config.py set MBEDTLS_PLATFORM_MEMORY
+python3 scripts/config.py set MBEDTLS_MEMORY_BUFFER_ALLOC_C
+python3 scripts/config.py set MBEDTLS_THREADING_C
+python3 scripts/config.py set MBEDTLS_THREADING_PTHREAD
 mkdir build && cd build
 $CMAKE .. -DENABLE_PROGRAMS=OFF -DENABLE_TESTING=OFF \
           -DUSE_SHARED_MBEDTLS_LIBRARY=OFF -DUSE_STATIC_MBEDTLS_LIBRARY=ON \

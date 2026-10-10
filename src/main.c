@@ -284,6 +284,7 @@ int main(int argc, char **argv) {
 
     printf("[PKG Manager] Initializing package scanner...\n");
     pkg_scanner_init();
+    http_source_memory_init(); /* before any HTTPS use */
     http_sources_init();
 
     printf("[PKG Manager] Starting HTTP server on port %d...\n", port);

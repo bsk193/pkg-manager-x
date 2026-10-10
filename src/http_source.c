@@ -49,6 +49,10 @@
 #include <mbedtls/x509_crt.h>
 #include <mbedtls/gcm.h>
 #include <mbedtls/chachapoly.h>
+#include <mbedtls/platform.h>
+#if defined(MBEDTLS_MEMORY_BUFFER_ALLOC_C)
+#include <mbedtls/memory_buffer_alloc.h>
+#endif
 #endif
 
 #define HTTP_CONNECT_TIMEOUT_MS 5000
@@ -910,6 +914,25 @@ typedef struct {
 #endif
 } http_conn_t;
 
+/* Connections (read buffer + mbedTLS state) live in the TLS heap when one
+ * is set up (PS4, http_source_memory_init); otherwise mbedtls_calloc is
+ * plain calloc. Builds without TLS use calloc/free directly. */
+static void *conn_alloc(void) {
+#ifdef PKGMGR_HAVE_TLS
+    return mbedtls_calloc(1, sizeof(http_conn_t));
+#else
+    return calloc(1, sizeof(http_conn_t));
+#endif
+}
+
+static void conn_free(void *c) {
+#ifdef PKGMGR_HAVE_TLS
+    mbedtls_free(c);
+#else
+    free(c);
+#endif
+}
+
 static pthread_mutex_t g_conn_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_conn_cond = PTHREAD_COND_INITIALIZER;
 static int g_live_conns = 0;
@@ -971,7 +994,7 @@ static void conn_close(http_conn_t *c) {
     }
 #endif
     if (c->fd >= 0) close(c->fd);
-    free(c);
+    conn_free(c);
     conn_slot_release();
 }
 
@@ -1175,7 +1198,7 @@ static http_conn_t *conn_open(const http_url_t *u, const http_source_config_t *c
         snprintf(err, err_sz, "Too many open connections; try again");
         return NULL;
     }
-    http_conn_t *c = (http_conn_t *)calloc(1, sizeof(http_conn_t));
+    http_conn_t *c = (http_conn_t *)conn_alloc();
     if (!c) {
         conn_slot_release();
         install_log("[HTTP] Out of memory for a %u-byte connection: %d live connections, heap headroom %zu KiB",
@@ -1189,7 +1212,7 @@ static http_conn_t *conn_open(const http_url_t *u, const http_source_config_t *c
     c->ep.path[0] = '\0';
     c->fd = tcp_connect(u->host, u->port, err, err_sz);
     if (c->fd < 0) {
-        free(c);
+        conn_free(c);
         conn_slot_release();
         return NULL;
     }
@@ -2744,4 +2767,30 @@ void http_source_log_crypto_speed(void) {
                 (unsigned long long)(gcm_us ? mib_x1000 * 1000u / gcm_us : 0),
                 (unsigned long long)(cha_us ? mib_x1000 * 1000u / cha_us : 0));
 #endif
+}
+
+
+/* PS4: give mbedTLS (and the HTTP connections) a heap of their own. The
+ * payload's normal heap has ~1.8 MiB for small blocks and ran out during
+ * installs (web server stuck, "Out of memory", TLS -0x7f00), while a single
+ * large block is readily available. Call once, before any HTTPS use. */
+static size_t g_tls_heap_size;
+
+void http_source_memory_init(void) {
+#if defined(PKGMGR_HAVE_TLS) && defined(MBEDTLS_MEMORY_BUFFER_ALLOC_C) && PKGMGR_CONSOLE_PS4
+    static const size_t sizes[] = { 16u << 20, 8u << 20, 4u << 20 };
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+        unsigned char *pool = (unsigned char *)malloc(sizes[i]);
+        if (!pool) continue;
+        mbedtls_memory_buffer_alloc_init(pool, sizes[i]);
+        g_tls_heap_size = sizes[i];
+        install_log("[MEM] TLS heap: %zu MiB", sizes[i] >> 20);
+        return;
+    }
+    install_log("[MEM] TLS heap: none (no large block); using the normal heap");
+#endif
+}
+
+size_t http_source_tls_heap_size(void) {
+    return g_tls_heap_size;
 }
