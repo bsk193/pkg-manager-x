@@ -219,11 +219,7 @@ static void test_installer_concurrency(void) {
         char *diag = installer_status_to_json();
         size_t log_len = 0;
         char *log = install_log_get_text(&log_len);
-        fprintf(stderr, "queued package did not start
-status: %s
-log:
-%s
-",
+        fprintf(stderr, "queued package did not start\nstatus: %s\nlog:\n%s\n",
                 diag ? diag : "?", log ? log : "?");
         free(diag);
         free(log);
