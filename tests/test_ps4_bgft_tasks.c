@@ -15,6 +15,7 @@ static int start_result, start_calls;
 static int found_task = -1, found_sub_type = -1, find_calls;
 static int stopped[8], n_stopped, unregistered[8], n_unregistered;
 static int have_cleanup_syms = 1;
+static int have_patch_sym = 1, patch_calls;
 
 static int mock_init(bgft_init_params_t *p) { (void)p; return 0; }
 static int mock_term(void) { return 0; }
@@ -23,6 +24,11 @@ static int mock_register(bgft_download_param_t *p, int *task) {
     int rc = reg_results[reg_calls++];
     *task = rc == 0 ? next_task++ : -1;
     return rc;
+}
+static int mock_register_patch(bgft_download_param_t *p, int *task) {
+    assert(strcmp(p->package_type, "PS4DP") == 0);
+    patch_calls++;
+    return mock_register(p, task);
 }
 static int mock_start(int task) { (void)task; start_calls++; return start_result; }
 static int mock_progress(int task, bgft_task_progress_t *pr) { (void)task; memset(pr, 0, sizeof(*pr)); return 0; }
@@ -48,6 +54,7 @@ int sceKernelDlsym(int handle, const char *name, void **out) {
     if (!strcmp(name, "sceBgftServiceIntDownloadRegisterTask")) *out = (void *)mock_register;
     if (!strcmp(name, "sceBgftServiceIntDownloadStartTask")) *out = (void *)mock_start;
     if (!strcmp(name, "sceBgftServiceIntDownloadGetProgress")) *out = (void *)mock_progress;
+    if (have_patch_sym && !strcmp(name, "sceBgftServiceIntDebugDownloadRegisterPkg")) *out = (void *)mock_register_patch;
     if (have_cleanup_syms) {
         if (!strcmp(name, "sceBgftServiceIntDownloadFindActiveTask")) *out = (void *)mock_find;
         if (!strcmp(name, "sceBgftServiceIntDownloadStopTask")) *out = (void *)mock_stop;
@@ -65,7 +72,7 @@ static void reset(int r0, int r1, int start_rc, int found, int found_type) {
     memset(reg_results, 0, sizeof(reg_results));
     reg_results[0] = r0;
     reg_results[1] = r1;
-    reg_calls = start_calls = find_calls = n_stopped = n_unregistered = 0;
+    reg_calls = start_calls = find_calls = n_stopped = n_unregistered = patch_calls = 0;
     next_task = 100;
     start_result = start_rc;
     found_task = found;
@@ -137,6 +144,30 @@ int main(void) {
     reset(DUP, 0, 0, 34, BGFT_TASK_SUB_TYPE_GAME);
     assert(start_install("base", "gd") == DUP && find_calls == 0);
     platform_install_shutdown();
+
+    /* 7. Updates register through the patch call (RegisterTask rejects them
+     *    with 0x80990004 INVALID_ARGUMENT); games and DLC keep RegisterTask. */
+    have_cleanup_syms = 1;
+    reset(0, 0, 0, -1, -1);
+    assert(start_install("update", "gp") == 0 && patch_calls == 1 && reg_calls == 1);
+    platform_install_shutdown();
+    reset(0, 0, 0, -1, -1);
+    assert(start_install("base", "gd") == 0 && patch_calls == 0 && reg_calls == 1);
+    platform_install_shutdown();
+    reset(0, 0, 0, -1, -1);
+    assert(start_install("dlc", "ac") == 0 && patch_calls == 0);
+    platform_install_shutdown();
+    /* Leftover update task: removed, and the retry uses the patch call too. */
+    reset(DUP, 0, 0, 34, BGFT_TASK_SUB_TYPE_GAME_PATCH);
+    assert(start_install("update", "gp") == 0 && patch_calls == 2);
+    assert(n_unregistered == 1 && unregistered[0] == 34);
+    platform_install_shutdown();
+    /* Firmware without the patch export: updates fall back to RegisterTask. */
+    have_patch_sym = 0;
+    reset(0, 0, 0, -1, -1);
+    assert(start_install("update", "gp") == 0 && patch_calls == 0 && reg_calls == 1);
+    platform_install_shutdown();
+    assert(strcmp(platform_install_strerror((int)0x80990004), "BGFT_ERROR_INVALID_ARGUMENT") == 0);
 
     puts("PS4 BGFT leftover tasks: passed");
     return 0;

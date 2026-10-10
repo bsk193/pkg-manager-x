@@ -42,6 +42,8 @@ extern int sceAppInstUtilTerminate(void);
 /* A download task for the same content ID already exists, typically left
  * by an earlier failed install (CE-32928-4). */
 #define BGFT_ERROR_TASK_DUPLICATED                    0x80990015u
+/* e.g. an update registered through RegisterTask instead of the patch call. */
+#define BGFT_ERROR_INVALID_ARGUMENT                   0x80990004u
 
 /* OrbisBgftTaskSubType */
 #define BGFT_TASK_SUB_TYPE_UNKNOWN    0
@@ -101,6 +103,7 @@ static struct {
     bgft_init_fn init;
     bgft_term_fn term;
     bgft_register_fn register_task;
+    bgft_register_fn register_patch; /* optional: updates (PS4DP) */
     bgft_start_fn start_task;
     bgft_progress_fn get_progress;
     bgft_find_fn find_task;        /* optional: duplicate-task recovery */
@@ -108,7 +111,7 @@ static struct {
     bgft_task_fn unregister_task;  /* optional */
     int task_id;
     char content_id[64];
-} g_bgft = { 0, -1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, -1, "" };
+} g_bgft = { 0, -1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, -1, "" };
 
 static void *bgft_sym(const char *primary, const char *fallback) {
     void *addr = NULL;
@@ -136,6 +139,10 @@ int platform_install_init(void) {
      * Use the URL registration API, as Remote Package Installer does. */
     g_bgft.register_task = (bgft_register_fn)bgft_sym("sceBgftServiceIntDownloadRegisterTask",
                                                    "sceBgftServiceDownloadRegisterTask");
+    /* Updates (PS4DP) are rejected by RegisterTask with 0x80990004
+     * (INVALID_ARGUMENT); patch packages go through the debug registration
+     * with the same parameters (as ezremote-client / ps4-store do). */
+    g_bgft.register_patch = (bgft_register_fn)bgft_sym("sceBgftServiceIntDebugDownloadRegisterPkg", NULL);
     g_bgft.start_task = (bgft_start_fn)bgft_sym("sceBgftServiceIntDownloadStartTask",
                                                 "sceBgftServiceDownloadStartTask");
     g_bgft.get_progress = (bgft_progress_fn)bgft_sym("sceBgftServiceIntDownloadGetProgress",
@@ -253,14 +260,20 @@ int platform_install_start(const platform_install_request_t *req,
     p.package_sub_type = "";
     p.package_size = (unsigned long)req->package_size;
 
+    /* Updates register through the patch call; everything else (and
+     * updates on firmware without it) through RegisterTask. */
+    int is_patch = strcmp(p.package_type, "PS4DP") == 0 && g_bgft.register_patch;
+    bgft_register_fn reg = is_patch ? g_bgft.register_patch : g_bgft.register_task;
+
     int task_id = -1;
-    int ret = g_bgft.register_task(&p, &task_id);
-    install_log("[BGFT] register type=%s size=%llu user=%d -> 0x%08X task=%d",
-                p.package_type, (unsigned long long)req->package_size, user_id, ret, task_id);
+    int ret = reg(&p, &task_id);
+    install_log("[BGFT] register%s type=%s size=%llu user=%d -> 0x%08X task=%d",
+                is_patch ? " (patch)" : "", p.package_type, (unsigned long long)req->package_size,
+                user_id, ret, task_id);
     if ((uint32_t)ret == BGFT_ERROR_TASK_DUPLICATED && bgft_clear_duplicate(s_cid, p.package_type) == 0) {
         /* An earlier failed install left its task behind: retry once. */
         task_id = -1;
-        ret = g_bgft.register_task(&p, &task_id);
+        ret = reg(&p, &task_id);
         install_log("[BGFT] register (after removing leftover) -> 0x%08X task=%d", ret, task_id);
     }
     if (ret != 0) return ret;
@@ -317,6 +330,7 @@ const char *platform_install_strerror(int code) {
     switch ((uint32_t)code) {
     case BGFT_ERROR_SAME_APPLICATION_ALREADY_INSTALLED: return "BGFT_ERROR_SAME_APPLICATION_ALREADY_INSTALLED";
     case BGFT_ERROR_TASK_DUPLICATED: return "BGFT_ERROR_TASK_DUPLICATED";
+    case BGFT_ERROR_INVALID_ARGUMENT: return "BGFT_ERROR_INVALID_ARGUMENT";
     default: return NULL;
     }
 }
