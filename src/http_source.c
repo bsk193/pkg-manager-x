@@ -2256,7 +2256,17 @@ struct http_file_session {
     pthread_mutex_t refresh_lock;
     http_conn_t *idle[HTTP_POOL_MAX];
     int idle_count;
+    /* Install streams: one large range request whose body is handed out
+     * piece by piece to the following sequential reads, straight from the
+     * socket (no extra buffer). Measured on PS4: one 64 KiB request per
+     * read cost ~143 ms of server latency each, capping installs at
+     * ~440 KB/s. */
+    pthread_mutex_t st_lock;
+    http_conn_t *st_conn;
+    uint64_t st_pos, st_end;     /* next deliverable offset, end of body */
 };
+
+#define HTTP_STREAM_WINDOW (8ull * 1024 * 1024)
 
 static http_conn_t *session_take(http_file_session_t *s) {
     http_conn_t *c = NULL;
@@ -2294,6 +2304,7 @@ http_file_session_t *http_file_session_open(const char *url) {
     if (!s) return NULL;
     pthread_mutex_init(&s->lock, NULL);
     pthread_mutex_init(&s->refresh_lock, NULL);
+    pthread_mutex_init(&s->st_lock, NULL);
     s->has_cfg = http_sources_find_for_url(url, &s->cfg) == 0;
     copy_str(s->origin, sizeof(s->origin), url);
 
@@ -2320,6 +2331,7 @@ http_file_session_t *http_file_session_open(const char *url) {
         }
         pthread_mutex_destroy(&s->refresh_lock);
         pthread_mutex_destroy(&s->lock);
+        pthread_mutex_destroy(&s->st_lock);
         free(s);
         return NULL;
     }
@@ -2433,12 +2445,92 @@ static void speed_end(ssize_t got, uint64_t ms) {
 
 static ssize_t session_read_direct(http_file_session_t *s, void *buf, size_t count, uint64_t offset);
 
+/* Caller holds st_lock. Drops the current streaming response. */
+static void stream_drop(http_file_session_t *s) {
+    if (s->st_conn) conn_close(s->st_conn); /* body not fully read: not reusable */
+    s->st_conn = NULL;
+    s->st_pos = s->st_end = 0;
+}
+
+/* Caller holds st_lock. Opens a range request for [offset, offset+window)
+ * and keeps its body unread on s->st_conn. 0 on success; anything unusual
+ * (redirect, expired link, error, chunked body) returns -1 and the caller
+ * falls back to session_read_direct, which handles all of that. */
+static int stream_open(http_file_session_t *s, uint64_t offset) {
+    uint64_t window = s->size - offset;
+    if (window > HTTP_STREAM_WINDOW) window = HTTP_STREAM_WINDOW;
+    http_url_t u;
+    pthread_mutex_lock(&s->lock);
+    u = s->u;
+    pthread_mutex_unlock(&s->lock);
+    http_conn_t *c = session_take(s);
+    char err[256] = "";
+    for (int attempt = 0; attempt < 2; attempt++) {
+        int reused = c != NULL;
+        if (c && (!c->alive || !same_endpoint(&c->ep, &u))) {
+            conn_close(c);
+            c = NULL;
+            reused = 0;
+        }
+        if (!c) c = conn_open(&u, s->has_cfg ? &s->cfg : NULL, NULL, err, sizeof(err));
+        if (!c) return -1;
+        http_resp_t r;
+        if (http_send_request(c, &u, s->has_cfg ? &s->cfg : NULL, "GET", 1, offset, offset + window - 1) != 0 ||
+            http_read_response(c, &r) != 0) {
+            conn_close(c);
+            c = NULL;
+            if (reused) continue; /* stale keep-alive socket */
+            return -1;
+        }
+        if (r.status != 206 || r.chunked || r.content_length <= 0 ||
+            (r.has_range && r.range_start != offset)) {
+            conn_close(c);
+            return -1;
+        }
+        if (r.conn_close) c->alive = 0;
+        s->st_conn = c;
+        s->st_pos = offset;
+        s->st_end = offset + (uint64_t)r.content_length;
+        return 0;
+    }
+    return -1;
+}
+
+static ssize_t session_read_streaming(http_file_session_t *s, void *buf, size_t count, uint64_t offset) {
+    if (count == 0 || offset >= s->size) return 0;
+    if (count > s->size - offset) count = (size_t)(s->size - offset);
+    pthread_mutex_lock(&s->st_lock);
+    if (!(s->st_conn && offset == s->st_pos && s->st_pos < s->st_end)) {
+        stream_drop(s);
+        if (stream_open(s, offset) != 0) {
+            pthread_mutex_unlock(&s->st_lock);
+            return session_read_direct(s, buf, count, offset);
+        }
+    }
+    size_t take = (size_t)(s->st_end - s->st_pos);
+    if (take > count) take = count;
+    if (conn_read_exact(s->st_conn, buf, take) != 0) {
+        stream_drop(s);
+        pthread_mutex_unlock(&s->st_lock);
+        return session_read_direct(s, buf, count, offset);
+    }
+    s->st_pos += take;
+    if (s->st_pos >= s->st_end) {
+        /* Body fully read: the connection can be reused. */
+        http_conn_t *c = s->st_conn;
+        s->st_conn = NULL;
+        session_give(s, c);
+    }
+    pthread_mutex_unlock(&s->st_lock);
+    return (ssize_t)take;
+}
+
 ssize_t http_file_session_read(http_file_session_t *s, void *buf, size_t count, uint64_t offset) {
     if (!s || !buf) return -1;
     if (!s->resilient) return session_read_direct(s, buf, count, offset);
     speed_begin();
     uint64_t t0 = now_ms();
-    ssize_t got = session_read_direct(s, buf, count, offset);
+    ssize_t got = session_read_streaming(s, buf, count, offset);
     speed_end(got, now_ms() - t0);
     return got;
 }
@@ -2524,7 +2616,9 @@ void http_file_session_close(http_file_session_t *s) {
     for (int i = 0; i < s->idle_count; i++) conn_close(s->idle[i]);
     s->idle_count = 0;
     pthread_mutex_unlock(&s->lock);
+    if (s->st_conn) conn_close(s->st_conn);
     pthread_mutex_destroy(&s->refresh_lock);
     pthread_mutex_destroy(&s->lock);
+    pthread_mutex_destroy(&s->st_lock);
     free(s);
 }
