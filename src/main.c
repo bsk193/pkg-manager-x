@@ -21,6 +21,7 @@
 #include "http_source.h"
 #include "platform.h"
 #include "ps4_notify.h"
+#include "ps4_power.h"
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -439,6 +440,9 @@ int main(int argc, char **argv) {
         /* Network Watchdog (every 5 seconds) */
         if (++network_check_timer >= 50) {
             network_check_timer = 0;
+            installer_status_t power_status;
+            installer_get_status(&power_status);
+            ps4_power_update(power_status.is_installing);
             char new_ip[64] = "unknown";
             int has_ip = (get_local_ip(new_ip, sizeof(new_ip)) == 0);
             int server_up = http_server_is_running();

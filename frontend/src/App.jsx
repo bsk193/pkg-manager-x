@@ -41,6 +41,7 @@ import WaitingForPartScreen from './components/screens/WaitingForPartScreen';
 import InstallingScreen from './components/screens/InstallingScreen';
 import InstallBackgroundBar from './components/screens/InstallBackgroundBar';
 import TileControls, { isPs4Tile } from './components/TileControls';
+import { useInstallScreenSaver } from './hooks/useInstallScreenSaver';
 import ScanningScreen from './components/screens/ScanningScreen';
 
 import Toast from './components/layout/Toast';
@@ -607,6 +608,11 @@ export default function App() {
     showDonateQr, setShowDonateQr, showDonateModal, setShowDonateModal, donateNeverNotice, setDonateNeverNotice,
     showModalQr, setShowModalQr, handleCloseDonateModal, handleNeverShowDonateModal
   } = useDonation({ initialStatusLoaded, isInstalling, isWaitingForPart });
+
+  useInstallScreenSaver(Boolean(
+    (/PlayStation 4/i.test(navigator.userAgent) || isPs4Tile()) &&
+    !isOffline && (installerStatus.is_installing || isBatchActive)
+  ));
 
   const triggerQuickScan = useCallback(async (drive) => {
     // 1. Never interrupt an active installation or optical disc wait
