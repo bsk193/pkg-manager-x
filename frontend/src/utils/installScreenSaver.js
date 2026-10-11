@@ -4,6 +4,8 @@ export function startInstallScreenSaver(win, doc, idleMs = 60000) {
   let overlay = null;
   let previousFocus = null;
   let swallowUntil = 0;
+  let swallowHeld = false;
+  let padWake = false;
   const wake = () => {
     if (!overlay) return;
     overlay.remove();
@@ -13,7 +15,12 @@ export function startInstallScreenSaver(win, doc, idleMs = 60000) {
   };
   const activity = (event) => {
     lastInput = Date.now();
-    if (overlay || Date.now() < swallowUntil) {
+    if (overlay || swallowHeld || Date.now() < swallowUntil) {
+      if (['keydown', 'mousedown', 'touchstart'].includes(event.type)) swallowHeld = true;
+      if (['keyup', 'mouseup', 'touchend'].includes(event.type)) {
+        swallowHeld = false;
+        swallowUntil = Date.now() + 500;
+      }
       if (event.cancelable) event.preventDefault();
       event.stopImmediatePropagation();
       wake();
@@ -26,13 +33,20 @@ export function startInstallScreenSaver(win, doc, idleMs = 60000) {
     // Some PS4 web views expose pads; others deliver keyboard/click events.
     let pads = [];
     try { pads = win.navigator.getGamepads ? win.navigator.getGamepads() : []; } catch (e) {}
+    let padActive = false;
     for (let i = 0; i < pads.length; i++) {
       const pad = pads[i];
       if (pad && (Array.from(pad.buttons || []).some(b => b.pressed) ||
           Array.from(pad.axes || []).some(a => Math.abs(a) > 0.3))) {
         lastInput = Date.now();
+        padActive = true;
+        if (overlay) padWake = true;
         wake();
       }
+    }
+    if (padWake) {
+      swallowUntil = Date.now() + 500;
+      if (!padActive) padWake = false;
     }
     if (!overlay && !doc.hidden && Date.now() - lastInput >= idleMs) {
       previousFocus = doc.activeElement;

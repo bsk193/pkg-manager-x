@@ -27,17 +27,21 @@ test('idle screen wakes without clicking through, resets its timer, and cleans u
     now = 60000; tick(); assert.ok(overlay);
     let prevented = 0, swallowed = 0;
     const event = { cancelable: true, preventDefault: () => prevented++, stopImmediatePropagation: () => swallowed++ };
-    listeners.get('keydown')(event);
+    event.type = 'keydown'; listeners.get('keydown')(event);
     assert.equal(overlay, null);
-    listeners.get('click')(event);
+    event.type = 'click'; listeners.get('click')(event);
     assert.equal(prevented, 2); assert.equal(swallowed, 2); assert.equal(restored, 1);
-    now = 61000; listeners.get('click')(event);
-    assert.equal(swallowed, 2);
+    now = 61000;
+    event.type = 'keydown'; listeners.get('keydown')(event);
+    assert.equal(swallowed, 3, 'held wake key cannot activate underlying controls');
+    event.type = 'keyup'; listeners.get('keyup')(event);
+    now = 62000; event.type = 'click'; listeners.get('click')(event);
+    assert.equal(swallowed, 4);
     now = 120000; tick(); assert.equal(overlay, null);
-    now = 121000; tick(); assert.ok(overlay);
+    now = 122000; tick(); assert.ok(overlay);
     pads = [{ buttons: [{ pressed: true }], axes: [0] }];
     tick(); assert.equal(overlay, null);
-    pads = []; now = 181000; tick(); assert.ok(overlay);
+    pads = []; now = 182000; tick(); assert.ok(overlay);
     stop(); assert.equal(overlay, null); assert.ok(cleared); assert.equal(listeners.size, 0);
   } finally { Date.now = originalNow; }
 });
