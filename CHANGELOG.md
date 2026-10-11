@@ -1,9 +1,17 @@
 # Changelog
 
+## 1.0.6 (PKG Manager X)
+
+- PS4 HTTP packages download to console storage before BGFT installs them, avoiding the URL-registration failures encountered partway through some packages.
+- Skip queued updates and DLC when their base install fails; allow browsing while installation continues.
+- Refresh the PS4 idle power timer only during installation. Actual rest-mode downloading remains unsupported.
+- Blank the PS4 manager page after 60 seconds of inactivity during installation; consume the first input to wake safely and restore the page when installation ends.
+- Replace an older service through its shutdown API and cover URL/storage registration, queue cleanup, power policy, and screen wake behavior with regression tests.
+
 ## Unreleased (PKG Manager X)
 
 ### HTTP / HTTPS Sources
-- Install packages from web servers with byte-range streaming (no temporary copy)
+- Install packages from web servers with byte-range streaming (PS4 HTTP installs download a temporary copy first)
 - Discovery through `index.json` (`tools/make_http_index.py`) or HTML directory listings, including sub-folders
 - Basic auth, redirects, keep-alive connection pool for the installer's parallel requests
 - HTTPS via mbedTLS with CA verification, certificate pinning ("Trust this certificate") or no check

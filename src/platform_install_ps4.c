@@ -96,6 +96,14 @@ typedef int (*bgft_progress_fn)(int task_id, bgft_task_progress_t *);
 typedef int (*bgft_find_fn)(const char *content_id, int sub_type, int *task_id);
 typedef int (*bgft_task_fn)(int task_id);
 
+/* Local-file install (PS4-Store, SSPI): the package is already on the
+ * console's drive and BGFT installs it from there. */
+typedef struct {
+    bgft_download_param_t param;
+    unsigned int slot;
+} bgft_download_param_ex_t;
+typedef int (*bgft_register_ex_fn)(bgft_download_param_ex_t *, int *task_id);
+
 static struct {
     int ready;
     int module;
@@ -109,9 +117,10 @@ static struct {
     bgft_find_fn find_task;        /* optional: duplicate-task recovery */
     bgft_task_fn stop_task;        /* optional */
     bgft_task_fn unregister_task;  /* optional */
+    bgft_register_ex_fn register_storage; /* optional: local-file installs */
     int task_id;
     char content_id[64];
-} g_bgft = { 0, -1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, -1, "" };
+} g_bgft = { 0, -1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, -1, "" };
 
 static void *bgft_sym(const char *primary, const char *fallback) {
     void *addr = NULL;
@@ -143,6 +152,7 @@ int platform_install_init(void) {
      * (INVALID_ARGUMENT); patch packages go through the debug registration
      * with the same parameters (as ezremote-client / ps4-store do). */
     g_bgft.register_patch = (bgft_register_fn)bgft_sym("sceBgftServiceIntDebugDownloadRegisterPkg", NULL);
+    g_bgft.register_storage = (bgft_register_ex_fn)bgft_sym("sceBgftServiceIntDownloadRegisterTaskByStorageEx", NULL);
     g_bgft.start_task = (bgft_start_fn)bgft_sym("sceBgftServiceIntDownloadStartTask",
                                                 "sceBgftServiceDownloadStartTask");
     g_bgft.get_progress = (bgft_progress_fn)bgft_sym("sceBgftServiceIntDownloadGetProgress",
@@ -310,6 +320,73 @@ int platform_install_start(const platform_install_request_t *req,
         return ret;
     }
 
+    g_bgft.task_id = task_id;
+    snprintf(g_bgft.content_id, sizeof(g_bgft.content_id), "%s", s_cid);
+    if (out_content_id && content_id_size > 0) snprintf(out_content_id, content_id_size, "%s", s_cid);
+    return 0;
+}
+
+/* Installs a package file already on the console (local_path, e.g.
+ * /user/data/pkgmgr/dl/x.pkg) through BGFT's storage route, the way
+ * PS4-Store and SSPI do. Used when the URL route rejects a package
+ * (0x80990004 at a section end) that installs fine from local storage.
+ * Same contract as platform_install_start. */
+int platform_install_start_local(const platform_install_request_t *req, const char *local_path,
+                                 char *out_content_id, size_t content_id_size) {
+    if (!g_bgft.ready || !local_path || !local_path[0]) return -1;
+    if (!g_bgft.register_storage) {
+        install_log("[BGFT] local install unavailable: sceBgftServiceIntDownloadRegisterTaskByStorageEx missing");
+        return -1;
+    }
+    g_bgft.task_id = -1;
+
+    int user_id = -1;
+    if (sceUserServiceGetForegroundUser(&user_id) != 0) user_id = -1;
+
+    static char s_path[512], s_name[256], s_cid[64];
+    snprintf(s_path, sizeof(s_path), "%s", local_path);
+    snprintf(s_name, sizeof(s_name), "%s",
+             (req->title_name && req->title_name[0]) ? req->title_name : req->display_name);
+    snprintf(s_cid, sizeof(s_cid), "%s", req->content_id ? req->content_id : "");
+
+    bgft_download_param_ex_t ex;
+    memset(&ex, 0, sizeof(ex));
+    ex.param.user_id = user_id;
+    ex.param.entitlement_type = 5;
+    ex.param.id = "";
+    ex.param.content_url = s_path;
+    ex.param.content_ex_url = "";
+    ex.param.content_name = s_name;
+    ex.param.icon_path = "";
+    ex.param.sku_id = "";
+    ex.param.option = BGFT_TASK_OPTION_DISABLE_CDN_QUERY_PARAM;
+    ex.param.playgo_scenario_id = "0";
+    ex.param.release_date = "";
+    /* Storage route: the package header supplies type and size. */
+    ex.param.package_type = "";
+    ex.param.package_sub_type = "";
+    ex.param.package_size = (unsigned long)req->package_size;
+    ex.slot = 0;
+
+    bgft_remove_leftovers(s_cid);
+
+    int task_id = -1;
+    int ret = g_bgft.register_storage(&ex, &task_id);
+    install_log("[BGFT] register (local) path=%s size=%llu user=%d -> 0x%08X task=%d",
+                s_path, (unsigned long long)req->package_size, user_id, ret, task_id);
+    if ((uint32_t)ret == BGFT_ERROR_TASK_DUPLICATED && bgft_clear_duplicate(s_cid, "PS4GD") == 0) {
+        task_id = -1;
+        ret = g_bgft.register_storage(&ex, &task_id);
+        install_log("[BGFT] register (local, after removing leftover) -> 0x%08X task=%d", ret, task_id);
+    }
+    if (ret != 0) return ret;
+
+    ret = g_bgft.start_task(task_id);
+    install_log("[BGFT] start task %d -> 0x%08X", task_id, ret);
+    if (ret != 0) {
+        bgft_remove_task(task_id, "start failed");
+        return ret;
+    }
     g_bgft.task_id = task_id;
     snprintf(g_bgft.content_id, sizeof(g_bgft.content_id), "%s", s_cid);
     if (out_content_id && content_id_size > 0) snprintf(out_content_id, content_id_size, "%s", s_cid);

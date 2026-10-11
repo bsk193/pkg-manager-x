@@ -1449,6 +1449,10 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
                          update_path[0] != '\0'
                              ? "{\"success\":true,\"message\":\"Base installation started; update queued\"}"
                              : "{\"success\":true,\"message\":\"Installation started successfully\"}");
+            } else if (res == INSTALLER_SKIPPED) {
+                snprintf(response_buf, sizeof(response_buf),
+                         "{\"success\":false,\"error\":\"The base game did not install; install it first\"}");
+                status_code = MHD_HTTP_BAD_REQUEST;
             } else if (res == INSTALLER_QUEUED) {
                 snprintf(response_buf, sizeof(response_buf),
                          "{\"success\":true,\"queued\":true,\"message\":\"Added to the install queue\"}");

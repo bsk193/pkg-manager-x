@@ -16,6 +16,7 @@ static int found_task = -1, found_sub_type = -1, find_calls;
 static int stopped[8], n_stopped, unregistered[8], n_unregistered;
 static int have_cleanup_syms = 1;
 static int have_patch_sym = 1, patch_calls;
+static int storage_calls;
 
 static int mock_init(bgft_init_params_t *p) { (void)p; return 0; }
 static int mock_term(void) { return 0; }
@@ -29,6 +30,11 @@ static int mock_register_patch(bgft_download_param_t *p, int *task) {
     assert(strcmp(p->package_type, "PS4DP") == 0);
     patch_calls++;
     return mock_register(p, task);
+}
+static int mock_register_storage(bgft_download_param_ex_t *p, int *task) {
+    assert(strcmp(p->param.content_url, "/user/data/pkgmgr/dl/test.pkg") == 0);
+    storage_calls++;
+    return mock_register(&p->param, task);
 }
 static int mock_start(int task) { (void)task; start_calls++; return start_result; }
 static int mock_progress(int task, bgft_task_progress_t *pr) { (void)task; memset(pr, 0, sizeof(*pr)); return 0; }
@@ -56,6 +62,7 @@ int sceKernelDlsym(int handle, const char *name, void **out) {
     if (!strcmp(name, "sceBgftServiceIntInit")) *out = (void *)mock_init;
     if (!strcmp(name, "sceBgftServiceIntTerm")) *out = (void *)mock_term;
     if (!strcmp(name, "sceBgftServiceIntDownloadRegisterTask")) *out = (void *)mock_register;
+    if (!strcmp(name, "sceBgftServiceIntDownloadRegisterTaskByStorageEx")) *out = (void *)mock_register_storage;
     if (!strcmp(name, "sceBgftServiceIntDownloadStartTask")) *out = (void *)mock_start;
     if (!strcmp(name, "sceBgftServiceIntDownloadGetProgress")) *out = (void *)mock_progress;
     if (have_patch_sym && !strcmp(name, "sceBgftServiceIntDebugDownloadRegisterPkg")) *out = (void *)mock_register_patch;
@@ -77,6 +84,7 @@ static void reset(int r0, int r1, int start_rc, int found, int found_type) {
     reg_results[0] = r0;
     reg_results[1] = r1;
     reg_calls = start_calls = find_calls = n_stopped = n_unregistered = patch_calls = 0;
+    storage_calls = 0;
     next_task = 100;
     start_result = start_rc;
     found_task = found;
@@ -174,6 +182,33 @@ int main(void) {
     assert(start_install("update", "gp") == 0 && patch_calls == 0 && reg_calls == 1);
     platform_install_shutdown();
     assert(strcmp(platform_install_strerror((int)0x80990004), "BGFT_ERROR_INVALID_ARGUMENT") == 0);
+
+    /* Download-first installs must preserve task cleanup on both start
+     * failure and cancel, and propagate registration errors unchanged. */
+    platform_install_request_t local = {
+        .title_name = "Local package", .content_id = "EP0102-CUSA09171_00-BH20000COSDLC002",
+        .pkg_kind = "dlc", .package_size = 53608448
+    };
+    const char *path = "/user/data/pkgmgr/dl/test.pkg";
+    reset(0, 0, 0, 34, BGFT_TASK_SUB_TYPE_GAME_AC);
+    assert(platform_install_start_local(&local, path, NULL, 0) == 0);
+    assert(storage_calls == 1 && start_calls == 1);
+    assert(n_unregistered == 1 && unregistered[0] == 34);
+    platform_install_discard();
+    assert(n_unregistered == 2 && unregistered[1] == 100);
+    platform_install_discard();
+    assert(n_unregistered == 2);
+    platform_install_shutdown();
+
+    reset(0, 0, (int)0x80990003, -1, -1);
+    assert(platform_install_start_local(&local, path, NULL, 0) == (int)0x80990003);
+    assert(storage_calls == 1 && n_unregistered == 1 && unregistered[0] == 100);
+    platform_install_shutdown();
+
+    reset(DUP, 0, 0, -1, -1);
+    assert(platform_install_start_local(&local, path, NULL, 0) == DUP);
+    assert(storage_calls == 1 && start_calls == 0 && n_unregistered == 0);
+    platform_install_shutdown();
 
     puts("PS4 BGFT leftover tasks: passed");
     return 0;

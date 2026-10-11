@@ -32,7 +32,7 @@
 - **USB & Network (Samba/SMB) Support**: Automatically detects packages on connected USB drives, or stream them over your local network from a PC or NAS via Samba shares.
 - **Direct Install**: Install a local PKG file from another device on your network, such as a PC, directly to the console.
 - **Multi-Part Packages & Disc Swapping**: Install large packages split across multiple optical discs or USB drives, with on-screen prompts when swapping discs. Ideal for physical backups!
-- **No Duplicate Storage Needed**: Installs packages directly on the fly without requiring double the storage space for temporary copy files.
+- **Storage requirements**: Streaming installs avoid a temporary copy. PS4 HTTP/HTTPS installs download the package to console storage first and need room for both the package and installed game until completion.
 - **Installed Version Detection**: Checks your console to display installed application versions and prevent duplicate package installs.
 - **Home Screen Shortcut**: Installs a dedicated shortcut tile to your PS5 home screen for quick and easy access.
 - **Leftover Cleanup**: Detects and cleans up orphaned files and directories commonly left behind on console storage after a database rebuild.

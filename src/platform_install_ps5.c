@@ -77,6 +77,13 @@ void platform_install_close(void) {
     install_service_close(&g_service);
 }
 
+/* PS5: no local-file fallback (the install helper reads files directly). */
+int platform_install_start_local(const platform_install_request_t *req, const char *local_path,
+                                 char *out_content_id, size_t content_id_size) {
+    (void)req; (void)local_path; (void)out_content_id; (void)content_id_size;
+    return -1;
+}
+
 /* PS5: a failed/canceled install needs no extra cleanup. */
 void platform_install_discard(void) {
     platform_install_close();

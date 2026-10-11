@@ -68,7 +68,7 @@ SRCS := src/main.c src/pkg_parser.c src/pkg_scanner.c src/pkg_cache.c src/smb_cl
 SRCS_WS := src/ws_upload.c src/ws_stream.c
 # PKG Manager X additions (HTTP sources, platform tags, console backends).
 SRCS_X := src/pkg_platform.c src/pkg_parse_reader.c src/http_source.c src/http_sources_api.c \
-          src/platform_install_ps5.c src/platform_install_ps4.c src/compat_ps4.c src/ps4_notify.c
+          src/platform_install_ps5.c src/platform_install_ps4.c src/compat_ps4.c src/ps4_notify.c src/ps4_power.c
 INSTALL_HELPER := build/install-helper.elf
 # Upstream's PS5 install service: each install runs in a fresh helper ELF
 # (embedded, launched through elfldr). PS4 installs in-process via BGFT.

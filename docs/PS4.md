@@ -70,10 +70,28 @@ Pressing the tile:
    Browser app, this opens no new browser window on each launch. If the dialog
    cannot open, the tile opens the Browser app instead and closes itself.
 
-**Don't use rest mode while PKG Manager X is installing.** The PS4 downloads
-every byte through the payload on the console (`127.0.0.1`); with GoldHEN's
-rest mode support on, suspending it mid-transfer has crashed the console
-(kernel panic). Let installs finish first.
+**HTTP sources install in two steps on PS4:** the package is first downloaded
+to the console (`/data/pkgmgr/dl`), then installed from there and the copy is
+deleted. Streaming the URL straight to the PS4's downloader rejected some fake
+PKGs halfway (`0x80990004` at a package section end); installing from the
+console's drive is what PS4-Store, SSPI and FPKGi's download mode do. It needs
+free space for the copy plus the installed game while it runs. Local, USB and
+SMB packages install directly as before.
+
+**Keep the console running during downloads and installs.** The payload now
+refreshes the PS4 idle power timer every five seconds while installing, then
+stops when the installer becomes idle. This does not change saved power settings
+or block manually selected rest mode. Actual rest-mode downloading is not
+supported: suspending the payload mid-transfer has caused kernel panics with
+GoldHEN. Let installs finish before selecting rest mode.
+
+In the PS4 browser or tile, the page turns black after 60 seconds without input
+while installing. A controller button, stick movement (where the web view exposes
+gamepads), or pointer input wakes it; the first page input is consumed to avoid
+activating a control underneath. The page also wakes when the install ends.
+This blanks only the manager page, not the home screen or other applications.
+Phones and desktop browsers keep their normal display behavior. Firmware-specific
+controller events and idle power prevention must be checked on the console.
 
 The tile and the browser are only the UI: closing either never stops the
 PKG Manager X service, which runs until reboot or rest mode. If the same

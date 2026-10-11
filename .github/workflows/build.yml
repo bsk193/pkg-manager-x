@@ -57,6 +57,8 @@ jobs:
           /tmp/test_ps4_bgft_url
           cc -Wall -Iinclude -o /tmp/test_ps4_bgft_tasks tests/test_ps4_bgft_tasks.c
           /tmp/test_ps4_bgft_tasks
+          cc -Wall -Iinclude -o /tmp/test_ps4_power tests/test_ps4_power.c
+          /tmp/test_ps4_power
 
   frontend:
     runs-on: ubuntu-latest
@@ -73,6 +75,8 @@ jobs:
           python-version: '3.x'
       - name: Build frontend
         run: make frontend-build X_VERSION="${{ needs.version.outputs.version }}"
+      - name: Frontend tests
+        run: cd frontend && npm test
       - uses: actions/upload-artifact@v4
         with:
           name: frontend-dist
