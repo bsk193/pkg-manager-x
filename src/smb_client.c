@@ -140,6 +140,9 @@ int smb_client_find_share_cfg(const char *smb_url, smb_share_config_t *out_cfg) 
     app_settings_t settings;
     pkg_cache_get_settings(&settings);
 
+    int best_idx = -1;
+    size_t best_path_len = 0;
+
     for (int i = 0; i < settings.smb_share_count; i++) {
         smb_share_config_t *c = &settings.smb_shares[i];
         if (!c->enabled) continue;
@@ -147,16 +150,34 @@ int smb_client_find_share_cfg(const char *smb_url, smb_share_config_t *out_cfg) 
         smb_share_config_t clean_c = *c;
         smb_client_sanitize_config(&clean_c);
 
-        /* Match by server & share */
-        if (strcasecmp(clean_c.server, srv) == 0 && strcasecmp(clean_c.share, shr) == 0) {
-            memcpy(out_cfg, c, sizeof(smb_share_config_t));
-            return 0;
-        }
-        /* Or match if server matches drive id, e.g. smb://smb0/... */
+        /* Match if server matches drive id, e.g. smb://smb0/... */
         if (strcasecmp(clean_c.id, srv) == 0) {
             memcpy(out_cfg, c, sizeof(smb_share_config_t));
             return 0;
         }
+
+        /* Match by server & share */
+        if (strcasecmp(clean_c.server, srv) == 0 && strcasecmp(clean_c.share, shr) == 0) {
+            size_t c_path_len = strlen(clean_c.path);
+            if (c_path_len > 0) {
+                size_t rel_len = strlen(rel);
+                if (rel_len >= c_path_len && strncasecmp(rel, clean_c.path, c_path_len) == 0 &&
+                    (rel[c_path_len] == '\0' || rel[c_path_len] == '/')) {
+                    if (c_path_len > best_path_len || best_idx == -1) {
+                        best_idx = i;
+                        best_path_len = c_path_len;
+                    }
+                }
+            } else if (best_idx == -1) {
+                best_idx = i;
+                best_path_len = 0;
+            }
+        }
+    }
+
+    if (best_idx >= 0) {
+        memcpy(out_cfg, &settings.smb_shares[best_idx], sizeof(smb_share_config_t));
+        return 0;
     }
 
     /* Fallback: if no credentials matched, return a guest config for that server/share */
@@ -1376,6 +1397,10 @@ int smb_client_calc_checksum(const char *smb_url, char *out_checksum, size_t out
     return 0;
 }
 
+static int sdk_smb_read(void *ctx, uint64_t offset, void *buf, size_t size) {
+    return smb_file_session_read(ctx, buf, size, offset) == (ssize_t)size ? 0 : -1;
+}
+
 /* Parse PKG metadata directly from an SMB package using pread chunks */
 int smb_client_parse_pkg(const char *smb_url, pkg_detail_t *out) {
     if (!smb_url || !out) return -1;
@@ -1414,7 +1439,18 @@ int smb_client_parse_pkg(const char *smb_url, pkg_detail_t *out) {
     int cnt_found = 0;
     pkg_platform_note_header(out, hdr, (size_t)hdr_read);
 
-    if (memcmp(hdr, "\x7f" "CNT", 4) == 0) {
+    int is_lih = memcmp(hdr, "\x7f" "LIH", 4) == 0;
+    if (is_lih) {
+        uint64_t cand = smb_read_le64(hdr + 0x30);
+        uint8_t magic[4];
+        if (hdr[6] == 1 && hdr[7] == 0 && cand >= 0x80 &&
+            cand <= out->file_size && 0x80 <= out->file_size - cand &&
+            smb_file_session_read(sess, magic, sizeof(magic), cand) == sizeof(magic) &&
+            memcmp(magic, "\x7f" "CNT", 4) == 0) {
+            cnt_offset = cand;
+            cnt_found = 1;
+        }
+    } else if (memcmp(hdr, "\x7f" "CNT", 4) == 0) {
         cnt_offset = 0;
         cnt_found = 1;
     } else if (memcmp(hdr, "\x7f" "FIH", 4) == 0) {
@@ -1600,7 +1636,9 @@ int smb_client_parse_pkg(const char *smb_url, pkg_detail_t *out) {
 
     int is_delta_type = ((cnt_type_magic & 0xFF) == 0x1E || (cnt_type_magic & 0xFF000000) == 0x41000000);
 
-    if (has_playgo_chunk_patch || has_delta_patch || is_delta_type ||
+    uint32_t content_flags = smb_read_be32(cnt_hdr + 0x78);
+    if (is_lih || (content_flags & 0x40100000) ||
+        has_playgo_chunk_patch || has_delta_patch || is_delta_type ||
         (out->category[0] != '\0' && strncmp(out->category, "gp", 2) == 0)) {
         out->pkg_type = PKG_TYPE_UPDATE;
     } else if (strncmp(out->category, "ac", 2) == 0 || strncmp(out->category, "al", 2) == 0 ||
@@ -1638,7 +1676,6 @@ int smb_client_parse_pkg(const char *smb_url, pkg_detail_t *out) {
 
     if (str_table) free(str_table);
     free(entry_table);
-    smb_file_session_close(sess);
 
     /* Fallback if title_id could not be found from param.sfo / param.json */
     if (out->title_id[0] == '\0' && out->content_id[0] != '\0') {
@@ -1661,6 +1698,10 @@ int smb_client_parse_pkg(const char *smb_url, pkg_detail_t *out) {
         }
     }
 
+    if (strncmp(out->title_id, "PPSA", 4) == 0) {
+        out->sdk_version = pkg_parser_read_image_sdk(sdk_smb_read, sess, hdr, cnt_offset);
+    }
+    smb_file_session_close(sess);
     out->is_valid = 1;
     return 0;
 }

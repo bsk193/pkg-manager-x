@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased (PKG Manager X): upstream v1.5.1
+
+- Merged PKG Manager v1.5.0 / v1.5.1. Its console-owned install queue (full-page Queue view, cancel / retry / clear, auto-clear after 60 minutes, base/update/DLC as separate jobs, dependents blocked when their base is missing) replaces PKG Manager X's own queue, "Continue in Background" bar and Base + Update batch. HTTP/HTTPS packages are queue jobs like USB, disc and SMB ones.
+- PS5: USB/disc direct-storage installs are submitted to the PS5 system queue (upstream behavior). PS4 keeps its BGFT installs: download-first for HTTP sources, and USB/disc installs tracked until verified.
+- Also from upstream: PS5 backport patch detection, SDK target badge, separate base packages per title, optional filename/path in title details, readable out-of-space errors, SMB catalog fix for several locations on one share.
+- Kept: console refusal reasons and "unavailable on the server" now appear as the queue job's error.
+
 ## 1.0.6 (PKG Manager X)
 
 - PS4 HTTP packages download to console storage before BGFT installs them, avoiding the URL-registration failures encountered partway through some packages.
@@ -43,6 +50,47 @@
 ### Upstream
 - Merged PKG Manager v1.4.1 (offline USB/disc direct-storage installs on PS5, SMB guest login and faster signing, package icons on install cards, Close PKG Manager, quick Rescan)
 - Merged PKG Manager v1.3.0 (PS5 install helper process, SMB browse-only shares, paged catalog)
+
+---
+
+## v1.5.1
+
+- Added support for PS5 backport patches that previously appeared as unknown packages
+- Show an "SDK target" badge for PS5 packages when the executable's SDK version can be read reliably
+- Improved installed-version detection so newer PS5 patches can be installed and already installed updates are correctly recognized
+
+---
+
+## v1.5.0
+
+### Install Queue
+- Added a console-owned background install queue for USB, disc, SMB, and browser uploads, allowing browsing across the app while installations run in the background
+- Added a dedicated full-page Install Queue view (`#/queue`) with active installation hero, total queue progress, live transfer speed, remaining time, and a scrollable queue list
+- Added individual package cancellation, retry for failed sources, and a Clear completed action
+- Added an "All done" summary screen when queued installations complete
+- Automatically clear finished and errored queue jobs after a 60-minute retention period
+- Automatically abort queued packages if an identical or newer version is already installed, preventing blocked install loops
+- Replaced the base/update batch modal with independent queue jobs and added a bulk "Install all DLCs" action
+- Offline USB and disc packages are submitted sequentially to the PS5 system queue
+
+### PS5 Browser Title Progress
+- Display detailed live installation progress in the PS5 browser page title during active installations
+- Feature a text-based progress bar (`[■■■■■□□□□□] 50%`) with batch index (`[1/3]`), package name (truncated to 40 characters), transfer speed, and estimated time remaining
+- Standard app title is automatically restored when installations complete or the queue is idle
+
+### Title Details & Settings
+- Separate and display different base packages for the same title (e.g. different editions or regions) (#27)
+- Display file name and relative path for updates in the title detail view (#24)
+- Added a setting to show package filename and path in title details (disabled by default)
+
+### Direct Install
+- Redesigned Direct Install with package cards showing locally extracted thumbnails, platform/type badges, and "Install" and "Cancel" actions
+- Added an "Install all" bulk action to queue all ready packages at once
+- Streamlined the interface by removing the folder picker and redundant clear actions
+
+### Bug Fixes
+- Fixed multiple Samba locations on the same server share overwriting each other's game catalog info (#32)
+- Display clear, readable error messages when installation fails due to insufficient console storage space (#25)
 
 ---
 

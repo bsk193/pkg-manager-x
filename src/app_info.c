@@ -432,6 +432,7 @@ static int check_app_db_for_title(const char *db_path, const char *title_id, cha
                     size_t jlen = strlen(json);
                     char vbuf[64] = {0};
                     if (extract_appinfo_json_key(json, jlen, "APP_VER", vbuf, sizeof(vbuf)) == 0 ||
+                        extract_appinfo_json_key(json, jlen, "CONTENT_VERSION", vbuf, sizeof(vbuf)) == 0 ||
                         extract_appinfo_json_key(json, jlen, "contentVersion", vbuf, sizeof(vbuf)) == 0 ||
                         extract_appinfo_json_key(json, jlen, "appVersion", vbuf, sizeof(vbuf)) == 0 ||
                         extract_appinfo_json_key(json, jlen, "VERSION", vbuf, sizeof(vbuf)) == 0) {

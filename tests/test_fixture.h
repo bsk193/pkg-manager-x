@@ -15,12 +15,18 @@
 #define TEST_FIXTURE_H
 
 #include <stdint.h>
+#include <sys/types.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 /* Fake icon payload: real PNG magic + zero filler. */
 #define FIXTURE_ICON_SIZE 1072
+
+/* Synthetic image locations used by executable SDK regression tests. */
+#define FIXTURE_SELF_OFFSET 0x20000
+#define FIXTURE_SELF_SEGMENT_OFFSET 0x20
+#define FIXTURE_ELF_PROC_OFFSET 0xB8
 static const uint8_t kFixturePngMagic[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
 
 static inline void fx_be32(uint8_t *p, uint32_t v) {
@@ -402,6 +408,67 @@ static inline int fixture_grow_file(const char *path, uint64_t target_size) {
     }
     fclose(f);
     return 0;
+}
+
+/* Sparse synthetic PS5 image with an uncompressed main SELF and a CNT table.
+ * Metadata and process parameters can be placed beyond 32-bit offsets. */
+static inline int fixture_write_ps5_image(const char *path, int lih,
+                                           uint64_t cnt_offset, uint64_t sdk_offset,
+                                           uint32_t sdk, uint32_t content_flags) {
+    if (fixture_write_ps5_pkg(path, "PPSA90090", "Synthetic Image", "gd",
+                              "07.000.004", 1) != 0) return -1;
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    uint8_t cnt[8192];
+    if (fseek(f, 0x10000, SEEK_SET) != 0) { fclose(f); return -1; }
+    size_t cnt_size = fread(cnt, 1, sizeof(cnt), f);
+    fclose(f);
+    fx_be32(cnt + 0x78, content_flags);
+    uint8_t header[0x80] = {0}, inner[0x80] = {0};
+    memcpy(header, lih ? "\x7f" "LIH" : "\x7f" "FIH", 4);
+    fx_le16(header + 6, lih ? 1 : 3);
+    fx_le64(header + (lih ? 0x30 : 0x58), cnt_offset);
+    if (lih) {
+        fx_le64(header + 0x20, 0x10000);
+        memcpy(inner, "\x7f" "FIH", 4);
+        fx_le16(inner + 6, 3);
+        fx_le64(inner + 0x10, 0x10000);
+    } else fx_le64(header + 0x10, FIXTURE_SELF_OFFSET);
+    uint8_t self[8192] = {0};
+    fx_le32(self, 0xEEF51454);
+    fx_le16(self + 24, 1);
+    uint64_t segment_offset = sdk_offset - FIXTURE_SELF_OFFSET - 0x20;
+    fx_le64(self + 16, segment_offset + 0x1000);
+    fx_le64(self + 32, 0x804);
+    fx_le64(self + 40, segment_offset);
+    fx_le64(self + 48, 0x1000);
+    fx_le64(self + 56, 0x1000);
+    memcpy(self + 64, "\x7f" "ELF\x02\x01\x01", 7);
+    fx_le16(self + 64 + 18, 62);
+    fx_le64(self + 64 + 32, 64);
+    fx_le16(self + 64 + 54, 56);
+    fx_le16(self + 64 + 56, 2);
+    fx_le32(self + 128, 1);
+    fx_le64(self + 128 + 8, 0x1000);
+    fx_le64(self + 128 + 32, 0x1000);
+    fx_le32(self + FIXTURE_ELF_PROC_OFFSET, 0x61000001);
+    fx_le64(self + FIXTURE_ELF_PROC_OFFSET + 8, 0x1020);
+    fx_le64(self + FIXTURE_ELF_PROC_OFFSET + 32, 32);
+    uint8_t proc[32] = {0};
+    fx_le64(proc, sizeof(proc));
+    fx_le32(proc + 8, 0x4942524F);
+    fx_le32(proc + 20, sdk);
+    f = fopen(path, "wb");
+    if (!f) return -1;
+    int ok = fwrite(header, 1, sizeof(header), f) == sizeof(header);
+    if (lih) ok = ok && fseeko(f, 0x10000, SEEK_SET) == 0 &&
+        fwrite(inner, 1, sizeof(inner), f) == sizeof(inner);
+    ok = ok && fseeko(f, FIXTURE_SELF_OFFSET, SEEK_SET) == 0 &&
+        fwrite(self, 1, sizeof(self), f) == sizeof(self) &&
+        fseeko(f, (off_t)sdk_offset, SEEK_SET) == 0 && fwrite(proc, 1, sizeof(proc), f) == sizeof(proc) &&
+        fseeko(f, (off_t)cnt_offset, SEEK_SET) == 0 && fwrite(cnt, 1, cnt_size, f) == cnt_size;
+    if (fclose(f) != 0) ok = 0;
+    return ok ? 0 : -1;
 }
 
 #endif /* TEST_FIXTURE_H */

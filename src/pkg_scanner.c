@@ -119,7 +119,7 @@ static int compare_pkg_by_title_name(const void *a, const void *b) {
 
 #define MAX_PACKAGES 4096
 #define MAX_DRIVES   16
-#define PKG_MANIFEST_VERSION 3
+#define PKG_MANIFEST_VERSION 4
 /* PKG Manager X classification rules (kept apart from upstream's counter so
  * the two never collide). Bump when fork-side package metadata changes. */
 #define PKG_MANIFEST_X_VERSION 2
@@ -351,6 +351,7 @@ static int save_manifest_locked(void) {
                    "      \"default_language\": \"%s\",\n"
                    "      \"content_id\": \"%s\",\n"
                    "      \"app_version\": \"%s\",\n"
+                   "      \"sdk_version\": %u,\n"
                    "      \"file_size\": %llu,\n"
                    "      \"total_pkg_size\": %llu,\n"
                    "      \"icon_offset\": %llu,\n"
@@ -368,6 +369,7 @@ static int save_manifest_locked(void) {
                    "      \"platform\": \"%s\"\n"
                    "    }%s\n",
                 esc_path, esc_fn, esc_tid, esc_tname, esc_loc, esc_def_lang, esc_cid, esc_ver,
+                p->sdk_version,
                 (unsigned long long)p->file_size,
                 (unsigned long long)(p->total_pkg_size > 0 ? p->total_pkg_size : p->file_size),
                 (unsigned long long)p->icon_offset,
@@ -562,6 +564,8 @@ static int load_manifest_locked(void) {
                             extract_json_field(item, "blurhash", pkg->blurhash, sizeof(pkg->blurhash));
 
                             char val[64];
+                            extract_json_field(item, "sdk_version", val, sizeof(val));
+                            if (val[0]) pkg->sdk_version = (uint32_t)strtoul(val, NULL, 10);
                             extract_json_field(item, "file_size", val, sizeof(val));
                             if (val[0]) pkg->file_size = (uint64_t)strtoull(val, NULL, 10);
 
@@ -1128,6 +1132,39 @@ static void add_full_scan_drive(const char *id, const char *label, const char *p
     pthread_mutex_unlock(&g_scanner_mutex);
 }
 
+static void format_smb_drive_path(const smb_share_config_t *scfg, char *out_path, size_t out_sz) {
+    smb_share_config_t clean = *scfg;
+    smb_client_sanitize_config(&clean);
+    if (clean.path[0] != '\0') {
+        if (clean.port && clean.port != 445) {
+            snprintf(out_path, out_sz, "smb://%s:%d/%s/%s", clean.server, clean.port, clean.share, clean.path);
+        } else {
+            snprintf(out_path, out_sz, "smb://%s/%s/%s", clean.server, clean.share, clean.path);
+        }
+    } else {
+        if (clean.port && clean.port != 445) {
+            snprintf(out_path, out_sz, "smb://%s:%d/%s", clean.server, clean.port, clean.share);
+        } else {
+            snprintf(out_path, out_sz, "smb://%s/%s", clean.server, clean.share);
+        }
+    }
+}
+
+static void format_smb_drive_label(const smb_share_config_t *scfg, char *out_label, size_t out_sz) {
+    if (scfg->label[0] != '\0') {
+        strncpy(out_label, scfg->label, out_sz - 1);
+        out_label[out_sz - 1] = '\0';
+        return;
+    }
+    smb_share_config_t clean = *scfg;
+    smb_client_sanitize_config(&clean);
+    if (clean.path[0] != '\0') {
+        snprintf(out_label, out_sz, "SMB: %.30s/%.26s", clean.share, clean.path);
+    } else {
+        snprintf(out_label, out_sz, "SMB: %.58s", clean.share);
+    }
+}
+
 static int scan_full_owned(void) {
     pthread_mutex_lock(&g_scanner_mutex);
     g_package_count = 0;
@@ -1266,18 +1303,8 @@ static int scan_full_owned(void) {
             snprintf(s_id, sizeof(s_id), "smb%d", i);
         }
 
-        if (scfg->label[0] != '\0') {
-            strncpy(s_label, scfg->label, sizeof(s_label) - 1);
-            s_label[sizeof(s_label) - 1] = '\0';
-        } else {
-            snprintf(s_label, sizeof(s_label), "SMB: %.58s", scfg->share);
-        }
-
-        if (scfg->port && scfg->port != 445) {
-            snprintf(share_root, sizeof(share_root), "smb://%s:%d/%s", scfg->server, scfg->port, scfg->share);
-        } else {
-            snprintf(share_root, sizeof(share_root), "smb://%s/%s", scfg->server, scfg->share);
-        }
+        format_smb_drive_label(scfg, s_label, sizeof(s_label));
+        format_smb_drive_path(scfg, share_root, sizeof(share_root));
 
         if (scfg->browse_only) {
             add_full_scan_drive(s_id, s_label, share_root, "smb", 1, 0);
@@ -1790,7 +1817,7 @@ static int scan_quick_single_source(const char *drive_id, const char *drive_labe
                 if (pkg_matches_drive_path(g_packages[p].path, drive_path)) source_pkg_count++;
             }
             g_drives[d].pkg_count = source_pkg_count;
-            g_drives[d].clickable = (source_pkg_count > 0);
+            g_drives[d].clickable = (source_pkg_count > 0 || strcmp(drive_type, "smb") == 0);
             found_drive = 1;
             break;
         }
@@ -1869,30 +1896,18 @@ int pkg_scanner_scan_quick(const char *drive_id_or_path, int *out_changed) {
             snprintf(s_id, sizeof(s_id), "smb%d", i);
         }
 
-        if (scfg->label[0] != '\0') {
-            strncpy(s_label, scfg->label, sizeof(s_label) - 1);
-            s_label[sizeof(s_label) - 1] = '\0';
-        } else {
-            snprintf(s_label, sizeof(s_label), "SMB: %.58s", scfg->share);
-        }
-
-        if (scfg->port && scfg->port != 445) {
-            snprintf(share_root, sizeof(share_root), "smb://%s:%d/%s", scfg->server, scfg->port, scfg->share);
-        } else {
-            snprintf(share_root, sizeof(share_root), "smb://%s/%s", scfg->server, scfg->share);
-        }
+        format_smb_drive_label(scfg, s_label, sizeof(s_label));
+        format_smb_drive_path(scfg, share_root, sizeof(share_root));
 
         if (!drive_id_or_path || drive_id_or_path[0] == '\0' || strcmp(drive_id_or_path, "__all__") == 0 ||
             strcmp(drive_id_or_path, s_id) == 0 || strcmp(drive_id_or_path, share_root) == 0 ||
-            pkg_matches_drive_path(drive_id_or_path, share_root)) {
+            pkg_matches_drive_path(drive_id_or_path, share_root) ||
+            pkg_matches_drive_path(share_root, drive_id_or_path)) {
             if (scfg->browse_only) {
                 pthread_mutex_lock(&g_scanner_mutex);
-                char source_path[1024];
-                snprintf(source_path, sizeof(source_path), "%s%s%s", share_root,
-                         scfg->path[0] ? "/" : "", scfg->path);
                 size_t kept = 0;
                 for (size_t p = 0; p < g_package_count; p++) {
-                    if (pkg_matches_drive_path(g_packages[p].path, source_path)) {
+                    if (pkg_matches_drive_path(g_packages[p].path, share_root)) {
                         total_changed++;
                     } else {
                         if (kept != p) g_packages[kept] = g_packages[p];
@@ -1900,7 +1915,7 @@ int pkg_scanner_scan_quick(const char *drive_id_or_path, int *out_changed) {
                     }
                 }
                 g_package_count = kept;
-                remove_scanned_files_for_drive_locked(source_path);
+                remove_scanned_files_for_drive_locked(share_root);
                 int found = 0;
                 for (size_t d = 0; d < g_drive_count; d++) {
                     if (strcmp(g_drives[d].id, s_id) == 0) {
@@ -2335,6 +2350,7 @@ char *pkg_scanner_packages_for_drive_to_json_ex(const char *drive_id_or_path, co
             "\"default_language\":\"%s\","
             "\"content_id\":\"%s\","
             "\"app_version\":\"%s\","
+            "\"sdk_version\":%u,"
             "\"file_size\":%llu,"
             "\"total_pkg_size\":%llu,"
             "\"has_icon\":%s,"
@@ -2369,6 +2385,7 @@ char *pkg_scanner_packages_for_drive_to_json_ex(const char *drive_id_or_path, co
             esc_def_lang,
             esc_content_id,
             esc_app_version,
+            pkg->sdk_version,
             (unsigned long long)pkg->file_size,
             (unsigned long long)(pkg->total_pkg_size > 0 ? pkg->total_pkg_size : pkg->file_size),
             pkg->has_icon ? "true" : "false",

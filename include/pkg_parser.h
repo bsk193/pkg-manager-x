@@ -27,6 +27,7 @@ typedef struct {
     char default_language[PKG_DEFAULT_LANG_LEN];     /* e.g. "en-US" */
     char content_id[PKG_CONTENT_ID_LEN];
     char app_version[32];
+    uint32_t sdk_version;    /* Main PS5 executable SDK; 0 when unavailable. */
     uint64_t file_size;
     uint64_t total_pkg_size;
     uint64_t icon_offset;
@@ -43,6 +44,17 @@ typedef struct {
     char blurhash[64];       /* BlurHash placeholder for icon0.png ("" if none) */
     char platform[8];        /* "ps4", "ps5" or "" (see pkg_platform.h) */
 } pkg_detail_t;
+
+/* Reader returns 0 only when the complete requested range was read. */
+typedef int (*pkg_parser_read_fn)(void *ctx, uint64_t offset, void *buf, size_t size);
+
+/* Best-effort probe of block-aligned SELF headers at the start of a PS5 image.
+ * Reads only bounded headers and the main executable's process parameters.
+ * Encrypted, compressed, ambiguous or unsupported layouts return 0. */
+uint32_t pkg_parser_read_sdk(pkg_parser_read_fn read_fn, void *ctx,
+                             uint64_t image_start, uint64_t image_end);
+uint32_t pkg_parser_read_image_sdk(pkg_parser_read_fn read_fn, void *ctx,
+                                   const uint8_t *header, uint64_t cnt_offset);
 
 /**
  * Resolves the best-matching title from a localized_titles JSON object given
@@ -87,7 +99,7 @@ void pkg_parser_parse_param_sfo(const uint8_t *sfo, size_t sfo_len, char *out_ti
                                 char *out_default_lang, size_t def_lang_max);
 
 /**
- * Parses a PKG file (PS5 FIH or PS4 CNT format) and extracts metadata:
+ * Parses a PKG file (PS5 FIH/LIH or PS4 CNT format) and extracts metadata:
  * title_id, title_name, content_id, and icon0.png offset/size.
  * Returns 0 on success, negative value on error.
  */

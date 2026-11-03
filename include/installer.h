@@ -42,8 +42,7 @@ extern "C" {
 
 int installer_init(const char *server_url);
 int installer_start(const char *pkg_path);
-/* Start a base package and queue its update. Closing a direct-storage install
- * screen detaches tracking and discards the queued update. */
+/* Compatibility entry point: adds two independent jobs to the shared queue. */
 int installer_start_batch(const char *base_pkg_path, const char *update_pkg_path);
 /* NEW: start from a live RAM session ("live:<id>"); see installer.c. */
 int installer_start_live(const char *live_uri);
@@ -54,21 +53,21 @@ int installer_cancel(void);
  * INSTALLER_UNAVAILABLE: the HTTP source no longer has the package (404). */
 #define INSTALLER_REFUSED     (-15)
 #define INSTALLER_UNAVAILABLE (-16)
-/* Another package is installing: this one was added to the install queue and
- * starts automatically when the queue reaches it. */
-#define INSTALLER_QUEUED      (-17)
-/* An update / DLC whose base game just failed and is not installed. */
-#define INSTALLER_SKIPPED     (-18)
-/* Drop a waiting package from the queue (0, or -1 if it is not queued). */
-int installer_queue_remove(const char *pkg_path);
 const char *installer_refusal_reason(void);
 /* 1 while the current install is being canceled or the daemon stops. */
 int installer_is_canceling(void);
+int installer_cancel_path(const char *expected_path);
+/* Includes worker and cancellation cleanup, even after status stops installing. */
+int installer_is_busy(void);
 int installer_detach_direct_storage(int *out_update_skipped);
 void installer_record_poll(void);
 void installer_get_status(installer_status_t *out);
 char *installer_status_to_json(void);
 void installer_notify_bytes_streamed(uint64_t bytes_read);
+/* Called by a stream reader; records failure without joining its own thread. */
+void installer_notify_source_error(const char *expected_path);
+const char *installer_strerror(int code);
+int installer_is_nospace_error(int code);
 void install_log(const char *fmt, ...);
 char *install_log_get_text(size_t *out_len);
 /* The on-disk log (previous rotated file + current), survives restarts. */

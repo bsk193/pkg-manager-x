@@ -1,7 +1,7 @@
 /*
  * PKG Manager - Binary Package & Metadata Parser
  *
- * Reads PS4 (CNT) and PS5 (FIH) package headers, parses param.sfo /
+ * Reads PS4 (CNT) and PS5 (FIH/LIH) package headers, parses param.sfo /
  * param.json tables, and extracts embedded icon0.png artwork.
  */
 
@@ -38,6 +38,99 @@ static inline uint64_t read_le64(const uint8_t *p) {
         v |= ((uint64_t)p[i]) << (i * 8);
     }
     return v;
+}
+
+static int sdk_range(uint64_t offset, uint64_t size, uint64_t limit) {
+    return offset <= limit && size <= limit - offset;
+}
+
+uint32_t pkg_parser_read_sdk(pkg_parser_read_fn read_fn, void *ctx,
+                             uint64_t image_start, uint64_t image_end) {
+    if (!read_fn || image_start >= image_end) return 0;
+    uint32_t sdk = 0;
+    int main_count = 0;
+    /* Data-first images can place the executable elsewhere or compress it.
+     * Keep this optional probe bounded; missing SDK must not fail PKG parsing. */
+    for (unsigned block = 0; block < 16; block++) {
+        uint64_t delta = (uint64_t)block * 0x10000;
+        if (!sdk_range(image_start, delta, image_end)) break;
+        uint64_t base = image_start + delta;
+        uint8_t h[8192];
+        size_t size = image_end - base < sizeof(h) ? (size_t)(image_end - base) : sizeof(h);
+        if (size < 32) break;
+        if (read_fn(ctx, base, h, size) != 0) return 0;
+        if (read_le32(h) != 0xEEF51454) continue;
+        uint64_t self_size = read_le64(h + 0x10);
+        uint16_t segments = read_le16(h + 0x18);
+        size_t elf = 32 + (size_t)segments * 32;
+        if (!segments || segments > 64 || !sdk_range(base, self_size, image_end) ||
+            self_size < elf + 64 || elf + 64 > size) continue;
+        const uint8_t *eh = h + elf;
+        if (memcmp(eh, "\x7f" "ELF", 4) || eh[4] != 2 || eh[5] != 1 || eh[6] != 1 ||
+            read_le16(eh + 18) != 62) continue;
+        uint64_t phoff = read_le64(eh + 32);
+        uint16_t phsize = read_le16(eh + 54), count = read_le16(eh + 56);
+        if (phsize != 56 || !count || count > 64 || phoff < 64 ||
+            !sdk_range(elf, phoff, size) ||
+            !sdk_range(elf + phoff, (uint64_t)count * 56, size)) continue;
+        const uint8_t *ph = h + elf + phoff;
+        for (uint16_t p = 0; p < count; p++) {
+            const uint8_t *param = ph + (size_t)p * 56;
+            if (read_le32(param) != 0x61000001) continue;
+            if (++main_count > 1) return 0;
+            uint64_t poff = read_le64(param + 8), plen = read_le64(param + 32);
+            if (plen < 24) return 0;
+            for (uint16_t l = 0; l < count; l++) {
+                const uint8_t *load = ph + (size_t)l * 56;
+                uint64_t loff = read_le64(load + 8), llen = read_le64(load + 32);
+                if (read_le32(load) != 1 || poff < loff ||
+                    !sdk_range(poff - loff, plen, llen)) continue;
+                for (uint16_t s = 0; s < segments; s++) {
+                    const uint8_t *seg = h + 32 + (size_t)s * 32;
+                    uint64_t flags = read_le64(seg), off = read_le64(seg + 8);
+                    uint64_t stored = read_le64(seg + 16), unpacked = read_le64(seg + 24);
+                    if ((flags >> 20) != l || !(flags & 0x800)) continue;
+                    if ((flags & 0xA) || stored != unpacked || off < elf + phoff + (uint64_t)count * 56 ||
+                        !sdk_range(off, stored, self_size) ||
+                        !sdk_range(poff - loff, plen, stored)) return 0;
+                    uint64_t physical = base + off + (poff - loff);
+                    uint8_t proc[24];
+                    if (read_fn(ctx, physical, proc, sizeof(proc)) != 0 ||
+                        read_le32(proc + 8) != 0x4942524F ||
+                        read_le64(proc) < 24 || read_le64(proc) > plen) return 0;
+                    uint32_t value = read_le32(proc + 20);
+                    unsigned major = value >> 24;
+                    if (!major || (major >> 4) > 9 || (major & 15) > 9) return 0;
+                    sdk = value;
+                }
+            }
+        }
+    }
+    return main_count == 1 ? sdk : 0;
+}
+
+static int sdk_file_read(void *ctx, uint64_t offset, void *buf, size_t size) {
+    if (offset > INT64_MAX) return -1;
+    return pread(*(int *)ctx, buf, size, (off_t)offset) == (ssize_t)size ? 0 : -1;
+}
+
+uint32_t pkg_parser_read_image_sdk(pkg_parser_read_fn read_fn, void *ctx,
+                                   const uint8_t *header, uint64_t cnt_offset) {
+    if (!header || !read_fn) return 0;
+    uint64_t image_start;
+    if (memcmp(header, "\x7f" "FIH", 4) == 0) {
+        image_start = read_le64(header + 0x10);
+    } else if (memcmp(header, "\x7f" "LIH", 4) == 0) {
+        uint64_t inner = read_le64(header + 0x20);
+        uint8_t fih[0x80];
+        if (!inner || !sdk_range(inner, sizeof(fih), cnt_offset) ||
+            read_fn(ctx, inner, fih, sizeof(fih)) != 0 || memcmp(fih, "\x7f" "FIH", 4)) return 0;
+        uint64_t offset = read_le64(fih + 0x10);
+        if (!offset || !sdk_range(inner, offset, cnt_offset)) return 0;
+        image_start = inner + offset;
+    } else return 0;
+    if (!image_start) return 0;
+    return pkg_parser_read_sdk(read_fn, ctx, image_start, cnt_offset);
 }
 
 /* Helper to extract a string value for a given key from JSON */
@@ -895,7 +988,18 @@ int pkg_parser_parse(const char *file_path, pkg_detail_t *out) {
     int cnt_found = 0;
     pkg_platform_note_header(out, hdr, (size_t)hdr_read);
 
-    if (memcmp(hdr, "\x7f" "CNT", 4) == 0) {
+    int is_lih = memcmp(hdr, "\x7f" "LIH", 4) == 0;
+    if (is_lih) {
+        uint64_t cand = read_le64(hdr + 0x30);
+        uint8_t magic[4];
+        if (read_le16(hdr + 6) == 1 && cand >= 0x80 &&
+            sdk_range(cand, 0x80, out->file_size) &&
+            pread(fd, magic, sizeof(magic), (off_t)cand) == sizeof(magic) &&
+            memcmp(magic, "\x7f" "CNT", 4) == 0) {
+            cnt_offset = cand;
+            cnt_found = 1;
+        }
+    } else if (memcmp(hdr, "\x7f" "CNT", 4) == 0) {
         /* Standard PS4 / PS5 CNT at root */
         cnt_offset = 0;
         cnt_found = 1;
@@ -1106,7 +1210,9 @@ int pkg_parser_parse(const char *file_path, pkg_detail_t *out) {
 
     int is_delta_type = ((cnt_type_magic & 0xFF) == 0x1E || (cnt_type_magic & 0xFF000000) == 0x41000000);
 
-    if (has_playgo_chunk_patch || has_delta_patch || is_delta_type ||
+    uint32_t content_flags = read_be32(cnt_hdr + 0x78);
+    if (is_lih || (content_flags & 0x40100000) ||
+        has_playgo_chunk_patch || has_delta_patch || is_delta_type ||
         (out->category[0] != '\0' && strncmp(out->category, "gp", 2) == 0)) {
         out->pkg_type = PKG_TYPE_UPDATE;
     } else if (strncmp(out->category, "ac", 2) == 0 || strncmp(out->category, "al", 2) == 0 ||
@@ -1148,7 +1254,6 @@ int pkg_parser_parse(const char *file_path, pkg_detail_t *out) {
         free(str_table);
     }
     free(entry_table);
-    close(fd);
 
     /* Fallbacks if title_id or title_name could not be found */
     if (out->title_id[0] == '\0' && out->content_id[0] != '\0') {
@@ -1172,6 +1277,10 @@ int pkg_parser_parse(const char *file_path, pkg_detail_t *out) {
         }
     }
 
+    if (strncmp(out->title_id, "PPSA", 4) == 0) {
+        out->sdk_version = pkg_parser_read_image_sdk(sdk_file_read, &fd, hdr, cnt_offset);
+    }
+    close(fd);
     out->is_valid = 1;
     return 0;
 }
@@ -1183,6 +1292,16 @@ static const uint8_t *mem_slice(const uint8_t *data, size_t data_len,
     if (sz == 0 || off > data_len) return NULL;
     if (sz > data_len || off > data_len - sz) return NULL;
     return data + off;
+}
+
+typedef struct { const uint8_t *data; size_t size; } sdk_mem_t;
+
+static int sdk_mem_read(void *ctx, uint64_t offset, void *buf, size_t size) {
+    sdk_mem_t *mem = ctx;
+    const uint8_t *p = mem_slice(mem->data, mem->size, offset, size);
+    if (!p) return -1;
+    memcpy(buf, p, size);
+    return 0;
 }
 
 int pkg_parser_parse_mem(const uint8_t *data, size_t data_len,
@@ -1274,7 +1393,17 @@ int pkg_parser_parse_mem(const uint8_t *data, size_t data_len,
     uint64_t cnt_offset = 0;
     int cnt_found = 0;
     pkg_platform_note_header(out, hdr, 0x80);
-    if (memcmp(hdr, "\x7f" "CNT", 4) == 0) {
+    int is_lih = memcmp(hdr, "\x7f" "LIH", 4) == 0;
+    if (is_lih) {
+        uint64_t cand = read_le64(hdr + 0x30);
+        const uint8_t *t = mem_slice(data, data_len, cand, 0x80);
+        if (read_le16(hdr + 6) == 1 && cand >= 0x80 &&
+            (total_size == 0 || sdk_range(cand, 0x80, total_size)) &&
+            t && memcmp(t, "\x7f" "CNT", 4) == 0) {
+            cnt_offset = cand;
+            cnt_found = 1;
+        }
+    } else if (memcmp(hdr, "\x7f" "CNT", 4) == 0) {
         cnt_offset = 0;
         cnt_found = 1;
     } else if (memcmp(hdr, "\x7f" "FIH", 4) == 0) {
@@ -1483,7 +1612,9 @@ int pkg_parser_parse_mem(const uint8_t *data, size_t data_len,
 
     int is_delta_type = ((cnt_type_magic & 0xFF) == 0x1E || (cnt_type_magic & 0xFF000000) == 0x41000000);
 
-    if (has_playgo_chunk_patch || has_delta_patch || is_delta_type ||
+    uint32_t content_flags = read_be32(cnt_hdr + 0x78);
+    if (is_lih || (content_flags & 0x40100000) ||
+        has_playgo_chunk_patch || has_delta_patch || is_delta_type ||
         (out->category[0] != '\0' && strncmp(out->category, "gp", 2) == 0)) {
         out->pkg_type = PKG_TYPE_UPDATE;
     } else if (strncmp(out->category, "ac", 2) == 0 || strncmp(out->category, "al", 2) == 0 ||
@@ -1539,6 +1670,10 @@ int pkg_parser_parse_mem(const uint8_t *data, size_t data_len,
         }
     }
 
+    if (strncmp(out->title_id, "PPSA", 4) == 0) {
+        sdk_mem_t mem = {data, data_len};
+        out->sdk_version = pkg_parser_read_image_sdk(sdk_mem_read, &mem, hdr, cnt_offset);
+    }
     out->has_icon = 0;
     out->is_valid = 1;
     PM_STAGE(0);

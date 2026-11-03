@@ -3,8 +3,8 @@
 
 /* Bump when persisted package metadata semantics change and cached package
  * records must be reparsed. */
-#define PKG_CACHE_FORMAT_VERSION 3
-#define PKG_CACHE_FORMAT_TAG "pkg-cache-v3"
+#define PKG_CACHE_FORMAT_VERSION 4
+#define PKG_CACHE_FORMAT_TAG "pkg-cache-v4"
 /* PKG Manager X metadata rules stored as "x_rules" in each cache entry
  * (separate from upstream's version so the two never collide). */
 #define PKG_CACHE_X_RULES 2
@@ -22,6 +22,7 @@ typedef struct {
     int all_sources_mode;
     int pkg_install_debug;  /* 1 = log every stream server connection to /data/pkgmgr/ */
     int allow_ps4_on_ps5;   /* PKG Manager X: PS4 games/DLC/updates installable on PS5 (default 1) */
+    int show_package_paths; /* 1 = show filename & path on package details screen */
     smb_share_config_t smb_shares[MAX_SMB_SHARES];
     int smb_share_count;
 } app_settings_t;

@@ -27,6 +27,7 @@ static app_settings_t g_settings = {
     .all_sources_mode = 0,
     .pkg_install_debug = 0,
     .allow_ps4_on_ps5 = 1,
+    .show_package_paths = 0,
     .smb_share_count = 0
 };
 
@@ -144,6 +145,14 @@ static void load_settings_from_disk(void) {
         g_settings.allow_ps4_on_ps5 = strncmp(v, "false", 5) != 0;
     }
     pkg_platform_set_allow_ps4_on_ps5(g_settings.allow_ps4_on_ps5);
+    char *path_ptr = strstr(buf, "\"show_package_paths\":");
+    if (path_ptr) {
+        if (strncmp(path_ptr + 21, "true", 4) == 0 || strncmp(path_ptr + 22, "true", 4) == 0) {
+            g_settings.show_package_paths = 1;
+        } else {
+            g_settings.show_package_paths = 0;
+        }
+    }
 
     pkg_cache_parse_smb_shares(buf, g_settings.smb_shares, &g_settings.smb_share_count);
     free(buf);
@@ -165,12 +174,14 @@ static void save_settings_to_disk(void) {
                "  \"all_sources_mode\": %s,\n"
                "  \"pkg_install_debug\": %s,\n"
                "  \"allow_ps4_on_ps5\": %s,\n"
+               "  \"show_package_paths\": %s,\n"
                "  \"smb_shares\": [\n",
             g_settings.move_installed_to_end ? "true" : "false",
             g_settings.fade_installed_packages ? "true" : "false",
             g_settings.all_sources_mode ? "true" : "false",
             g_settings.pkg_install_debug ? "true" : "false",
-            g_settings.allow_ps4_on_ps5 ? "true" : "false");
+            g_settings.allow_ps4_on_ps5 ? "true" : "false",
+            g_settings.show_package_paths ? "true" : "false");
 
     for (int i = 0; i < g_settings.smb_share_count; i++) {
         const smb_share_config_t *s = &g_settings.smb_shares[i];
@@ -239,6 +250,7 @@ int pkg_cache_set_settings(const app_settings_t *settings) {
     g_settings.pkg_install_debug = settings->pkg_install_debug ? 1 : 0;
     g_settings.allow_ps4_on_ps5 = settings->allow_ps4_on_ps5 ? 1 : 0;
     pkg_platform_set_allow_ps4_on_ps5(g_settings.allow_ps4_on_ps5);
+    g_settings.show_package_paths = settings->show_package_paths ? 1 : 0;
     g_settings.smb_share_count = (settings->smb_share_count <= MAX_SMB_SHARES) ? settings->smb_share_count : MAX_SMB_SHARES;
     if (g_settings.smb_share_count < 0) g_settings.smb_share_count = 0;
     for (int i = 0; i < g_settings.smb_share_count; i++) {
@@ -438,6 +450,8 @@ int pkg_cache_lookup(const char *checksum, pkg_detail_t *out_detail) {
     memset(out_detail, 0, sizeof(*out_detail));
 
     char val[512];
+    extract_json_field(buf, "sdk_version", val, sizeof(val));
+    if (val[0]) out_detail->sdk_version = (uint32_t)strtoul(val, NULL, 10);
     extract_json_field(buf, "title_id", out_detail->title_id, sizeof(out_detail->title_id));
     extract_json_field(buf, "title_name", out_detail->title_name, sizeof(out_detail->title_name));
     extract_json_field(buf, "localized_titles", out_detail->localized_titles, sizeof(out_detail->localized_titles));
@@ -530,6 +544,7 @@ static int write_meta_json(const char *dir_path, const pkg_detail_t *detail, con
                "  \"default_language\": \"%s\",\n"
                "  \"content_id\": \"%s\",\n"
                "  \"app_version\": \"%s\",\n"
+               "  \"sdk_version\": %u,\n"
                "  \"file_size\": %llu,\n"
                "  \"total_pkg_size\": %llu,\n"
                "  \"icon_offset\": %llu,\n"
@@ -547,6 +562,7 @@ static int write_meta_json(const char *dir_path, const pkg_detail_t *detail, con
                "  \"x_rules\": %d\n"
                "}\n",
             esc_title_id, esc_title_name, esc_loc, esc_def_lang, esc_content_id, esc_app_ver,
+            detail->sdk_version,
             (unsigned long long)detail->file_size,
             (unsigned long long)(detail->total_pkg_size > 0 ? detail->total_pkg_size : detail->file_size),
             (unsigned long long)detail->icon_offset, detail->icon_size,

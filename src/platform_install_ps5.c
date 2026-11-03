@@ -105,6 +105,7 @@ const char *platform_install_strerror(int code) {
     case 0x80A30001u: return "APP_INSTALLER_ERROR_UNKNOWN";
     case 0x80A30002u: return "APP_INSTALLER_ERROR_NOSPACE";
     case 0x80A30003u: return "APP_INSTALLER_ERROR_PARAM";
+    case 0x80B21104u: return "SCE_PLAYGO_ERROR_CORE_NO_FREE_SPACE";
     case 0x80B21121u: return "SCE_PLAYGO_ERROR_CORE_NET_NOT_CONNECTED";
     case 0x80B21164u: return "PLAYGO_ERROR_CORE_INVALID_CONTENT_ID";
     case 0x80B21167u: return "PLAYGO_ERROR_CORE_CONTENT_ID_MISMATCH";

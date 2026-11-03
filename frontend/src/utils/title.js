@@ -1,8 +1,11 @@
-import { BUILD_VERSION, BUILD_COMMIT, BUILD_DATE, UPSTREAM_VERSION } from '../constants/config';
+import { BUILD_VERSION, BUILD_COMMIT, BUILD_DATE, UPSTREAM_VERSION, isPlayStation } from '../constants/config.js';
+import { formatBytes, formatEta } from './formatters.js';
+
+const initialDocTitle = typeof document !== 'undefined' ? document.title : '';
 
 // "PKG Manager X v1.1.0 (abc1234, date) - based on PKG Manager v1.2.4 by PLK".
 // The (commit, date) group must stay the first parenthesized "a, b" pair: it
-// is parsed back from document.title below.
+// is parsed back from the page title below.
 const BASED_ON = UPSTREAM_VERSION ? ` - based on PKG Manager v${UPSTREAM_VERSION} by PLK` : ' - based on PKG Manager by PLK';
 
 export function getBrowserTitle(ver) {
@@ -11,13 +14,78 @@ export function getBrowserTitle(ver) {
   if (BUILD_COMMIT && BUILD_DATE) {
     return `PKG Manager X v${v} (${BUILD_COMMIT}, ${BUILD_DATE})${BASED_ON}`;
   }
-  if (typeof document !== 'undefined' && document.title) {
-    const match = document.title.match(/\(([^,()]+),\s*([^)]+)\)/);
+  const titleToCheck = initialDocTitle || (typeof document !== 'undefined' ? document.title : '');
+  if (titleToCheck) {
+    const match = titleToCheck.match(/\(([^,()]+),\s*([^)]+)\)/);
     if (match) {
       return `PKG Manager X v${v} (${match[1]}, ${match[2]})${BASED_ON}`;
     }
   }
   return `PKG Manager X v${v}${BASED_ON}`;
+}
+
+export function makeTextProgressBar(percent, length = 10) {
+  const p = Math.min(100, Math.max(0, percent || 0));
+  const filled = Math.min(length, Math.max(0, Math.round((p / 100) * length)));
+  const empty = length - filled;
+  return `[${'■'.repeat(filled)}${'□'.repeat(empty)}]`;
+}
+
+export function formatInstallTitle({
+  activeJob,
+  totalCount = 1,
+  currentIndex = 1,
+  speed = 0,
+  appVersion,
+  onPS5 = isPlayStation,
+}) {
+  const defaultTitle = getBrowserTitle(appVersion);
+  if (!activeJob) return defaultTitle;
+
+  const isInstalling = activeJob.state === 'installing';
+  const isPreparing = activeJob.state === 'preparing';
+  if (!isInstalling && !isPreparing) return defaultTitle;
+
+  // On non-PS5 desktop browsers, keep compact percentage in title
+  if (!onPS5) {
+    if (activeJob.is_direct_storage) return `(Direct Storage) ${defaultTitle}`;
+    if (isPreparing) return `(Preparing) ${defaultTitle}`;
+    const pct = Math.floor(Math.min(100, Math.max(0, activeJob.progress || 0)));
+    return `(${pct}%) ${defaultTitle}`;
+  }
+
+  // On PS5: detailed title with pseudo text-based progress bar
+  let titleName = activeJob.title_name || (activeJob.path ? activeJob.path.split('/').pop() : '') || 'Package';
+  if (titleName.length > 40) {
+    titleName = `${titleName.slice(0, 37)}...`;
+  }
+  const batchPrefix = totalCount > 1 ? `[${currentIndex}/${totalCount}] ` : '';
+
+  if (activeJob.is_direct_storage) {
+    return `[Direct Storage] ${batchPrefix}${titleName}`.trim();
+  }
+  if (isPreparing) {
+    return `[Preparing] ${batchPrefix}${titleName}`.trim();
+  }
+
+  const pct = Math.floor(Math.min(100, Math.max(0, activeJob.progress || 0)));
+  const bar = makeTextProgressBar(pct, 10);
+
+  const parts = [`${bar} ${pct}%`];
+  parts.push(`${batchPrefix}${titleName}`.trim());
+
+  if (speed > 0) {
+    parts.push(`${formatBytes(speed)}/s`);
+    const remainingBytes = Math.max(0, (activeJob.total_bytes || 0) - (activeJob.downloaded_bytes || 0));
+    if (remainingBytes > 0) {
+      const eta = formatEta(remainingBytes / speed);
+      if (eta) parts.push(eta);
+    }
+  } else if (activeJob.total_bytes > 0 && activeJob.downloaded_bytes > 0) {
+    parts.push(`${formatBytes(activeJob.downloaded_bytes)} / ${formatBytes(activeJob.total_bytes)}`);
+  }
+
+  return parts.join(' · ');
 }
 
 export function getFullVersion(ver) {

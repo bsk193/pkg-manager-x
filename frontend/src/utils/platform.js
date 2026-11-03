@@ -86,3 +86,9 @@ export function pkgGreyed(pkg, consoleName) {
 export const PLATFORM_FILTER_STORAGE_KEY = 'pkgmgr_platform_filter';
 export const TYPE_FILTER_STORAGE_KEY = 'pkgmgr_type_filter';
 export const HIDE_GREYED_STORAGE_KEY = 'pkgmgr_hide_greyed';
+export function getPlatform(titleId) {
+  const normalized = String(titleId || '').trim().toUpperCase();
+  if (normalized.startsWith('PPSA')) return 'PS5';
+  if (normalized.startsWith('CUSA')) return 'PS4';
+  return null;
+}
