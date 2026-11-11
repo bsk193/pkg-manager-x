@@ -167,7 +167,9 @@ jobs:
                sudo apt-get install -y -qq -o Acquire::Retries=3 clang lld python3-pil; then
               ok=1; break
             fi
-            echo "apt attempt $i failed; retrying in 30 s"; sleep 30
+            echo "apt attempt $i failed; retrying in 30 s with a fallback mirror"; sleep 30
+            sudo sed -i 's#http://\(azure\.\)\?\(archive\|security\)\.ubuntu\.com/ubuntu#http://mirrors.edge.kernel.org/ubuntu#g' \
+              /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list 2>/dev/null || true
           done
           [ "$ok" = 1 ]
           # PkgTool.Core is an older self-contained .NET build that needs OpenSSL 1.1.

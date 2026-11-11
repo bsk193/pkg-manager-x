@@ -9,7 +9,7 @@ FROM ubuntu:${UBUNTU_TAG}
 
 # Install build tools and compiler (Clang 18 and LLD 18 required by the SDK)
 # GitHub runners sometimes cannot resolve the Ubuntu mirrors for a few
-# minutes: retry instead of failing the whole build.
+# minutes: retry, switching to another mirror after the first failure.
 RUN ok=0; for i in 1 2 3 4 5; do \
       apt-get update -o Acquire::Retries=3 && \
       apt-get install -y -o Acquire::Retries=3 \
@@ -30,7 +30,9 @@ RUN ok=0; for i in 1 2 3 4 5; do \
         sudo \
         unzip \
       && ok=1 && break; \
-      echo "apt attempt $i failed; retrying in 30 s"; sleep 30; \
+      echo "apt attempt $i failed; retrying in 30 s with a fallback mirror"; sleep 30; \
+      sed -i 's#http://\(archive\|security\).ubuntu.com/ubuntu#http://mirrors.edge.kernel.org/ubuntu#g' \
+        /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list 2>/dev/null || true; \
     done; \
     [ "$ok" = 1 ] && rm -rf /var/lib/apt/lists/*
 
