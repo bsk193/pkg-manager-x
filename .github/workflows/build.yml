@@ -160,23 +160,43 @@ jobs:
           curl -fsSL "$OO_URL" | tar xz -C ~/OpenOrbis
       - name: Tools
         run: |
-          # Retry: runners sometimes cannot resolve the Ubuntu mirrors for a few minutes.
-          ok=0
-          for i in 1 2 3 4 5; do
-            if sudo apt-get update -qq -o Acquire::Retries=3 &&
-               sudo apt-get install -y -qq -o Acquire::Retries=3 clang lld python3-pil; then
-              ok=1; break
-            fi
-            echo "apt attempt $i failed; retrying in 30 s with a fallback mirror"; sleep 30
-            sudo sed -i 's#http://\(azure\.\)\?\(archive\|security\)\.ubuntu\.com/ubuntu#http://mirrors.edge.kernel.org/ubuntu#g' \
+          # The runner image usually has clang already; only fetch what is missing.
+          # Ubuntu's mirrors sometimes do not resolve on GitHub runners for a long
+          # time, so apt retries with a fallback mirror, and Pillow can come from PyPI.
+          FALLBACK=http://mirrors.edge.kernel.org/ubuntu
+          use_fallback_mirror() {
+            echo "$FALLBACK/" | sudo tee /etc/apt/apt-mirrors.txt > /dev/null || true
+            sudo sed -i "s#http://\(azure\.\)\?\(archive\|security\)\.ubuntu\.com/ubuntu#$FALLBACK#g" \
               /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list 2>/dev/null || true
-          done
-          [ "$ok" = 1 ]
+          }
+          need=""
+          command -v clang > /dev/null || need="$need clang"
+          command -v ld.lld > /dev/null || need="$need lld"
+          if [ -n "$need" ]; then
+            ok=0
+            for i in 1 2 3 4 5; do
+              if sudo apt-get update -qq -o Acquire::Retries=3 &&
+                 sudo apt-get install -y -qq -o Acquire::Retries=3 $need; then
+                ok=1; break
+              fi
+              echo "apt attempt $i failed; retrying in 30 s with a fallback mirror"; sleep 30
+              use_fallback_mirror
+            done
+            [ "$ok" = 1 ]
+          fi
+          python3 -c "import PIL" 2>/dev/null ||
+            python3 -m pip install --quiet --user --break-system-packages pillow
+          python3 -c "import PIL"
           # PkgTool.Core is an older self-contained .NET build that needs OpenSSL 1.1.
           if [ ! -e /usr/lib/x86_64-linux-gnu/libssl.so.1.1 ]; then
-            DEB=$(curl -fsSL http://security.ubuntu.com/ubuntu/pool/main/o/openssl/ \
-                  | grep -o 'libssl1\.1_1\.1\.1f-1ubuntu2\.[0-9]*_amd64\.deb' | sort -V | tail -1)
-            curl -fsSL -o /tmp/libssl1.1.deb "http://security.ubuntu.com/ubuntu/pool/main/o/openssl/$DEB"
+            for base in http://security.ubuntu.com/ubuntu "$FALLBACK"; do
+              DEB=$(curl -fsSL --max-time 60 "$base/pool/main/o/openssl/" \
+                    | grep -o 'libssl1\.1_1\.1\.1f-1ubuntu2\.[0-9]*_amd64\.deb' | sort -V | tail -1) || DEB=""
+              if [ -n "$DEB" ] && curl -fsSL --max-time 300 -o /tmp/libssl1.1.deb "$base/pool/main/o/openssl/$DEB"; then
+                break
+              fi
+              echo "OpenSSL 1.1 not reachable at $base"
+            done
             sudo dpkg -i /tmp/libssl1.1.deb
           fi
           OO=$(dirname "$(find ~/OpenOrbis -name link.x -print -quit)")
