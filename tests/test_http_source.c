@@ -341,6 +341,21 @@ static void test_pegasus_catalog(void) {
     http_source_test_result_t r;
     http_source_test(&c, &r);
     assert(r.success && strcmp(r.listing, "pegasus") == 0 && r.pkg_count == 3);
+
+    /* The token stays in the stored config but never reaches the sources
+     * API (like passwords), nor the redacted form used in logs. */
+    assert(http_sources_set(&c, 1) == 1);
+    char *js = http_sources_to_json();
+    assert(js && !strstr(js, "token=abc") && strstr(js, "\"url_query_hidden\":true"));
+    free(js);
+    http_source_config_t got[2];
+    assert(http_sources_get(got, 2) == 1 && strstr(got[0].url, "token=abc"));
+    char shown[600];
+    http_source_url_redacted(c.url, shown, sizeof(shown));
+    assert(!strchr(shown, '?'));
+    http_source_config_t none;
+    memset(&none, 0, sizeof(none));
+    http_sources_set(&none, 0);
     unlink(HT_ROOT "/catalog.json");
     printf("  Pegasus DL+ catalog ok\n");
 }

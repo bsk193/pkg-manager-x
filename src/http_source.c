@@ -492,6 +492,18 @@ int http_source_url_is_catalog_file(const char *url) {
     return 1;
 }
 
+/* Copy of a source URL without its query string: a catalog URL may carry
+ * an access token there, which must not reach logs or the sources API. */
+void http_source_url_redacted(const char *url, char *out, size_t out_sz) {
+    if (!out || out_sz == 0) return;
+    out[0] = '\0';
+    if (!url) return;
+    size_t n = strcspn(url, "?#");
+    if (n >= out_sz) n = out_sz - 1;
+    memcpy(out, url, n);
+    out[n] = '\0';
+}
+
 int http_source_sanitize(http_source_config_t *c) {
     if (!c) return -1;
     trim_inplace(c->url);
@@ -697,16 +709,19 @@ char *http_sources_to_json(void) {
         char e_id[80], e_label[160], e_url[1100], e_user[160], e_mode[40], e_pin[220];
         json_escape(c->id, e_id, sizeof(e_id));
         json_escape(c->label, e_label, sizeof(e_label));
-        json_escape(c->url, e_url, sizeof(e_url));
+        char shown_url[sizeof(c->url)];
+        http_source_url_redacted(c->url, shown_url, sizeof(shown_url));
+        json_escape(shown_url, e_url, sizeof(e_url));
         json_escape(c->username, e_user, sizeof(e_user));
         json_escape(c->tls_mode, e_mode, sizeof(e_mode));
         json_escape(c->tls_pin, e_pin, sizeof(e_pin));
         int w = snprintf(json + pos, cap - pos,
                          "%s{\"id\":\"%s\",\"label\":\"%s\",\"url\":\"%s\",\"username\":\"%s\","
-                         "\"password\":\"\",\"has_password\":%s,\"tls_mode\":\"%s\",\"tls_pin\":\"%s\","
+                         "\"password\":\"\",\"has_password\":%s,\"url_query_hidden\":%s,\"tls_mode\":\"%s\",\"tls_pin\":\"%s\","
                          "\"enabled\":%s}",
                          i ? "," : "", e_id, e_label, e_url, e_user,
-                         c->password[0] ? "true" : "false", e_mode, e_pin,
+                         c->password[0] ? "true" : "false",
+                         strcmp(shown_url, c->url) ? "true" : "false", e_mode, e_pin,
                          c->enabled ? "true" : "false");
         if (w < 0 || (size_t)w >= cap - pos) break;
         pos += (size_t)w;
@@ -2399,7 +2414,11 @@ static int scan_with(const http_source_config_t *cfg, http_pkg_callback_t cb, vo
     s.conn = NULL;
     free(s.seen);
     s.seen = NULL;
-    if (rc < 0) install_log("[HTTP] Scan of %s failed: %s", cfg->url, s.err);
+    if (rc < 0) {
+        char shown[sizeof(cfg->url)];
+        http_source_url_redacted(cfg->url, shown, sizeof(shown));
+        install_log("[HTTP] Scan of %s failed: %s", shown, s.err);
+    }
     if (out_ctx) *out_ctx = s;
     return rc;
 }

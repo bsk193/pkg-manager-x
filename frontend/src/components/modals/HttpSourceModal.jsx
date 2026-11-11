@@ -60,6 +60,7 @@ export default function HttpSourceModal({
             <p className="text-[11px] text-zinc-500 mt-1">
               A folder (sub-folders like <span className="font-mono">PS4/</span>, <span className="font-mono">PS5/</span> are scanned too),
               or a Pegasus DL+ catalog: the full URL of its <span className="font-mono">.json</span> file.
+              {form.url_query_hidden && ' The URL\'s query string (e.g. an access token) is hidden and kept; enter the full URL again to change it.'}
               {!httpsSupported && ' HTTPS is not available in this build.'}
             </p>
           </div>

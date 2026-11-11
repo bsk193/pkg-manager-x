@@ -72,6 +72,8 @@ char *http_sources_to_json(void);
 /* 1 when url names a JSON catalog file (e.g. a Pegasus DL+ catalog.json)
  * rather than a folder. */
 int http_source_url_is_catalog_file(const char *url);
+/* url without its query string (catalog tokens stay out of logs / API). */
+void http_source_url_redacted(const char *url, char *out, size_t out_sz);
 int http_source_sanitize(http_source_config_t *cfg);
 /* Finds the configured source whose base URL prefixes url. */
 int http_sources_find_for_url(const char *url, http_source_config_t *out);

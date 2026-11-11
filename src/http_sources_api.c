@@ -52,6 +52,23 @@ static void inherit_password(http_source_config_t *c, const http_source_config_t
     }
 }
 
+/* GET shows a catalog URL without its query (it may hold an access token)
+ * and sets url_query_hidden. A POST that sends that URL back without a
+ * query keeps the stored one: same URL without query, and same id when
+ * both have one. */
+static void inherit_url_query(http_source_config_t *c, const http_source_config_t *old, int old_count) {
+    if (strchr(c->url, '?') || !http_source_url_is_catalog_file(c->url)) return;
+    for (int j = 0; j < old_count; j++) {
+        if (!strchr(old[j].url, '?')) continue;
+        char bare[sizeof(old[j].url)];
+        http_source_url_redacted(old[j].url, bare, sizeof(bare));
+        if (strcasecmp(c->url, bare) != 0) continue;
+        if (c->id[0] && old[j].id[0] && strcmp(c->id, old[j].id) != 0) continue;
+        snprintf(c->url, sizeof(c->url), "%s", old[j].url);
+        return;
+    }
+}
+
 static char *platform_json(void) {
     const char *console = pkg_platform_console();
     int is_ps4 = strcmp(console, "ps4") == 0;
@@ -90,6 +107,7 @@ int http_sources_api_handle(struct MHD_Connection *conn, const char *url, const 
             }
             for (int i = 0; i < n; i++) {
                 inherit_password(&list[i], old, old_count);
+                inherit_url_query(&list[i], old, old_count);
                 if (http_source_sanitize(&list[i]) != 0) {
                     char e_url[600], msg[800];
                     esc(list[i].url, e_url, sizeof(e_url));
@@ -118,6 +136,7 @@ int http_sources_api_handle(struct MHD_Connection *conn, const char *url, const 
         http_source_config_t old[MAX_HTTP_SOURCES];
         int old_count = http_sources_get(old, MAX_HTTP_SOURCES);
         inherit_password(&cfg[0], old, old_count);
+        inherit_url_query(&cfg[0], old, old_count);
 
         install_log("[HTTP] POST /api/http/test: url='%s' tls=%s user='%s'",
                     cfg[0].url, cfg[0].tls_mode[0] ? cfg[0].tls_mode : "verify",
