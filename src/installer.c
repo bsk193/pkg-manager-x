@@ -1143,6 +1143,142 @@ static int installer_check_platform(const pkg_detail_t *detail, const char *what
 #define PS4_LOCAL_DL_BGFT_DIR "/user/data/pkgmgr/dl" /* same folder, as BGFT addresses it */
 #define PS4_LOCAL_DL_CHUNK    (64 * 1024)
 #define PS4_LOCAL_STALL_SEC   (30 * 60)
+/* Segmented download: big packages are fetched over several connections at
+ * once, each writing its own byte range of the file. Debrid CDNs (TorBox)
+ * serve each connection separately, and each connection decrypts TLS on its
+ * own thread (one PS4 core managed ~24 MiB/s of AES-GCM). 3 leaves one of
+ * the PS4 build's 4 HTTP connection slots for the UI. */
+#define PS4_LOCAL_DL_SEGMENTS 3
+#define PS4_LOCAL_DL_SEGMENT_MIN (256ull << 20)
+
+static void local_progress(uint64_t done, uint64_t total);
+static int local_stop_requested(void);
+
+typedef struct {
+    const char *url;
+    int fd;
+    uint64_t start, end;           /* [start, end) */
+    pthread_mutex_t *lock;          /* guards *done, *failed, *finished */
+    uint64_t *done;
+    int *failed;                    /* 0 ok, 1 download error, 2 write error */
+    int *finished;
+} local_segment_t;
+
+static void *local_segment_worker(void *arg) {
+    local_segment_t *g = (local_segment_t *)arg;
+    unsigned char *b = (unsigned char *)malloc(PS4_LOCAL_DL_CHUNK);
+    http_file_session_t *hs = b ? http_file_session_open(g->url) : NULL;
+    int fail = 0;
+    uint64_t off = g->start;
+    if (!b || !hs) {
+        install_log("[LOCAL] segment %llu-%llu: setup failed", (unsigned long long)g->start,
+                    (unsigned long long)g->end);
+        fail = 1;
+    } else {
+        http_file_session_set_resilient(hs, 1);
+    }
+    while (!fail && off < g->end) {
+        pthread_mutex_lock(g->lock);
+        int stop = *g->failed;
+        pthread_mutex_unlock(g->lock);
+        if (stop || local_stop_requested()) break;
+        size_t want = g->end - off < PS4_LOCAL_DL_CHUNK ? (size_t)(g->end - off) : PS4_LOCAL_DL_CHUNK;
+        ssize_t n = http_file_session_read(hs, b, want, off);
+        if (n <= 0) {
+            install_log("[LOCAL] download failed at %llu (segment %llu-%llu)", (unsigned long long)off,
+                        (unsigned long long)g->start, (unsigned long long)g->end);
+            fail = 1;
+            break;
+        }
+        for (ssize_t w = 0; w < n;) {
+            ssize_t k = pwrite(g->fd, b + w, (size_t)(n - w), (off_t)(off + (uint64_t)w));
+            if (k <= 0) {
+                install_log("[LOCAL] write failed at %llu: %s", (unsigned long long)(off + (uint64_t)w),
+                            strerror(errno));
+                fail = 2;
+                break;
+            }
+            w += k;
+        }
+        if (fail) break;
+        off += (uint64_t)n;
+        pthread_mutex_lock(g->lock);
+        *g->done += (uint64_t)n;
+        pthread_mutex_unlock(g->lock);
+    }
+    if (hs) http_file_session_close(hs);
+    free(b);
+    pthread_mutex_lock(g->lock);
+    if (fail && !*g->failed) *g->failed = fail;
+    (*g->finished)++;
+    pthread_mutex_unlock(g->lock);
+    return NULL;
+}
+
+/* Downloads [0, total) of url into fd over up to PS4_LOCAL_DL_SEGMENTS
+ * connections. 0 when complete; otherwise *fail_msg says why. */
+static int local_download_segmented(const char *url, int fd, uint64_t total, const char **fail_msg) {
+    int nseg = total >= PS4_LOCAL_DL_SEGMENT_MIN ? PS4_LOCAL_DL_SEGMENTS : 1;
+    local_segment_t seg[PS4_LOCAL_DL_SEGMENTS];
+    pthread_t thr[PS4_LOCAL_DL_SEGMENTS];
+    int started[PS4_LOCAL_DL_SEGMENTS] = {0};
+    pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    uint64_t done = 0;
+    int failed = 0, finished = 0, launched = 0;
+
+    if (ftruncate(fd, (off_t)total) != 0) {
+        install_log("[LOCAL] could not reserve %llu bytes: %s", (unsigned long long)total, strerror(errno));
+    }
+    install_log("[LOCAL] downloading %llu bytes over %d connection(s)", (unsigned long long)total, nseg);
+    uint64_t step = total / (uint64_t)nseg;
+    for (int i = 0; i < nseg; i++) {
+        seg[i].url = url;
+        seg[i].fd = fd;
+        seg[i].start = step * (uint64_t)i;
+        seg[i].end = (i == nseg - 1) ? total : step * (uint64_t)(i + 1);
+        seg[i].lock = &lock;
+        seg[i].done = &done;
+        seg[i].failed = &failed;
+        seg[i].finished = &finished;
+        if (pthread_create(&thr[i], NULL, local_segment_worker, &seg[i]) == 0) {
+            started[i] = 1;
+            launched++;
+        } else {
+            install_log("[LOCAL] could not start download thread %d", i);
+            pthread_mutex_lock(&lock);
+            failed = 1;
+            pthread_mutex_unlock(&lock);
+            break;
+        }
+    }
+    for (;;) {
+        pthread_mutex_lock(&lock);
+        uint64_t d = done;
+        int all = finished >= launched;
+        pthread_mutex_unlock(&lock);
+        local_progress(d, total);
+        if (all) break;
+        usleep(500 * 1000);
+    }
+    for (int i = 0; i < nseg; i++) {
+        if (started[i]) pthread_join(thr[i], NULL);
+    }
+    pthread_mutex_destroy(&lock);
+
+    if (local_stop_requested()) {
+        *fail_msg = "Installation was canceled";
+        return -1;
+    }
+    if (failed == 2) {
+        *fail_msg = "Writing the package to the console's drive failed";
+        return -1;
+    }
+    if (failed || done < total) {
+        *fail_msg = "Download to the console failed";
+        return -1;
+    }
+    return 0;
+}
 
 static void local_status(const char *status, const char *fmt, ...) {
     va_list ap;
@@ -1226,40 +1362,15 @@ static int ps4_local_install(const char *src_url) {
     http_file_session_set_resilient(hs, 1);
     if (!total) total = http_file_session_get_size(hs);
 
-    uint64_t off = 0;
-    time_t last_report = 0;
-    while (off < total) {
-        if (local_stop_requested()) { fail = "Installation was canceled"; goto done; }
-        size_t want = total - off < PS4_LOCAL_DL_CHUNK ? (size_t)(total - off) : PS4_LOCAL_DL_CHUNK;
-        ssize_t n = http_file_session_read(hs, buf, want, off);
-        if (n <= 0) {
-            install_log("[LOCAL] download failed at %llu / %llu", (unsigned long long)off, (unsigned long long)total);
-            fail = "Download to the console failed";
-            goto done;
-        }
-        for (ssize_t w = 0; w < n;) {
-            ssize_t k = write(fd, buf + w, (size_t)(n - w));
-            if (k <= 0) {
-                install_log("[LOCAL] write failed at %llu: %s", (unsigned long long)(off + (uint64_t)w), strerror(errno));
-                fail = "Writing the package to the console's drive failed";
-                goto done;
-            }
-            w += k;
-        }
-        off += (uint64_t)n;
-        time_t now = time(NULL);
-        if (now != last_report) {
-            last_report = now;
-            local_progress(off, total);
-        }
-    }
-    local_progress(total, total);
-    close(fd);
-    fd = -1;
+    /* The probe session above found the size; the segments open their own. */
     http_file_session_close(hs);
     hs = NULL;
     free(buf);
     buf = NULL;
+    if (local_download_segmented(src_url, fd, total, &fail) != 0) goto done;
+    local_progress(total, total);
+    close(fd);
+    fd = -1;
     install_log("[LOCAL] downloaded %llu bytes; installing from the console's drive", (unsigned long long)total);
 
     local_status("installing", "Installing %s from the console's drive...", title_name);
