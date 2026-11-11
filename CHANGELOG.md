@@ -6,6 +6,7 @@
 - PS5: USB/disc direct-storage installs are submitted to the PS5 system queue (upstream behavior). PS4 keeps its BGFT installs: download-first for HTTP sources, and USB/disc installs tracked until verified.
 - Also from upstream: PS5 backport patch detection, SDK target badge, separate base packages per title, optional filename/path in title details, readable out-of-space errors, SMB catalog fix for several locations on one share.
 - Kept: console refusal reasons and "unavailable on the server" now appear as the queue job's error.
+- HTTP/HTTPS sources read Pegasus DL+ catalogs: enter the catalog's `.json` URL (a query string such as a token is kept). Each `downloadLinks` entry (or `downloadSource`) is a package, `sizeBytes` is used without a request per link, relative links resolve against the catalog folder, and worker links that redirect to a debrid CDN (e.g. TorBox) are followed and refreshed like signed R2 links.
 
 ## 1.0.6 (PKG Manager X)
 

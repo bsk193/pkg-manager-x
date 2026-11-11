@@ -58,7 +58,8 @@ export default function HttpSourceModal({
               className={`${inputClass} font-mono`}
             />
             <p className="text-[11px] text-zinc-500 mt-1">
-              Sub-folders are scanned too (e.g. <span className="font-mono">PS4/</span>, <span className="font-mono">PS5/</span>).
+              A folder (sub-folders like <span className="font-mono">PS4/</span>, <span className="font-mono">PS5/</span> are scanned too),
+              or a Pegasus DL+ catalog: the full URL of its <span className="font-mono">.json</span> file.
               {!httpsSupported && ' HTTPS is not available in this build.'}
             </p>
           </div>

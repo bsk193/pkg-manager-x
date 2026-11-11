@@ -285,6 +285,66 @@ static void test_index_json(void) {
     printf("  index.json discovery ok\n");
 }
 
+/* Pegasus DL+ catalog source: the URL names the catalog file (query kept),
+ * each downloadLinks entry / downloadSource is a package, sizeBytes is the
+ * size without a request per link, relative links resolve against the
+ * catalog's folder and worker-style redirects are followed. */
+static void test_pegasus_catalog(void) {
+    uint64_t four = file_size(HT_ROOT "/PS4/HttpFour.pkg");
+    uint64_t five = file_size(HT_ROOT "/PS5/HttpFive.pkg");
+    uint64_t deep = file_size(HT_ROOT "/PS5/Deep/Deep Game.pkg");
+    FILE *f = fopen(HT_ROOT "/catalog.json", "w");
+    assert(f);
+    fprintf(f,
+        "{\"name\":\"Test Catalog\",\"version\":1,\"packages\":["
+        " {\"titleId\":\"CUSA00001\",\"title\":\"Http Four\",\"category\":\"game\","
+        "  \"downloadLinks\":["
+        "   {\"name\":\"BASE\",\"url\":\"%sPS4/HttpFour.pkg\",\"sizeBytes\":%llu},"
+        "   {\"name\":\"DLC via worker\",\"url\":\"redir/PS5/HttpFive.pkg?id=7\",\"sizeBytes\":%llu}]},"
+        " {\"titleId\":\"PPSA91003\",\"title\":\"Deep Game\","
+        "  \"downloadSource\":\"PS5/Deep/Deep%%20Game.pkg\",\"sizeBytes\":%llu},"
+        " {\"title\":\"No links\"}]}",
+        g_base, (unsigned long long)four, (unsigned long long)five, (unsigned long long)deep);
+    fclose(f);
+
+    assert(http_source_url_is_catalog_file("https://h/x/catalog.json"));
+    assert(http_source_url_is_catalog_file("https://h/x/ps4.json?token=a"));
+    assert(!http_source_url_is_catalog_file("https://h/x/index.json"));
+    assert(!http_source_url_is_catalog_file("https://h/x/"));
+
+    http_source_config_t c;
+    make_config(&c, NULL, NULL);
+    snprintf(c.url, sizeof(c.url), "%scatalog.json?token=abc", g_base);
+    assert(http_source_sanitize(&c) == 0);
+    char want[600];
+    snprintf(want, sizeof(want), "%scatalog.json?token=abc", g_base);
+    assert(strcmp(c.url, want) == 0);   /* kept as entered: no '/', query intact */
+
+    found_t fnd;
+    memset(&fnd, 0, sizeof(fnd));
+    assert(http_source_scan(&c, collect_cb, &fnd) == 3);
+    int i4 = find_name(&fnd, "HttpFour.pkg");
+    int i5 = find_name(&fnd, "HttpFive.pkg");
+    int id = find_name(&fnd, "Deep Game.pkg");
+    assert(i4 >= 0 && fnd.sizes[i4] == four);
+    assert(i5 >= 0 && fnd.sizes[i5] == five);
+    assert(id >= 0 && fnd.sizes[id] == deep);
+    char rel[600];
+    snprintf(rel, sizeof(rel), "%sredir/PS5/HttpFive.pkg?id=7", g_base);
+    assert(strcmp(fnd.urls[i5], rel) == 0);
+
+    /* The worker-style link resolves through the redirect to the package. */
+    pkg_detail_t d;
+    assert(http_source_parse_pkg(fnd.urls[i5], &d) == 0);
+    assert(strcmp(d.title_id, "PPSA91002") == 0);
+
+    http_source_test_result_t r;
+    http_source_test(&c, &r);
+    assert(r.success && strcmp(r.listing, "pegasus") == 0 && r.pkg_count == 3);
+    unlink(HT_ROOT "/catalog.json");
+    printf("  Pegasus DL+ catalog ok\n");
+}
+
 static void test_auth_and_no_range(void) {
     http_test_server_stop();
     http_test_server_opts_t o = { HT_ROOT, "alice", "s3cret", 0, 0, 0, 0, 0 };
@@ -556,6 +616,7 @@ int main(void) {
     test_parse_and_icon();
     test_session_streaming();
     test_index_json();
+    test_pegasus_catalog();
     test_auth_and_no_range();
     test_json_listing();
     test_gateway();

@@ -59,6 +59,7 @@ export default function HttpSourcesSection({ sources, onAdd, onEdit, onToggle, o
             Point PKG Manager at a folder served over HTTP. Packages are found through the server's directory
             listing (sub-folders like <span className="font-mono">PS4/</span> and <span className="font-mono">PS5/</span> included)
             or an <span className="font-mono">index.json</span> made with <span className="font-mono">tools/make_http_index.py</span>.
+            A Pegasus DL+ catalog works too: enter the URL of its <span className="font-mono">.json</span> file.
             The server must support byte ranges.
             {!httpsSupported && ' This build supports plain http:// only.'}
           </p>

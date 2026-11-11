@@ -481,6 +481,17 @@ static const char *sources_file_path(void) {
     return "/tmp/pkgmgr_http_sources.json";
 }
 
+/* 1 when the source URL names a JSON catalog file (".../catalog.json",
+ * optionally with a query) instead of a folder. index.json keeps its
+ * folder meaning (see http_source_sanitize). */
+int http_source_url_is_catalog_file(const char *url) {
+    if (!url) return 0;
+    size_t n = strcspn(url, "?#");
+    if (n < 5 || strncasecmp(url + n - 5, ".json", 5) != 0) return 0;
+    if (n >= 11 && strncasecmp(url + n - 11, "/index.json", 11) == 0) return 0;
+    return 1;
+}
+
 int http_source_sanitize(http_source_config_t *c) {
     if (!c) return -1;
     trim_inplace(c->url);
@@ -499,12 +510,19 @@ int http_source_sanitize(http_source_config_t *c) {
 
     /* A pasted ".../index.json" means its folder. */
     if (ends_with_ci(c->url, "/index.json")) c->url[strlen(c->url) - strlen("index.json")] = '\0';
-    char *q = strpbrk(c->url, "?#");
-    if (q) *q = '\0';
-    size_t len = strlen(c->url);
-    if (len > 0 && c->url[len - 1] != '/' && len + 1 < sizeof(c->url)) {
-        c->url[len] = '/';
-        c->url[len + 1] = '\0';
+    char *frag = strchr(c->url, '#');
+    if (frag) *frag = '\0';
+    if (!http_source_url_is_catalog_file(c->url)) {
+        /* A folder: drop any query and end with '/'. A catalog file
+         * (Pegasus DL+ ".../catalog.json") is kept as entered, query
+         * included (it may carry an access token). */
+        char *q = strchr(c->url, '?');
+        if (q) *q = '\0';
+        size_t len = strlen(c->url);
+        if (len > 0 && c->url[len - 1] != '/' && len + 1 < sizeof(c->url)) {
+            c->url[len] = '/';
+            c->url[len + 1] = '\0';
+        }
     }
 
     http_url_t u;
@@ -1835,6 +1853,7 @@ typedef struct {
     char listing[16];
     int json_listing;        /* directory listings came as nginx JSON */
     char first_pkg[HTTP_URL_MAX];
+    char base[HTTP_URL_MAX]; /* folder relative package paths resolve against */
     uint64_t *seen;
     size_t seen_count, seen_cap;
     char err[256];
@@ -1856,12 +1875,20 @@ static int seen_add(scan_ctx_t *s, const char *url) {
     return 1;
 }
 
+static void emit_named(scan_ctx_t *s, const char *url, const char *name, uint64_t size,
+                       uint32_t mtime, int have_meta);
+
 static void emit_pkg(scan_ctx_t *s, const char *url, uint64_t size, uint32_t mtime, int have_meta) {
-    if (!seen_add(s, url)) return;
     const char *slash = strrchr(url, '/');
     char name[256];
     pct_decode(slash ? slash + 1 : url, name, sizeof(name));
     if (!ends_with_ci(name, ".pkg")) return;
+    emit_named(s, url, name, size, mtime, have_meta);
+}
+
+static void emit_named(scan_ctx_t *s, const char *url, const char *name, uint64_t size,
+                       uint32_t mtime, int have_meta) {
+    if (!seen_add(s, url)) return;
 
     if (s->want_meta && !have_meta) {
         char err[256] = "";
@@ -1930,8 +1957,8 @@ static int scan_index_json(scan_ctx_t *s, const char *body, size_t len) {
             const char *rel = path;
             while (*rel == '/') rel++;
             pct_encode_path(rel, enc, sizeof(enc));
-            if (strlen(s->cfg->url) + strlen(enc) >= sizeof(url)) continue;
-            snprintf(url, sizeof(url), "%s%s", s->cfg->url, enc);
+            if (strlen(s->base) + strlen(enc) >= sizeof(url)) continue;
+            snprintf(url, sizeof(url), "%s%s", s->base, enc);
         }
         emit_pkg(s, url, size, (uint32_t)mtime, have_size);
     }
@@ -2152,7 +2179,158 @@ static int scan_html_dir(scan_ctx_t *s, const char *dir_url, int depth) {
     return 0;
 }
 
+/* Display name for a catalog link: the URL's file name when it is a .pkg,
+ * else "<title> - <link name>.pkg" (worker URLs like /dl?id=7 carry no
+ * file name). Path separators are replaced so it stays one name. */
+static void pegasus_link_name(const char *url, const char *title, const char *link_name,
+                              char *out, size_t out_sz) {
+    size_t n = strcspn(url, "?#");
+    char path[HTTP_URL_MAX];
+    copy_str(path, sizeof(path) < n + 1 ? sizeof(path) : n + 1, url);
+    const char *slash = strrchr(path, '/');
+    pct_decode(slash ? slash + 1 : path, out, out_sz);
+    if (ends_with_ci(out, ".pkg")) return;
+    if (title[0] && link_name[0]) snprintf(out, out_sz, "%s - %s.pkg", title, link_name);
+    else snprintf(out, out_sz, "%s.pkg", title[0] ? title : (link_name[0] ? link_name : "package"));
+    for (char *c = out; *c; c++) {
+        if (*c == '/' || *c == '\\') *c = '-';
+    }
+}
+
+static void pegasus_emit_link(scan_ctx_t *s, const char *link_url, const char *title,
+                              const char *link_name, uint64_t size, int have_size) {
+    char url[HTTP_URL_MAX];
+    if (strncasecmp(link_url, "http://", 7) == 0 || strncasecmp(link_url, "https://", 8) == 0) {
+        copy_str(url, sizeof(url), link_url);
+    } else {
+        const char *rel = link_url;
+        while (*rel == '/') rel++;
+        if (strlen(s->base) + strlen(rel) >= sizeof(url)) return;
+        snprintf(url, sizeof(url), "%s%s", s->base, rel);
+    }
+    char name[256];
+    pegasus_link_name(url, title, link_name, name, sizeof(name));
+    if (have_size) expected_size_set(url, size);
+    http_source_set_unavailable(url, 0);
+    emit_named(s, url, name, size, 0, have_size);
+}
+
+/* Pegasus DL+ catalog:
+ *   {"name":"...","packages":[{"titleId":"CUSA00001","title":"...",
+ *     "downloadLinks":[{"name":"BASE","url":"https://...","sizeBytes":1}],
+ *     ...}, {"title":"...","downloadSource":"https://...","sizeBytes":1}]}
+ * Every link is one package; links usually go through a worker that
+ * redirects to a debrid CDN (TorBox), which the session follows and
+ * refreshes. sizeBytes becomes the expected size, so the scan sends no
+ * request per link. The package header still decides console and type. */
+static int scan_pegasus(scan_ctx_t *s, const char *body, size_t len) {
+    const char *end = body + len;
+    const char *arr = json_value(body, end, "packages");
+    if (!arr || *arr != '[') return -1;
+    const char *arr_end = json_match(arr, end);
+    if (!arr_end) return -1;
+
+    const char *p = arr + 1;
+    while (p < arr_end) {
+        while (p < arr_end && (isspace((unsigned char)*p) || *p == ',')) p++;
+        if (p >= arr_end) break;
+        if (*p != '{') {
+            p++;
+            continue;
+        }
+        const char *oe = json_match(p, arr_end + 1);
+        if (!oe) break;
+        char title[256] = "";
+        json_get_str(p, oe, "title", title, sizeof(title));
+
+        const char *links = json_value(p, oe, "downloadLinks");
+        int emitted = 0;
+        if (links && *links == '[') {
+            const char *links_end = json_match(links, oe);
+            const char *q = links ? links + 1 : NULL;
+            while (q && links_end && q < links_end) {
+                while (q < links_end && (isspace((unsigned char)*q) || *q == ',')) q++;
+                if (q >= links_end) break;
+                if (*q != '{') {
+                    q++;
+                    continue;
+                }
+                const char *le = json_match(q, links_end + 1);
+                if (!le) break;
+                char link_url[HTTP_URL_MAX] = "", link_name[128] = "";
+                uint64_t size = 0;
+                json_get_str(q, le, "url", link_url, sizeof(link_url));
+                json_get_str(q, le, "name", link_name, sizeof(link_name));
+                int have_size = json_get_u64(q, le, "sizeBytes", &size) == 0;
+                if (link_url[0]) {
+                    pegasus_emit_link(s, link_url, title, link_name, size, have_size);
+                    emitted++;
+                }
+                q = le + 1;
+            }
+        }
+        if (!emitted) {
+            char src[HTTP_URL_MAX] = "";
+            uint64_t size = 0;
+            json_get_str(p, oe, "downloadSource", src, sizeof(src));
+            int have_size = json_get_u64(p, oe, "sizeBytes", &size) == 0;
+            if (src[0]) pegasus_emit_link(s, src, title, "", size, have_size);
+        }
+        p = oe + 1;
+    }
+    return 0;
+}
+
+/* Source URL is a catalog file: Pegasus DL+ format, or an index.json-style
+ * file list under another name. */
+static int scan_catalog_file(scan_ctx_t *s) {
+    char *body = NULL;
+    size_t blen = 0;
+    char err[256] = "";
+    fetch_opts_t o = { "GET", 0, 0, 0, NULL, &body, &blen, HTTP_MAX_LISTING };
+    http_resp_t r;
+    int st = http_fetch(&s->conn, s->cfg->url, s->cfg, &o, &r, NULL, 0, err, sizeof(err));
+    if (st < 0) {
+        free(body);
+        copy_str(s->err, sizeof(s->err), err);
+        return -1;
+    }
+    if (st == 401 || st == 403) {
+        free(body);
+        snprintf(s->err, sizeof(s->err), "Access denied (HTTP %d). Check username and password", st);
+        return -1;
+    }
+    if (st != 200 || !body) {
+        free(body);
+        snprintf(s->err, sizeof(s->err), "Catalog not available (HTTP %d)", st);
+        return -1;
+    }
+    int rc = scan_pegasus(s, body, blen);
+    if (rc == 0) {
+        copy_str(s->listing, sizeof(s->listing), "pegasus");
+    } else {
+        rc = scan_index_json(s, body, blen);
+        if (rc == 0) copy_str(s->listing, sizeof(s->listing), "index.json");
+    }
+    free(body);
+    if (rc != 0) {
+        snprintf(s->err, sizeof(s->err), "Not a Pegasus DL+ catalog or package list");
+        return -1;
+    }
+    return s->count;
+}
+
 static int scan_run(scan_ctx_t *s) {
+    /* Folder that relative package paths resolve against. */
+    copy_str(s->base, sizeof(s->base), s->cfg->url);
+    if (http_source_url_is_catalog_file(s->cfg->url)) {
+        size_t n = strcspn(s->base, "?#");
+        s->base[n] = '\0';
+        char *slash = strrchr(s->base, '/');
+        if (slash) slash[1] = '\0';
+        return scan_catalog_file(s);
+    }
+
     char *body = NULL;
     size_t blen = 0;
     char err[256] = "";

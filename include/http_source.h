@@ -44,7 +44,7 @@ typedef struct {
     int enabled;
     char id[32];          /* "http_<suffix>" */
     char label[64];       /* "NAS (HTTP)" */
-    char url[512];        /* base URL, always ends with '/' after sanitize */
+    char url[512];        /* base URL ending with '/', or a catalog file URL (.json) */
     char username[64];    /* optional Basic auth */
     char password[128];
     char tls_mode[16];    /* HTTP_TLS_* (https only) */
@@ -69,6 +69,9 @@ int http_sources_parse_json(const char *json, http_source_config_t *out, int max
 char *http_sources_to_json(void);
 /* Normalizes url (scheme, trailing slash), label, id, tls_mode. Returns 0
  * when the config is usable, -1 otherwise. */
+/* 1 when url names a JSON catalog file (e.g. a Pegasus DL+ catalog.json)
+ * rather than a folder. */
+int http_source_url_is_catalog_file(const char *url);
 int http_source_sanitize(http_source_config_t *cfg);
 /* Finds the configured source whose base URL prefixes url. */
 int http_sources_find_for_url(const char *url, http_source_config_t *out);
