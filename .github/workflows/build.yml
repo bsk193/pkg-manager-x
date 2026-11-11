@@ -160,8 +160,16 @@ jobs:
           curl -fsSL "$OO_URL" | tar xz -C ~/OpenOrbis
       - name: Tools
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq clang lld python3-pil
+          # Retry: runners sometimes cannot resolve the Ubuntu mirrors for a few minutes.
+          ok=0
+          for i in 1 2 3 4 5; do
+            if sudo apt-get update -qq -o Acquire::Retries=3 &&
+               sudo apt-get install -y -qq -o Acquire::Retries=3 clang lld python3-pil; then
+              ok=1; break
+            fi
+            echo "apt attempt $i failed; retrying in 30 s"; sleep 30
+          done
+          [ "$ok" = 1 ]
           # PkgTool.Core is an older self-contained .NET build that needs OpenSSL 1.1.
           if [ ! -e /usr/lib/x86_64-linux-gnu/libssl.so.1.1 ]; then
             DEB=$(curl -fsSL http://security.ubuntu.com/ubuntu/pool/main/o/openssl/ \

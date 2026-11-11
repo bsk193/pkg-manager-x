@@ -8,24 +8,31 @@ ARG LIBSMB2_REF=master
 FROM ubuntu:${UBUNTU_TAG}
 
 # Install build tools and compiler (Clang 18 and LLD 18 required by the SDK)
-RUN apt-get update && apt-get install -y \
-    git \
-    cmake \
-    ninja-build \
-    clang-18 \
-    lld-18 \
-    llvm-18 \
-    llvm-18-dev \
-    make \
-    python3 \
-    python3-pyelftools \
-    wget \
-    bzip2 \
-    xz-utils \
-    pkg-config \
-    sudo \
-    unzip \
-    && rm -rf /var/lib/apt/lists/*
+# GitHub runners sometimes cannot resolve the Ubuntu mirrors for a few
+# minutes: retry instead of failing the whole build.
+RUN ok=0; for i in 1 2 3 4 5; do \
+      apt-get update -o Acquire::Retries=3 && \
+      apt-get install -y -o Acquire::Retries=3 \
+        git \
+        cmake \
+        ninja-build \
+        clang-18 \
+        lld-18 \
+        llvm-18 \
+        llvm-18-dev \
+        make \
+        python3 \
+        python3-pyelftools \
+        wget \
+        bzip2 \
+        xz-utils \
+        pkg-config \
+        sudo \
+        unzip \
+      && ok=1 && break; \
+      echo "apt attempt $i failed; retrying in 30 s"; sleep 30; \
+    done; \
+    [ "$ok" = 1 ] && rm -rf /var/lib/apt/lists/*
 
 # Set up Clang 18 as default
 RUN ln -s /usr/bin/clang-18 /usr/bin/clang && \
