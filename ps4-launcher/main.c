@@ -5,15 +5,18 @@
  * app does the same job, and only that:
  *   1. If PKG Manager X is not running (nothing on 127.0.0.1:8844), send the
  *      bundled payload (/app0/pkgmgr-ps4.elf) to GoldHEN's BinLoader on
- *      127.0.0.1:9090 and wait for the web server to come up.
+ *      127.0.0.1:9090 and wait for the web server to come up. If another
+ *      version runs (e.g. an older one left from before the tile was
+ *      updated) and nothing is installing, the bundled payload is sent
+ *      too: it asks the running copy to exit and takes over.
  *   2. Show http://127.0.0.1:8844/ in the system web browser dialog, inside
  *      this app. Unlike the Browser app it opens no new browser window per
  *      launch and leaves the Browser app's windows alone. Circle closes
  *      the dialog. If the dialog cannot open, the Browser app is used.
  *   3. Close itself (sceSystemServiceLoadExec("exit")), back to the home
- *      screen. The tile never stops or restarts the PKG Manager X service:
- *      that runs until reboot / rest mode. (The payload also refuses to
- *      replace a running copy of the same version.)
+ *      screen. The tile never stops or restarts a running copy of its own
+ *      version: that runs until reboot / rest mode. (The payload also
+ *      refuses to replace a running copy of the same version.)
  * Optional: a /app0/preset_sources.json (one HTTP source object, e.g. a
  * private build with a home server) is added through the local API once the
  * server is up, unless a source with the same URL already exists.
@@ -276,10 +279,74 @@ static void apply_preset_source(void) {
     free(preset);
 }
 
+/* PKG Manager X version bundled in this tile (set by the build). */
+#ifndef BUNDLED_X_VERSION
+#define BUNDLED_X_VERSION ""
+#endif
+
+/* Copies the string value of "key" from a JSON body. 0 when found. */
+static int json_string(const char *body, const char *key, char *out, size_t out_sz) {
+    char needle[64];
+    snprintf(needle, sizeof(needle), "\"%s\":\"", key);
+    const char *v = body ? strstr(body, needle) : NULL;
+    out[0] = '\0';
+    if (!v) return -1;
+    v += strlen(needle);
+    size_t o = 0;
+    while (v[o] && v[o] != '"' && o + 1 < out_sz) {
+        out[o] = v[o];
+        o++;
+    }
+    out[o] = '\0';
+    return o ? 0 : -1;
+}
+
+/* Version of the running PKG Manager X ("" when it does not say). */
+static void running_version(char *out, size_t out_sz) {
+    char *body = local_request("GET", "/api/platform", NULL);
+    if (json_string(body, "version", out, out_sz) != 0) out[0] = '\0';
+    free(body);
+}
+
+/* 1 when the running copy reports an install in progress, or its state is
+ * unknown: replacing the payload then could break the install. */
+static int running_is_busy(void) {
+    char *body = local_request("GET", "/api/status", NULL);
+    int busy = !body || strstr(body, "\"is_installing\":true") != NULL;
+    free(body);
+    return busy;
+}
+
 /* Starts the payload through GoldHEN's BinLoader unless the server already
- * answers. 0 when the server is up. */
+ * answers with the bundled version. 0 when the server is up. */
 static int ensure_server(void) {
-    if (port_open(PKGMGR_PORT)) return 0;
+    if (port_open(PKGMGR_PORT)) {
+        const char *mine = BUNDLED_X_VERSION;
+        char running[64];
+        if (!mine[0]) return 0;
+        running_version(running, sizeof(running));
+        if (!running[0] || strcmp(running, mine) == 0) return 0;
+        if (running_is_busy()) {
+            notify("PKG Manager X v%s is running an install.\n"
+                   "Open the tile again after it finishes to update to v%s.", running, mine);
+            return 0;
+        }
+        notify("Updating PKG Manager X from v%s to v%s...", running, mine);
+        int rc = send_payload();
+        if (rc != 0) {
+            notify("PKG Manager X: could not send the new payload (%d); v%s stays.", rc, running);
+            return 0;
+        }
+        /* The new copy asks the old one to exit, then starts its server. */
+        for (int i = 0; i < (START_WAIT_SEC + 20) * 4; i++) {
+            sceKernelUsleep(250 * 1000);
+            if (!port_open(PKGMGR_PORT)) continue;
+            running_version(running, sizeof(running));
+            if (strcmp(running, mine) == 0) return 0;
+        }
+        notify("PKG Manager X v%s did not take over. Check http://<PS4-IP>:8844/api/log", mine);
+        return port_open(PKGMGR_PORT) ? 0 : -1;
+    }
     notify("Starting PKG Manager X...");
     int rc = send_payload();
     if (rc == -1) {

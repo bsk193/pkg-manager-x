@@ -14,6 +14,9 @@ CONTENT_ID  := IV0000-PKGX00001_00-PKGMANAGERX00000
 # Package version (xx.yy). Bump it when the bundled payload changes so the
 # package installs over the previous one.
 VERSION     ?= 01.00
+# Full PKG Manager X version of the bundled payload (e.g. 1.0.6-26-gabc1234).
+# The tile compares it with the running copy and replaces a different one.
+X_VERSION   ?=
 PAYLOAD     ?= ../pkgmgr-ps4.elf
 ICON        ?= ../assets/icon0.png
 
@@ -48,7 +51,7 @@ all: $(CONTENT_ID).pkg
 
 $(BUILD)/main.o: main.c
 	@mkdir -p $(BUILD)
-	$(OO_CC) $(CFLAGS) -c -o $@ $<
+	$(OO_CC) $(CFLAGS) -DBUNDLED_X_VERSION='"$(X_VERSION)"' -c -o $@ $<
 
 $(BUILD)/launcher.elf: $(BUILD)/main.o
 	$(OO_LD) $< -o $@ $(LDFLAGS)

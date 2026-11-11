@@ -212,7 +212,7 @@ jobs:
           PKGVER=$(printf '%02d.%02d' "$MA" "$(( MI * 10 + PA ))")
           ELF=$(ls payload/*.elf | head -1)
           make -C ps4-launcher OO_PS4_TOOLCHAIN="$OO_PS4_TOOLCHAIN" \
-               PAYLOAD="$PWD/$ELF" VERSION="$PKGVER"
+               PAYLOAD="$PWD/$ELF" VERSION="$PKGVER" X_VERSION="$VER"
           OUT="pkg-manager-x_v${VER}${{ needs.version.outputs.artifact_suffix }}_ps4-tile.pkg"
           mv ps4-launcher/IV0000-PKGX00001_00-PKGMANAGERX00000.pkg "$OUT"
           ls -l "$OUT"
