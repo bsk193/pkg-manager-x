@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased (PKG Manager X): upstream v1.5.1
+## 1.1.0 (PKG Manager X): based on upstream v1.5.1
 
+- Tested on PS4 only. The PS5 build is included but was not tested on a PS5 for this release.
 - Merged PKG Manager v1.5.0 / v1.5.1. Its console-owned install queue (full-page Queue view, cancel / retry / clear, auto-clear after 60 minutes, base/update/DLC as separate jobs, dependents blocked when their base is missing) replaces PKG Manager X's own queue, "Continue in Background" bar and Base + Update batch. HTTP/HTTPS packages are queue jobs like USB, disc and SMB ones.
 - PS5: USB/disc direct-storage installs are submitted to the PS5 system queue (upstream behavior). PS4 keeps its BGFT installs: download-first for HTTP sources, and USB/disc installs tracked until verified.
 - Also from upstream: PS5 backport patch detection, SDK target badge, separate base packages per title, optional filename/path in title details, readable out-of-space errors, SMB catalog fix for several locations on one share.
