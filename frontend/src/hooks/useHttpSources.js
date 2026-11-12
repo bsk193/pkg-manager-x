@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
 import { getHttpSources, saveHttpSources, testHttpSource } from '../api/httpSources';
+import { normalizeUrl } from '../utils/httpSourceUrl';
 
 export const EMPTY_HTTP_FORM = {
   id: '',
@@ -11,15 +12,6 @@ export const EMPTY_HTTP_FORM = {
   tls_pin: '',
   enabled: true
 };
-
-function normalizeUrl(raw) {
-  let url = (raw || '').trim();
-  if (!url) return '';
-  if (!/^https?:\/\//i.test(url)) url = `http://${url}`;
-  url = url.replace(/[?#].*$/, '').replace(/\/index\.json$/i, '/');
-  if (!url.endsWith('/')) url += '/';
-  return url;
-}
 
 export function useHttpSources({ showToast, refreshAll }) {
   const [httpSources, setHttpSources] = useState([]);
