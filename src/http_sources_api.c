@@ -109,8 +109,9 @@ int http_sources_api_handle(struct MHD_Connection *conn, const char *url, const 
                 inherit_password(&list[i], old, old_count);
                 inherit_url_query(&list[i], old, old_count);
                 if (http_source_sanitize(&list[i]) != 0) {
-                    char e_url[600], msg[800];
-                    esc(list[i].url, e_url, sizeof(e_url));
+                    char shown[sizeof(list[i].url)], e_url[600], msg[800];
+                    http_source_url_redacted(list[i].url, shown, sizeof(shown)); /* catalog token */
+                    esc(shown, e_url, sizeof(e_url));
                     snprintf(msg, sizeof(msg),
                              "{\"success\":false,\"error\":\"Invalid or too long URL: %s\"}", e_url);
                     *out_ret = send_json(conn, MHD_HTTP_BAD_REQUEST, strdup(msg));
@@ -138,8 +139,10 @@ int http_sources_api_handle(struct MHD_Connection *conn, const char *url, const 
         inherit_password(&cfg[0], old, old_count);
         inherit_url_query(&cfg[0], old, old_count);
 
+        char shown_url[sizeof(cfg[0].url)];
+        http_source_url_redacted(cfg[0].url, shown_url, sizeof(shown_url)); /* catalog token */
         install_log("[HTTP] POST /api/http/test: url='%s' tls=%s user='%s'",
-                    cfg[0].url, cfg[0].tls_mode[0] ? cfg[0].tls_mode : "verify",
+                    shown_url, cfg[0].tls_mode[0] ? cfg[0].tls_mode : "verify",
                     cfg[0].username[0] ? cfg[0].username : "(none)");
         http_source_test_result_t r;
         http_source_test(&cfg[0], &r);

@@ -1634,7 +1634,9 @@ static int http_fetch(http_conn_t **pc, const char *url, const http_source_confi
     for (int hop = 0; hop <= HTTP_MAX_REDIRECTS; hop++) {
         http_url_t u;
         if (http_url_parse(cur, &u) != 0) {
-            snprintf(err, err_sz, "Invalid URL: %.200s", cur);
+            char shown[HTTP_URL_MAX];
+            http_source_url_redacted(cur, shown, sizeof(shown)); /* may carry a token */
+            snprintf(err, err_sz, "Invalid URL: %.200s", shown);
             return -1;
         }
         int st = fetch_on(pc, &u, cfg, o, resp, err, err_sz);
