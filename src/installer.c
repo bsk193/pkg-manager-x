@@ -1152,7 +1152,7 @@ static int installer_check_platform(const pkg_detail_t *detail, const char *what
  * lag. Pieces are whole 8 MiB stream windows, so each connection keeps
  * reusing its keep-alive socket. 3 leaves one of the PS4 build's 4 HTTP
  * connection slots for the UI. */
-#define PS4_LOCAL_DL_SEGMENTS 3
+#define PS4_LOCAL_DL_SEGMENTS 3   /* most; Settings > download connections picks 1..3 */
 #define PS4_LOCAL_DL_SEGMENT_MIN (256ull << 20)
 #define PS4_LOCAL_DL_PIECE (32ull << 20)
 
@@ -1242,7 +1242,11 @@ static void *local_segment_worker(void *arg) {
 /* Downloads [0, total) of url into fd over up to PS4_LOCAL_DL_SEGMENTS
  * connections. 0 when complete; otherwise *fail_msg says why. */
 static int local_download_segmented(const char *url, int fd, uint64_t total, const char **fail_msg) {
-    int nconn = total >= PS4_LOCAL_DL_SEGMENT_MIN ? PS4_LOCAL_DL_SEGMENTS : 1;
+    app_settings_t st;
+    pkg_cache_get_settings(&st);
+    int want = st.download_connections < 1 ? 1
+             : (st.download_connections > PS4_LOCAL_DL_SEGMENTS ? PS4_LOCAL_DL_SEGMENTS : st.download_connections);
+    int nconn = total >= PS4_LOCAL_DL_SEGMENT_MIN ? want : 1;
     pthread_t thr[PS4_LOCAL_DL_SEGMENTS];
     int started[PS4_LOCAL_DL_SEGMENTS] = {0};
     int launched = 0;

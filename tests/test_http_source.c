@@ -583,6 +583,65 @@ static void test_http_install(void) {
     printf("  host-driven HTTP install of the PS4 tile ok\n");
 }
 
+/* A catalog lists packages on other hosts than its own URL: rescans must
+ * replace its packages, not add them again (they were tripled after two
+ * rescans), and its drive view must show them. */
+static void test_catalog_rescan_no_duplicates(void) {
+    uint64_t four = file_size(HT_ROOT "/PS4/HttpFour.pkg");
+    FILE *f = fopen(HT_ROOT "/cat2.json", "w");
+    assert(f);
+    fprintf(f, "{\"name\":\"C\",\"packages\":[{\"titleId\":\"CUSA91001\",\"title\":\"Http Four\","
+               "\"downloadLinks\":[{\"name\":\"BASE\",\"url\":\"http://localhost:%d/PS4/HttpFour.pkg\","
+               "\"sizeBytes\":%llu}]}]}",
+            atoi(strrchr(g_base, ':') + 1), (unsigned long long)four);
+    fclose(f);
+
+    http_source_config_t c;
+    make_config(&c, NULL, NULL);
+    snprintf(c.url, sizeof(c.url), "%scat2.json", g_base);
+    snprintf(c.id, sizeof(c.id), "cat2");
+    assert(http_source_sanitize(&c) == 0);
+    assert(http_sources_set(&c, 1) == 1);
+
+    char link[300];
+    snprintf(link, sizeof(link), "http://localhost:%d/PS4/HttpFour.pkg", atoi(strrchr(g_base, ':') + 1));
+    pkg_scanner_init();
+    for (int pass = 0; pass < 4; pass++) {
+        /* Pass 0: full scan. Then quick rescans (the Rescan button and the
+         * periodic check), which used to append the catalog again each time.
+         * A new id per pass gets past the per-source quick-scan throttle. */
+        if (pass == 0) {
+            pkg_scanner_scan();
+        } else {
+            snprintf(c.id, sizeof(c.id), "cat2_%d", pass);
+            assert(http_sources_set(&c, 1) == 1);
+            int changed = 0;
+            pkg_scanner_scan_quick(c.id, &changed);
+        }
+        char *json = pkg_scanner_packages_for_drive_to_json(c.url);
+        assert(json);
+        int hits = 0;
+        for (const char *q = json; (q = strstr(q, link)) != NULL; q += strlen(link)) hits++;
+        char *all = pkg_scanner_packages_for_drive_to_json("");
+        int all_hits = 0;
+        for (const char *q = all; q && (q = strstr(q, "\"title_id\":\"CUSA91001\"")) != NULL; q++) all_hits++;
+        printf("  catalog rescan %d: drive view %d, all sources %d\n", pass + 1, hits, all_hits);
+        assert(all_hits == 1);
+        assert(hits >= 1);
+        free(json);
+        free(all);
+    }
+    assert(http_source_catalog_lists(c.url, link));
+    assert(!http_source_catalog_lists(c.url, "http://localhost:1/other.pkg"));
+
+    http_source_config_t none;
+    memset(&none, 0, sizeof(none));
+    http_sources_set(&none, 0);
+    pkg_scanner_scan();
+    unlink(HT_ROOT "/cat2.json");
+    printf("  catalog rescan without duplicates ok\n");
+}
+
 static void test_scanner_integration(void) {
     http_source_config_t c;
     make_config(&c, NULL, NULL);
@@ -636,6 +695,7 @@ int main(void) {
     test_json_listing();
     test_gateway();
     test_http_install();
+    test_catalog_rescan_no_duplicates();
     test_scanner_integration();
 
     http_test_server_stop();

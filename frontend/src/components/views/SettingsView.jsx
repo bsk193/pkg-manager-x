@@ -199,6 +199,27 @@ export default function SettingsView({ settings, onSaveSettings, onClose, onOpen
                       </svg>
                     </div>
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const cur = Number(safeSettings.download_connections) || 2;
+                      onSaveSettings({ ...safeSettings, download_connections: cur >= 3 ? 1 : cur + 1 });
+                    }}
+                    className="w-full bg-white/5 hover:bg-white/10 border border-white/10 rounded-[2px] ps5-focus-item p-4 flex items-center justify-between transition-colors cursor-pointer text-left"
+                  >
+                    <div className="min-w-0 flex-1 mr-4">
+                      <span className="text-sm font-semibold text-white block">PS4 download connections</span>
+                      <span className="text-xs text-zinc-400 block mt-1">
+                        Connections used to download HTTP packages of 256 MB and more to the console. More is
+                        faster on debrid links but uses more CPU; use 1 if the console lags while downloading.
+                        Press to change.
+                      </span>
+                    </div>
+                    <div className="min-w-[2.5rem] h-8 px-2 rounded-[2px] border border-blue-500 bg-blue-600 text-white text-sm font-semibold flex items-center justify-center shrink-0">
+                      {Number(safeSettings.download_connections) || 2}
+                    </div>
+                  </button>
                 </div>
 
                 {/* Home Screen Shortcut Card (PS5 only) */}

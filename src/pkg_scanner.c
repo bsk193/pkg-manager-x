@@ -201,7 +201,8 @@ static int add_scanned_file_locked(const char *path, uint64_t file_size, uint64_
 static int pkg_matches_drive_path(const char *pkg_path, const char *drive_path) {
     if (!pkg_path || !drive_path || drive_path[0] == '\0') return 0;
     size_t dlen = strlen(drive_path);
-    if (strncmp(pkg_path, drive_path, dlen) != 0) return 0;
+    /* A catalog source (".../catalog.json") lists packages on other hosts. */
+    if (strncmp(pkg_path, drive_path, dlen) != 0) return http_source_catalog_lists(drive_path, pkg_path);
     if (drive_path[dlen - 1] == '/' || pkg_path[dlen] == '/' || pkg_path[dlen] == '\0') {
         return 1;
     }
@@ -2250,11 +2251,7 @@ char *pkg_scanner_packages_for_drive_to_json_ex(const char *drive_id_or_path, co
 
         if (target_path[0] != '\0') {
             /* Package must be located within target drive directory */
-            size_t tlen = strlen(target_path);
-            if (strncmp(pkg->path, target_path, tlen) != 0 ||
-                (target_path[tlen - 1] != '/' && pkg->path[tlen] != '/' && pkg->path[tlen] != '\0')) {
-                continue;
-            }
+            if (!pkg_matches_drive_path(pkg->path, target_path)) continue;
         }
 
         char installed_version[32] = {0};

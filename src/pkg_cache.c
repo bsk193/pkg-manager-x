@@ -28,6 +28,7 @@ static app_settings_t g_settings = {
     .pkg_install_debug = 0,
     .allow_ps4_on_ps5 = 1,
     .show_package_paths = 0,
+    .download_connections = 2,
     .smb_share_count = 0
 };
 
@@ -154,6 +155,12 @@ static void load_settings_from_disk(void) {
         }
     }
 
+    char *dc_ptr = strstr(buf, "\"download_connections\":");
+    if (dc_ptr) {
+        int v = atoi(dc_ptr + 23);
+        g_settings.download_connections = v < 1 ? 1 : (v > 3 ? 3 : v);
+    }
+
     pkg_cache_parse_smb_shares(buf, g_settings.smb_shares, &g_settings.smb_share_count);
     free(buf);
 }
@@ -175,13 +182,15 @@ static void save_settings_to_disk(void) {
                "  \"pkg_install_debug\": %s,\n"
                "  \"allow_ps4_on_ps5\": %s,\n"
                "  \"show_package_paths\": %s,\n"
+               "  \"download_connections\": %d,\n"
                "  \"smb_shares\": [\n",
             g_settings.move_installed_to_end ? "true" : "false",
             g_settings.fade_installed_packages ? "true" : "false",
             g_settings.all_sources_mode ? "true" : "false",
             g_settings.pkg_install_debug ? "true" : "false",
             g_settings.allow_ps4_on_ps5 ? "true" : "false",
-            g_settings.show_package_paths ? "true" : "false");
+            g_settings.show_package_paths ? "true" : "false",
+            g_settings.download_connections);
 
     for (int i = 0; i < g_settings.smb_share_count; i++) {
         const smb_share_config_t *s = &g_settings.smb_shares[i];
@@ -251,6 +260,8 @@ int pkg_cache_set_settings(const app_settings_t *settings) {
     g_settings.allow_ps4_on_ps5 = settings->allow_ps4_on_ps5 ? 1 : 0;
     pkg_platform_set_allow_ps4_on_ps5(g_settings.allow_ps4_on_ps5);
     g_settings.show_package_paths = settings->show_package_paths ? 1 : 0;
+    g_settings.download_connections = settings->download_connections < 1 ? 1
+                                    : (settings->download_connections > 3 ? 3 : settings->download_connections);
     g_settings.smb_share_count = (settings->smb_share_count <= MAX_SMB_SHARES) ? settings->smb_share_count : MAX_SMB_SHARES;
     if (g_settings.smb_share_count < 0) g_settings.smb_share_count = 0;
     for (int i = 0; i < g_settings.smb_share_count; i++) {

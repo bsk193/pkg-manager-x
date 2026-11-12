@@ -939,13 +939,13 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
         char *buf = (char *)malloc(spos + 1024);
         if (!buf) return MHD_NO;
         snprintf(buf, spos + 1024,
-                 "{\"move_installed_to_end\":%s,\"fade_installed_packages\":%s,\"all_sources_mode\":%s,\"pkg_install_debug\":%s,\"allow_ps4_on_ps5\":%s,\"show_package_paths\":%s,\"smb_shares\":[%s]}",
+                 "{\"move_installed_to_end\":%s,\"fade_installed_packages\":%s,\"all_sources_mode\":%s,\"pkg_install_debug\":%s,\"allow_ps4_on_ps5\":%s,\"show_package_paths\":%s,\"download_connections\":%d,\"smb_shares\":[%s]}",
                  s.move_installed_to_end ? "true" : "false",
                  s.fade_installed_packages ? "true" : "false",
                  s.all_sources_mode ? "true" : "false",
                  s.pkg_install_debug ? "true" : "false",
                  s.allow_ps4_on_ps5 ? "true" : "false",
-                 s.show_package_paths ? "true" : "false", shares_json);
+                 s.show_package_paths ? "true" : "false", s.download_connections, shares_json);
         struct MHD_Response *resp = MHD_create_response_from_buffer(
             strlen(buf), (void *)buf, MHD_RESPMEM_MUST_FREE);
         add_cors_headers(resp);
@@ -1012,6 +1012,12 @@ static enum MHD_Result http_on_request(void *cls, struct MHD_Connection *conn,
                 } else if (strncmp(pptr + 21, "false", 5) == 0 || strncmp(pptr + 22, "false", 5) == 0) {
                     s.show_package_paths = 0;
                 }
+            }
+            char *dcptr = strstr(ps->data, "\"download_connections\":");
+            if (dcptr) {
+                const char *v = dcptr + 23;
+                while (*v == ' ') v++;
+                if (*v >= '0' && *v <= '9') s.download_connections = atoi(v);
             }
 
             if (strstr(ps->data, "\"smb_shares\"")) {

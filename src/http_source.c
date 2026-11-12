@@ -1669,6 +1669,7 @@ typedef struct {
     uint64_t key;            /* fnv1a64(url), 0 = empty slot */
     uint64_t expected_size;  /* 0 = unknown */
     int unavailable;
+    uint64_t catalog;        /* fnv1a64 of the catalog source URL that lists it, 0 = none */
 } file_state_t;
 
 static file_state_t g_fstate[HTTP_STATE_SLOTS];
@@ -1713,6 +1714,29 @@ static void expected_size_set(const char *url, uint64_t size) {
     file_state_t *e = fstate_find(url, size != 0);
     if (e) e->expected_size = size;
     pthread_mutex_unlock(&g_fstate_mutex);
+}
+
+/* Catalog links live on other hosts than the catalog file, so the scanner
+ * cannot tell from the URL which source a package belongs to. Every link a
+ * catalog scan emits is recorded here with its catalog. */
+static void catalog_owner_set(const char *url, const char *catalog_url) {
+    uint64_t owner = fnv1a64(catalog_url);
+    if (owner == 0) owner = 1;
+    pthread_mutex_lock(&g_fstate_mutex);
+    file_state_t *e = fstate_find(url, 1);
+    if (e) e->catalog = owner;
+    pthread_mutex_unlock(&g_fstate_mutex);
+}
+
+int http_source_catalog_lists(const char *catalog_url, const char *pkg_url) {
+    if (!catalog_url || !pkg_url || !http_source_url_is_catalog_file(catalog_url)) return 0;
+    uint64_t owner = fnv1a64(catalog_url);
+    if (owner == 0) owner = 1;
+    pthread_mutex_lock(&g_fstate_mutex);
+    file_state_t *e = fstate_find(pkg_url, 0);
+    int v = e && e->catalog == owner;
+    pthread_mutex_unlock(&g_fstate_mutex);
+    return v;
 }
 
 uint64_t http_source_expected_size(const char *url) {
@@ -2227,6 +2251,7 @@ static void pegasus_emit_link(scan_ctx_t *s, const char *link_url, const char *t
     pegasus_link_name(url, title, link_name, name, sizeof(name));
     if (have_size) expected_size_set(url, size);
     http_source_set_unavailable(url, 0);
+    catalog_owner_set(url, s->cfg->url);
     emit_named(s, url, name, size, 0, have_size);
 }
 

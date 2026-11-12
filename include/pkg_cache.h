@@ -23,6 +23,7 @@ typedef struct {
     int pkg_install_debug;  /* 1 = log every stream server connection to /data/pkgmgr/ */
     int allow_ps4_on_ps5;   /* PKG Manager X: PS4 games/DLC/updates installable on PS5 (default 1) */
     int show_package_paths; /* 1 = show filename & path on package details screen */
+    int download_connections; /* PS4 HTTP download-first: parallel connections, 1..3 (default 2) */
     smb_share_config_t smb_shares[MAX_SMB_SHARES];
     int smb_share_count;
 } app_settings_t;

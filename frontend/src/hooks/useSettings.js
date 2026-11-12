@@ -23,6 +23,7 @@ export function useSettings(props) {
       pkg_install_debug: false,
       allow_ps4_on_ps5: true,
       show_package_paths: false,
+      download_connections: 2,
       smb_shares: []
     };
   });
