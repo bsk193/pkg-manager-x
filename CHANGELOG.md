@@ -8,7 +8,7 @@
 - Kept: console refusal reasons and "unavailable on the server" now appear as the queue job's error.
 - HTTP/HTTPS sources read Pegasus DL+ catalogs: enter the catalog's `.json` URL (a query string such as a token is kept). Each `downloadLinks` entry (or `downloadSource`) is a package, `sizeBytes` is used without a request per link, relative links resolve against the catalog folder, and worker links that redirect to a debrid CDN (e.g. TorBox) are followed and refreshed like signed R2 links.
 - PS4 tile: if an older (or any other) version of PKG Manager X is already running, the tile now replaces it with the version it bundles, instead of opening the old one. It waits while an install is running and tells you to open the tile again afterwards.
-- PS4: HTTP packages of 256 MB and more download to the console over 3 connections at once (each fetching its own byte range), instead of one. Debrid CDNs such as TorBox serve each connection separately, and each connection decrypts on its own CPU core.
+- PS4: HTTP packages of 256 MB and more download to the console over 3 connections at once, instead of one. The connections take consecutive 32 MB pieces in order, so the console's drive writes almost sequentially (three far-apart write positions made the system UI lag). Debrid CDNs such as TorBox serve each connection separately, and each connection decrypts on its own CPU core.
 
 ## 1.0.6 (PKG Manager X)
 
